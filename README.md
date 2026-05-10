@@ -6,7 +6,7 @@ Daedalus is the platform; **your assistant is whatever you name it** (default `A
 The two are deliberately separated — Daedalus is the architecture; the persona is the
 character that performs on it.
 
-[![test](https://github.com/inline-studio/daedalus-/actions/workflows/test.yml/badge.svg)](https://github.com/inline-studio/daedalus-/actions/workflows/test.yml)
+[![test](https://github.com/inline-studio/daedalus/actions/workflows/test.yml/badge.svg)](https://github.com/inline-studio/daedalus/actions/workflows/test.yml)
 
 ## Why
 
@@ -211,6 +211,7 @@ dae service install --list                  Available specs (daedalus, whisper, 
 ```
 
 User services stop on logout. To survive logout / start at boot, run once:
+
 - systemd: `sudo loginctl enable-linger $USER`
 - launchd: move the plist into `/Library/LaunchDaemons/` (needs sudo)
 
@@ -219,47 +220,47 @@ User services stop on logout. To survive logout / start at boot, run once:
 ```yaml
 # ~/.daedalus/config.yaml
 brain:
-  path: ./brain          # absolute or relative to this config file
-  writable: false        # BRAIN_WRITABLE=1 lets agents self-modify skills/personas
+  path: ./brain # absolute or relative to this config file
+  writable: false # BRAIN_WRITABLE=1 lets agents self-modify skills/personas
 
 identity:
-  name: Artemis          # the user-facing persona; configurable per machine
+  name: Artemis # the user-facing persona; configurable per machine
 
 providers:
   # API keys do NOT live here — see "Secret resolution" above.
   openai:
-    baseUrl: https://litellm.in-line.studio/v1   # or any OpenAI-compatible URL
+    baseUrl: https://litellm.in-line.studio/v1 # or any OpenAI-compatible URL
   # anthropic: {}
   # ollama:
   #   baseUrl: http://localhost:11434
 
 runtime:
-  default: host          # 'host' or 'docker'
+  default: host # 'host' or 'docker'
   shared:
     enabled: true
-    hostPath: ./data/shared    # writable cross-agent persistent storage
-    containerPath: /shared     # exposed to bash via $DAE_SHARED
+    hostPath: ./data/shared # writable cross-agent persistent storage
+    containerPath: /shared # exposed to bash via $DAE_SHARED
 
 onecli:
   enabled: false
   proxy: http://localhost:10255
 
 secrets:
-  backend: auto          # 'auto' | 'onecli' | 'env-file'
+  backend: auto # 'auto' | 'onecli' | 'env-file'
   envFile: { path: .env.local }
   onecli: { baseUrl: http://localhost:10254 }
 
 mcp:
-  configPath: ./brain/mcp/servers.json   # file or directory of *.json
+  configPath: ./brain/mcp/servers.json # file or directory of *.json
 
 memory:
-  backend: none          # 'mempalace' to enable
+  backend: none # 'mempalace' to enable
   brainSync:
     enabled: false
-    schedule: '0 */6 * * *'
+    schedule: "0 */6 * * *"
 
 mempalace:
-  localHttp:             # only used when you ran `dae setup mempalace` in local-http mode
+  localHttp: # only used when you ran `dae setup mempalace` in local-http mode
     enabled: false
     command: uvx
     args: [mempalace-mcp]
@@ -274,8 +275,8 @@ channels:
   # web | telegram | whatsapp also supported
 
 transcribe:
-  backend: none          # 'openai-whisper' for OpenAI or any local server speaking the same shape
-  baseUrl: https://api.openai.com/v1   # must include /v1
+  backend: none # 'openai-whisper' for OpenAI or any local server speaking the same shape
+  baseUrl: https://api.openai.com/v1 # must include /v1
   model: whisper-1
 
 web:
