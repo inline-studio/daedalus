@@ -1,0 +1,48 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import matter from "gray-matter";
+import { SkillManifestSchema, type SkillManifest } from "../config/schema.js";
+
+export interface LoadedSkill {
+  manifest: SkillManifest;
+  body: string;
+  rootPath: string; // skill directory
+  readOnly: boolean;
+}
+
+export async function loadSkill(
+  brainPath: string,
+  skillName: string,
+  writable: boolean,
+): Promise<LoadedSkill | null> {
+  const root = path.join(brainPath, "skills", skillName);
+  const skillFile = path.join(root, "SKILL.md");
+  try {
+    const text = await fs.readFile(skillFile, "utf8");
+    const fm = matter(text);
+    const manifest = SkillManifestSchema.parse({ ...(fm.data as object), name: skillName });
+    return { manifest, body: fm.content.trim(), rootPath: root, readOnly: !writable };
+  } catch {
+    return null;
+  }
+}
+
+export async function listSkills(brainPath: string): Promise<string[]> {
+  const dir = path.join(brainPath, "skills");
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    const out: string[] = [];
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      try {
+        await fs.access(path.join(dir, e.name, "SKILL.md"));
+        out.push(e.name);
+      } catch {
+        /* not a skill dir */
+      }
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}

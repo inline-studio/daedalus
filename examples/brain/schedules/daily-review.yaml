@@ -1,0 +1,7 @@
+name: daily-review
+agent: orchestrator
+schedule: '0 9 * * *'
+prompt: |
+  Summarise yesterday's work. Check for unresolved follow-ups in the
+  memory store and surface anything that should not be lost.
+enabled: false

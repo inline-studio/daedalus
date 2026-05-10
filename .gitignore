@@ -1,0 +1,26 @@
+node_modules/
+dist/
+*.log
+*.tgz
+.DS_Store
+
+# local Claude Code settings (per-developer, not project content)
+.claude/
+
+# secrets / local config
+.env
+.env.local
+daedalus.local.yaml
+
+# memory store + smoke-test scratch
+brain/memory/
+data/
+examples/data/
+examples/.env.local
+*.sqlite
+*.sqlite-journal
+
+# editor
+.idea/
+.vscode/
+!.vscode/extensions.json

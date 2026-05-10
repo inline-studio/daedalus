@@ -1,0 +1,92 @@
+# Example runner config. Copy to ./daedalus.config.yaml at the repo root,
+# or point at it with `dae -c examples/daedalus.config.yaml ...`.
+
+brain:
+  path: ./brain             # relative to this config file's directory
+  writable: false           # BRAIN_WRITABLE=1 to override at runtime
+
+providers:
+  # NOTE: API keys do NOT live in this file. They resolve at agent-start time in this order:
+  #   1. providers.<provider>.apiKey here  (advanced; not recommended for real keys)
+  #   2. process.env (shell, .env, .env.local beside this config)
+  #   3. SecretsBackend — `dae secret save ANTHROPIC_API_KEY` (etc.)
+  #   4. OneCLI proxy — when onecli.enabled is true, a placeholder is sent and OneCLI's
+  #      gateway swaps in the real key at the network edge (the runner never sees it)
+  # If a needed key can't be resolved, the runner refuses to start with a fix-it message.
+  openai:
+    # LiteLLM proxy at https://litellm.in-line.studio fronts llama.cpp + Claude models.
+    # Speaks OpenAI's protocol; requires Bearer auth via OPENAI_API_KEY (your LiteLLM
+    # virtual key). Save with `dae secret save OPENAI_API_KEY`.
+    baseUrl: https://litellm.in-line.studio/v1
+  # anthropic: {}    # native Claude API; ANTHROPIC_API_KEY resolved as above
+  # ollama:
+  #   baseUrl: http://localhost:11434
+
+runtime:
+  default: host             # 'host' or 'docker'
+  # docker:
+  #   bin: C:\docker\docker.exe   # explicit path; falls back to PATH or env DOCKER_BIN
+  #   socket: npipe:////./pipe/docker_engine
+  #   defaultNetwork: daedalus
+  shared:
+    enabled: true
+    hostPath: ./data/shared      # writable cross-agent persistent storage; gitignored
+    containerPath: /shared       # mount point inside Docker agents
+                                 # the path is exposed to bash via $DAE_SHARED
+
+onecli:
+  enabled: false
+  proxy: http://localhost:10255
+  # token: ${ONECLI_TOKEN}
+
+mcp:
+  configPath: ./brain/mcp/servers.json
+
+memory:
+  backend: none             # 'none' | 'mempalace' | 'sqlite'
+  brainSync:
+    enabled: false
+    schedule: '0 */6 * * *'
+    path: ./brain/memory
+
+sessions:
+  dbPath: ./data/sessions.sqlite
+  attachmentsPath: ./data/attachments
+  historyLimit: 80
+
+# Channels are not "groups" — every channel publishes into the same per-user session.
+# A user reaching you via Telegram and via Web shares one conversation history.
+channels:
+  cli:
+    enabled: true
+    defaultAgent: orchestrator
+  web:
+    enabled: false
+    defaultAgent: orchestrator
+    port: 8765
+    # token: ${WEB_TOKEN}
+  # telegram:
+  #   enabled: true
+  #   defaultAgent: orchestrator
+  #   token: ${TELEGRAM_BOT_TOKEN}
+  # whatsapp:
+  #   enabled: true
+  #   defaultAgent: orchestrator
+  #   accessToken: ${WHATSAPP_ACCESS_TOKEN}
+  #   phoneNumberId: ${WHATSAPP_PHONE_NUMBER_ID}
+
+transcribe:
+  backend: none             # 'none' | 'openai-whisper' | 'whisper-local'
+  # apiKey: ${OPENAI_API_KEY}
+  # baseUrl: http://localhost:8080  # for self-hosted whisper
+  # model: whisper-1
+
+# Web tools — agents can declare `web_fetch` and `web_search` in their `tools:` list.
+# `dae setup search` will configure this interactively.
+web:
+  search:
+    provider: duckduckgo    # 'none' | 'duckduckgo' (no key) | 'brave' (needs apiKey)
+    # apiKey: ${BRAVE_API_KEY}
+  fetch:
+    maxBytes: 1000000       # hard cap on body size; truncated above this
+    timeoutMs: 20000
