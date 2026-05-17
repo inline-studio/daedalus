@@ -3,8 +3,8 @@ name: CI
 # Runs tests on every push and PR.
 # On a push to main, stamps the version as {base}-{run_number} (e.g. 0.1.0-42),
 # packs, and publishes a GitHub Release. Every push to main produces a new release.
-# Install the release with:
-#   npm install -g https://github.com/inline-studio/daedalus/releases/download/vX.Y.Z-N/daedalus-X.Y.Z-N.tgz
+# The release always includes daedalus-latest.tgz for a permanent versionless install URL:
+#   npm install -g https://github.com/inline-studio/daedalus/releases/latest/download/daedalus-latest.tgz
 
 on:
   push:
@@ -55,14 +55,18 @@ jobs:
 
       - name: Pack tarball
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: npm pack
+        run: |
+          npm pack
+          cp daedalus-*.tgz daedalus-latest.tgz
 
       - name: Create GitHub Release
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.pkg.outputs.version }}
-          files: 'daedalus-*.tgz'
+          files: |
+            daedalus-*.tgz
+            daedalus-latest.tgz
           generate_release_notes: true
           draft: false
           prerelease: false

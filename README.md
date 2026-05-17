@@ -42,12 +42,11 @@ smoke-tested across **14 smoke suites** covering ~150 assertions. See
 ## Install
 
 ```bash
-npm install -g github:inline-studio/daedalus
+npm install -g https://github.com/inline-studio/daedalus/releases/latest/download/daedalus-latest.tgz
 dae --version
 ```
 
-The `prepare` hook builds the TypeScript automatically. Both `dae` and `daedalus` are
-installed as aliases — use whichever reads better.
+Both `dae` and `daedalus` are installed as aliases — use whichever reads better.
 
 Once installed, keep it current with:
 
