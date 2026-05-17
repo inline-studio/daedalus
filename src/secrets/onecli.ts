@@ -41,11 +41,18 @@ export async function applyOneCli(config: OneCliConfig): Promise<void> {
     return;
   }
 
-  const proxyUrl = bundle.env.HTTPS_PROXY ?? bundle.env.HTTP_PROXY;
-  if (!proxyUrl) {
+  const rawProxyUrl = bundle.env.HTTPS_PROXY ?? bundle.env.HTTP_PROXY;
+  if (!rawProxyUrl) {
     log.warn({ env: bundle.env }, "OneCLI returned no HTTPS_PROXY — skipping");
     return;
   }
+  // OneCLI's container-config bundle is tuned for *containers*: the proxy host comes
+  // back as `host.docker.internal`, which only resolves inside the Docker network.
+  // When daedalus is itself a host process, that name has no DNS. Rewrite the proxy
+  // host to whatever host already worked for the REST call (almost always the same
+  // OneCLI install reachable at the same host) — preserves the userinfo (the agent
+  // token OneCLI embeds in the URL) and the port.
+  const proxyUrl = rewriteProxyHostForCaller(rawProxyUrl, config.baseUrl);
 
   // Write the MITM CA to a tmp file. Node's NODE_EXTRA_CA_CERTS env var only takes effect
   // at process start, so we can't add the CA to the in-process default TLS context after
@@ -61,15 +68,54 @@ export async function applyOneCli(config: OneCliConfig): Promise<void> {
   });
   setGlobalDispatcher(proxyAgent);
 
+  // Mirror the gateway's env to process.env so any subprocesses inherit it. Rewrite
+  // proxy URLs the same way — a `dae`-spawned container would also fail to resolve
+  // `host.docker.internal` unless it's actually joined to the Docker network, and we
+  // can't tell from here which case applies. If the caller knows otherwise they can
+  // override via their own env.
   for (const [k, v] of Object.entries(bundle.env)) {
-    process.env[k] = v;
+    process.env[k] =
+      k === "HTTPS_PROXY" || k === "HTTP_PROXY" ? rewriteProxyHostForCaller(v, config.baseUrl) : v;
   }
   process.env.NODE_EXTRA_CA_CERTS = caPath;
 
   log.info(
-    { proxy: proxyUrl, agent: config.agent, caPath },
+    { proxy: redactProxyUrl(proxyUrl), agent: config.agent, caPath },
     "OneCLI proxy enabled (MITM CA trusted via undici requestTls)",
   );
+}
+
+// Swap the proxy URL's host for the host we already reached successfully (baseUrl).
+// No-op if the proxy host isn't `host.docker.internal` or if the baseUrl host IS that
+// (meaning the caller is itself a container).
+function rewriteProxyHostForCaller(proxyUrl: string, baseUrl: string): string {
+  let proxy: URL;
+  let base: URL;
+  try {
+    proxy = new URL(proxyUrl);
+    base = new URL(baseUrl);
+  } catch {
+    return proxyUrl;
+  }
+  if (proxy.hostname !== "host.docker.internal") return proxyUrl;
+  if (base.hostname === "host.docker.internal") return proxyUrl;
+  proxy.hostname = base.hostname;
+  return proxy.toString();
+}
+
+// The proxy URL embeds the per-agent access token as basic-auth userinfo. Don't
+// dump that into the log file.
+function redactProxyUrl(proxyUrl: string): string {
+  try {
+    const u = new URL(proxyUrl);
+    if (u.username || u.password) {
+      u.username = "***";
+      u.password = "";
+    }
+    return u.toString();
+  } catch {
+    return proxyUrl;
+  }
 }
 
 // Resolution order:
