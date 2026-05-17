@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { execa } from "execa";
 import prompts from "prompts";
 import { buildServiceManager } from "../service/factory.js";
@@ -19,6 +21,8 @@ import {
 // that speaks the OpenAI /v1/audio/transcriptions shape. Both api.openai.com and self-hosted
 // servers (faster-whisper-server, whisper.cpp's --api mode, LocalAI, …) implement that shape,
 // so "local" and "openai" differ only in baseUrl + apiKey, not in implementation.
+
+const WHISPER_DOCKER_IMAGE = "fedirz/faster-whisper-server:latest";
 
 async function isOnPath(cmd: string): Promise<boolean> {
   try {
@@ -50,27 +54,12 @@ async function probeOpenAIShape(baseUrl: string, apiKey?: string): Promise<strin
   }
 }
 
-interface InstallChoice {
-  command: string;
-  args: string[];
-  hint: string;
-}
-
 function portFromUrl(url: string): number {
   try {
     return parseInt(new URL(url).port || "8000", 10);
   } catch {
     return 8000;
   }
-}
-
-function startLocalServer(port: number) {
-  const proc = execa("faster-whisper-server", ["--host", "127.0.0.1", "--port", String(port)], {
-    detached: true,
-    stdio: "ignore",
-  });
-  proc.unref();
-  return proc;
 }
 
 async function waitForServer(baseUrl: string, timeoutMs = 300_000): Promise<boolean> {
@@ -89,24 +78,143 @@ async function waitForServer(baseUrl: string, timeoutMs = 300_000): Promise<bool
   return false;
 }
 
-// Pick an install path for local whisper, preferring uv if present (fastest, isolated venv).
-async function suggestInstall(): Promise<InstallChoice | null> {
-  if (await isOnPath("uv")) {
-    return {
-      command: "uv",
-      args: ["tool", "install", "faster-whisper-server"],
-      hint: "uv tool install faster-whisper-server",
-    };
-  }
-  if (await isOnPath("pipx")) {
-    return {
-      command: "pipx",
-      args: ["install", "faster-whisper-server"],
-      hint: "pipx install faster-whisper-server",
-    };
+// ── uv install ────────────────────────────────────────────────────────────────
+
+// Known locations the uv installer drops the binary.
+const UV_CANDIDATES = [
+  path.join(os.homedir(), ".local", "bin", "uv"),
+  path.join(os.homedir(), ".cargo", "bin", "uv"),
+];
+
+async function findUvBin(): Promise<string | null> {
+  if (await isOnPath("uv")) return "uv";
+  for (const p of UV_CANDIDATES) {
+    try {
+      await execa(p, ["--version"], { timeout: 5_000 });
+      return p;
+    } catch {}
   }
   return null;
 }
+
+async function installUv(): Promise<string | null> {
+  console.log("Installing uv (Python package manager)…");
+  try {
+    await execa("sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], {
+      stdio: "inherit",
+    });
+    return await findUvBin();
+  } catch (err) {
+    console.warn(`uv install failed: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+// ── host mode helpers ─────────────────────────────────────────────────────────
+
+async function ensureFasterWhisperInstalled(): Promise<boolean> {
+  const haveServer =
+    (await isOnPath("faster-whisper-server")) || (await isOnPath("whisper-server"));
+  if (haveServer) return true;
+
+  // Find or install uv.
+  let uvBin = await findUvBin();
+  if (!uvBin) {
+    if (await isOnPath("pipx")) {
+      console.log("Installing faster-whisper-server via pipx…\n");
+      try {
+        await execa("pipx", ["install", "faster-whisper-server"], { stdio: "inherit" });
+        console.log("\n✓ install complete");
+        return true;
+      } catch (err) {
+        console.warn(`\nInstall failed: ${(err as Error).message}`);
+        return false;
+      }
+    }
+    // No uv, no pipx — auto-install uv first.
+    console.log("Neither uv nor pipx found — installing uv automatically.\n");
+    uvBin = await installUv();
+    if (!uvBin) {
+      console.warn(
+        "Could not install uv. Install it manually from https://docs.astral.sh/uv/ and rerun setup.",
+      );
+      return false;
+    }
+    console.log();
+  }
+
+  console.log("Installing faster-whisper-server via uv…\n");
+  try {
+    await execa(uvBin, ["tool", "install", "faster-whisper-server"], { stdio: "inherit" });
+    console.log("\n✓ install complete");
+    return true;
+  } catch (err) {
+    console.warn(`\nInstall failed: ${(err as Error).message}`);
+    return false;
+  }
+}
+
+function startHostServer(port: number) {
+  const proc = execa("faster-whisper-server", ["--host", "127.0.0.1", "--port", String(port)], {
+    detached: true,
+    stdio: "ignore",
+  });
+  proc.unref();
+  return proc;
+}
+
+// ── docker mode helpers ───────────────────────────────────────────────────────
+
+async function startDockerContainer(port: number): Promise<string | null> {
+  try {
+    const result = await execa("docker", [
+      "run",
+      "-d",
+      "--rm",
+      "-p",
+      `${port}:8000`,
+      WHISPER_DOCKER_IMAGE,
+    ]);
+    return result.stdout.trim(); // container ID
+  } catch (err) {
+    console.warn(`docker run failed: ${(err as Error).message}`);
+    return null;
+  }
+}
+
+async function stopDockerContainer(containerId: string): Promise<void> {
+  try {
+    await execa("docker", ["stop", containerId], { timeout: 15_000 });
+  } catch {}
+}
+
+// ── service install ───────────────────────────────────────────────────────────
+
+async function installManagedService(configPath: string | undefined): Promise<void> {
+  console.log("Installing faster-whisper-server as a managed service…");
+  try {
+    const manager = await buildServiceManager();
+    const specBuilder = SERVICE_SPECS["whisper"];
+    if (!specBuilder) throw new Error("whisper service spec not found");
+    const spec = await specBuilder(configPath);
+    const result = await manager.install(spec);
+    for (const note of result.notes) console.log(note);
+    console.log("✓ Service installed — faster-whisper-server will start automatically on boot.\n");
+  } catch (err) {
+    if (err instanceof ServiceUnsupported) {
+      console.log(
+        "Managed services are not supported on this platform.\n" +
+          "Start the server manually after a reboot, or retry with:\n\n" +
+          "  dae service install whisper\n",
+      );
+    } else {
+      console.warn(`Service install failed: ${(err as Error).message}`);
+      console.log("You can retry later with:\n\n  dae service install whisper\n");
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const whisperSetup: ChannelSetup = {
   id: "whisper",
@@ -127,7 +235,7 @@ export const whisperSetup: ChannelSetup = {
       message: "Where should transcription run?",
       choices: [
         { title: "openai (api.openai.com — paid, fast, accurate)", value: "openai" },
-        { title: "local (self-hosted — free; faster-whisper-server installed automatically)", value: "local" },
+        { title: "local (self-hosted — free; installed and started automatically)", value: "local" },
       ],
       initial: 0,
     });
@@ -138,8 +246,7 @@ export const whisperSetup: ChannelSetup = {
     let apiKeyValue: string | undefined;
     let apiKeyEnvName: string | undefined;
     let model: string;
-    let localServerProc: ReturnType<typeof startLocalServer> | null = null;
-    let serverAvailable = false;
+    let runMode: "host" | "docker" = "host";
 
     if (mode === "openai") {
       baseUrl = "https://api.openai.com/v1";
@@ -184,39 +291,25 @@ export const whisperSetup: ChannelSetup = {
       });
       model = (modelRes.model as string | undefined)?.trim() || "whisper-1";
     } else {
-      // ─── local ─────────────────────────────────────────────────────────────────────────
-      console.log(
-        "Local mode runs faster-whisper-server on this machine (GPU-accelerated when\n" +
-          "available). It will be installed and started automatically.\n",
-      );
+      // ─── local ─────────────────────────────────────────────────────────────────
 
-      let haveServer = (await isOnPath("faster-whisper-server")) || (await isOnPath("whisper-server"));
-
-      if (!haveServer) {
-        const install = await suggestInstall();
-        if (install) {
-          console.log(`Installing faster-whisper-server (${install.hint})…\n`);
-          try {
-            await execa(install.command, install.args, { stdio: "inherit" });
-            console.log("\n✓ install complete");
-            haveServer = true;
-          } catch (err) {
-            console.warn(`\nInstall failed: ${(err as Error).message}`);
-            const cont = await confirm("Continue setup anyway? (configure URL; install later)", true);
-            if (!cont) throw new Error("cancelled");
-          }
-        } else {
-          console.log(
-            "Couldn't find `uv` or `pipx` to install faster-whisper-server automatically.\n" +
-              "Install one of:\n" +
-              "  • https://docs.astral.sh/uv/  (recommended)\n" +
-              "  • pipx (`python -m pip install --user pipx`)\n" +
-              "Then rerun this setup, or install faster-whisper-server manually.\n",
-          );
-          const cont = await confirm("Continue and configure the URL anyway?", false);
-          if (!cont) throw new Error("cancelled");
-        }
-      }
+      const runModeRes = await prompts({
+        type: "select",
+        name: "runMode",
+        message: "Run faster-whisper-server on the host or in Docker?",
+        choices: [
+          {
+            title: "host  (installed via uv — simpler, GPU support via CUDA drivers)",
+            value: "host",
+          },
+          {
+            title: "docker (pulled from Docker Hub — isolated, needs Docker installed)",
+            value: "docker",
+          },
+        ],
+        initial: 0,
+      });
+      runMode = (runModeRes.runMode as "host" | "docker" | undefined) ?? "host";
 
       const urlRes = await prompts({
         type: "text",
@@ -228,23 +321,58 @@ export const whisperSetup: ChannelSetup = {
       baseUrl = (urlRes.url as string | undefined)?.trim() ?? "";
       if (!baseUrl) throw new Error("cancelled");
 
-      if (haveServer) {
-        serverAvailable = true;
-        const alreadyUp = (await probeOpenAIShape(baseUrl)) === null;
-        if (alreadyUp) {
-          console.log("  (server already running — skipping start)");
+      const port = portFromUrl(baseUrl);
+      const alreadyUp = (await probeOpenAIShape(baseUrl)) === null;
+
+      if (alreadyUp) {
+        console.log("  (server already running — skipping install and start)");
+      } else if (runMode === "docker") {
+        if (!(await isOnPath("docker"))) {
+          console.warn(
+            "Docker is not on PATH. Install Docker from https://docs.docker.com/get-docker/\n" +
+              "then rerun this setup.",
+          );
+          const cont = await confirm("Continue and save config anyway?", false);
+          if (!cont) throw new Error("cancelled");
         } else {
-          const port = portFromUrl(baseUrl);
+          console.log(`\nPulling and starting ${WHISPER_DOCKER_IMAGE} on port ${port}…`);
+          const containerId = await startDockerContainer(port);
+          if (containerId) {
+            const ready = await waitForServer(baseUrl);
+            if (!ready) {
+              const cont = await confirm(
+                "Container didn't respond in time. Save config anyway?",
+                true,
+              );
+              if (!cont) {
+                await stopDockerContainer(containerId);
+                throw new Error("cancelled");
+              }
+            }
+            // Hand off to the managed service — stop our temporary container first.
+            await stopDockerContainer(containerId);
+          }
+        }
+      } else {
+        // host mode
+        const installed = await ensureFasterWhisperInstalled();
+        if (!installed) {
+          const cont = await confirm("Continue and save config anyway? (install manually later)", true);
+          if (!cont) throw new Error("cancelled");
+        } else {
           console.log(`\nStarting faster-whisper-server on port ${port}…`);
-          localServerProc = startLocalServer(port);
+          const proc = startHostServer(port);
           const ready = await waitForServer(baseUrl);
           if (!ready) {
             const cont = await confirm(
-              "Server didn't come up in time. Save config anyway? (you can start it manually later)",
+              "Server didn't come up in time. Save config anyway?",
               true,
             );
             if (!cont) throw new Error("cancelled");
           }
+          // Kill our temporary process — the managed service will start its own.
+          proc.kill();
+          await new Promise((r) => setTimeout(r, 500));
         }
       }
 
@@ -274,11 +402,12 @@ export const whisperSetup: ChannelSetup = {
       { keyPath: ["transcribe", "baseUrl"], value: baseUrl },
       { keyPath: ["transcribe", "model"], value: model },
     ];
-    if (mode === "openai" && apiKeyEnvName) {
-      yamlEdits.push({ keyPath: ["transcribe", "apiKey"], value: `\${${apiKeyEnvName}}` });
-    } else if (mode === "local") {
-      // Hardcode a placeholder; local servers ignore it but the SDK requires a value.
+    if (mode === "local") {
+      yamlEdits.push({ keyPath: ["transcribe", "runMode"], value: runMode });
+      // Local servers usually ignore the apiKey but the SDK requires a value.
       yamlEdits.push({ keyPath: ["transcribe", "apiKey"], value: "local-no-auth-required" });
+    } else if (apiKeyEnvName) {
+      yamlEdits.push({ keyPath: ["transcribe", "apiKey"], value: `\${${apiKeyEnvName}}` });
     }
 
     await persistChannelConfig({
@@ -297,36 +426,8 @@ export const whisperSetup: ChannelSetup = {
 
     // Auto-install the managed service so faster-whisper-server survives reboots.
     // Config must be persisted first — the service spec reads from it.
-    if (mode === "local" && serverAvailable) {
-      console.log("Installing faster-whisper-server as a managed service…");
-      try {
-        const manager = await buildServiceManager();
-        const specBuilder = SERVICE_SPECS["whisper"];
-        if (!specBuilder) throw new Error("whisper service spec not found");
-        const spec = await specBuilder(ctx.configPath);
-
-        // Kill our temporary process before handing off — both systemd and launchd
-        // auto-start the service on install and would hit a port conflict otherwise.
-        if (localServerProc) {
-          localServerProc.kill();
-          await new Promise((r) => setTimeout(r, 500));
-        }
-
-        const result = await manager.install(spec);
-        for (const note of result.notes) console.log(note);
-        console.log("✓ Service installed — faster-whisper-server will start automatically on boot.\n");
-      } catch (err) {
-        if (err instanceof ServiceUnsupported) {
-          console.log(
-            "Managed services are not supported on this platform. The server is\n" +
-              "running now; you'll need to start it manually after a reboot:\n\n" +
-              "  faster-whisper-server\n",
-          );
-        } else {
-          console.warn(`Service install failed: ${(err as Error).message}`);
-          console.log("You can retry later with:\n\n  dae service install whisper\n");
-        }
-      }
+    if (mode === "local") {
+      await installManagedService(ctx.configPath);
     }
   },
 

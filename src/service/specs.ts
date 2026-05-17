@@ -38,11 +38,19 @@ export const SERVICE_SPECS: Record<string, SpecBuilder> = {
   },
 
   whisper: async (configPath) => {
-    // Local whisper as a managed service. Only useful when transcribe.backend was set up
-    // to point at localhost. The spec invokes `faster-whisper-server`; the user installs
-    // that via `dae setup whisper`.
     const config = loadConfig(configPath);
     const port = portFromBaseUrl(config.transcribe.baseUrl);
+    if (config.transcribe.runMode === "docker") {
+      return {
+        name: "dae-whisper",
+        description: "faster-whisper-server in Docker (STT) — managed by daedalus",
+        exec: "docker",
+        args: ["run", "--rm", "-p", `${port}:8000`, "fedirz/faster-whisper-server:latest"],
+        restart: "on-failure",
+        restartDelaySec: 5,
+        logsDir: LOGS_DIR,
+      };
+    }
     return {
       name: "dae-whisper",
       description: "faster-whisper-server (local STT) — managed by daedalus",
