@@ -10,6 +10,7 @@ import {
   confirm,
   persistChannelConfig,
   persistChannelDisable,
+  runtimeHost,
   type ChannelSetup,
   type DisableOptions,
   type SetupContext,
@@ -315,7 +316,7 @@ export const whisperSetup: ChannelSetup = {
         type: "text",
         name: "url",
         message: "Server URL (the OpenAI-shaped /v1 endpoint):",
-        initial: "http://localhost:8000/v1",
+        initial: `http://${runtimeHost(ctx.configPath)}:8000/v1`,
         validate: (v: string) => /^https?:\/\//.test(v) || "must be an http(s) URL",
       });
       baseUrl = (urlRes.url as string | undefined)?.trim() ?? "";

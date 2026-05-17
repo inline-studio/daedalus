@@ -7,6 +7,7 @@ import {
   backendForDisable,
   confirm,
   persistChannelDisable,
+  runtimeHost,
   type ChannelSetup,
   type DisableOptions,
   type SetupContext,
@@ -185,9 +186,10 @@ export const mempalaceSetup: ChannelSetup = {
       const argsText = (argsRes.args as string | undefined)?.trim() ?? "";
       const launchArgs = argsText ? argsText.split(/\s+/) : [];
 
-      // The MCP entry the LOCAL daedalus runner uses points at localhost; remote devices get
-      // a separate URL printed at the end of setup.
-      const localUrl = `http://127.0.0.1:${port}${urlPath}`;
+      // The MCP entry the runner uses to connect to mempalace. When runtime is docker the
+      // runner (or its agents) reach the host via host.docker.internal, not 127.0.0.1.
+      // Note: if runtime is docker, mempalace must bind to 0.0.0.0 to be reachable.
+      const localUrl = `http://${runtimeHost(ctx.configPath)}:${port}${urlPath}`;
       entry = {
         url: localUrl,
         transport: "http",

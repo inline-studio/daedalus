@@ -134,3 +134,15 @@ export async function confirm(message: string, initial = true): Promise<boolean>
   const res = await prompts({ type: "confirm", name: "ok", message, initial });
   return Boolean(res.ok);
 }
+
+// Returns the hostname to use for local service URLs based on the configured runtime.
+// When runtime.default is "docker", agents run as containers and need host.docker.internal
+// to reach services on the host machine; on host runtimes plain localhost works.
+export function runtimeHost(configPath: string): string {
+  try {
+    const config = loadConfig(configPath);
+    return config.runtime.default === "docker" ? "host.docker.internal" : "localhost";
+  } catch {
+    return "localhost";
+  }
+}

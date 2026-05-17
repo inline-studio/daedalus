@@ -4,6 +4,7 @@ import {
   confirm,
   persistChannelConfig,
   persistChannelDisable,
+  runtimeHost,
   type ChannelSetup,
   type DisableOptions,
   type SetupContext,
@@ -41,11 +42,12 @@ export const onecliSetup: ChannelSetup = {
     console.log("Install: see https://github.com/onecli/onecli (Rust gateway + dashboard).");
     console.log("Defaults assume the standard layout: dashboard 10254, proxy 10255.\n");
 
+    const host = runtimeHost(ctx.configPath);
     const dashRes = await prompts({
       type: "text",
       name: "dashboardUrl",
       message: "OneCLI dashboard URL:",
-      initial: "http://localhost:10254",
+      initial: `http://${host}:10254`,
     });
     const dashboardUrl = (dashRes.dashboardUrl as string | undefined)?.replace(/\/$/, "") ?? "";
     if (!dashboardUrl) throw new Error("cancelled");
@@ -54,7 +56,7 @@ export const onecliSetup: ChannelSetup = {
       type: "text",
       name: "proxyUrl",
       message: "OneCLI proxy URL:",
-      initial: "http://localhost:10255",
+      initial: `http://${host}:10255`,
     });
     const proxyUrl = (proxyRes.proxyUrl as string | undefined)?.replace(/\/$/, "") ?? "";
     if (!proxyUrl) throw new Error("cancelled");

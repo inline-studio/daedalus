@@ -45,6 +45,11 @@ export class DockerRuntime implements Runtime {
     }
     if (opts.memory) args.push("--memory", opts.memory);
     if (opts.cpus) args.push("--cpus", opts.cpus);
+    // On Linux, host.docker.internal isn't mapped automatically (unlike macOS/Windows Docker
+    // Desktop). Add the mapping so containers can reach host services via that hostname.
+    if (process.platform === "linux") {
+      args.push("--add-host", "host.docker.internal:host-gateway");
+    }
 
     args.push(image, "/bin/sh", "-c", cmd);
 
