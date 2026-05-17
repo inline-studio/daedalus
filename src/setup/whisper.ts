@@ -1,3 +1,4 @@
+import type { ChildProcess } from "node:child_process";
 import { execa } from "execa";
 import prompts from "prompts";
 import {
@@ -53,6 +54,41 @@ interface InstallChoice {
   hint: string;
 }
 
+function portFromUrl(url: string): number {
+  try {
+    return parseInt(new URL(url).port || "8000", 10);
+  } catch {
+    return 8000;
+  }
+}
+
+function startLocalServer(port: number): ChildProcess {
+  // Start detached so it outlives setup; caller is responsible for killing it if
+  // the user opts to manage it via `dae service install` instead.
+  const proc = execa("faster-whisper-server", ["--host", "127.0.0.1", "--port", String(port)], {
+    detached: true,
+    stdio: "ignore",
+  });
+  proc.unref();
+  return proc as unknown as ChildProcess;
+}
+
+async function waitForServer(baseUrl: string, timeoutMs = 300_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  process.stdout.write("waiting for server to come up (model download may take a few minutes)");
+  while (Date.now() < deadline) {
+    const err = await probeOpenAIShape(baseUrl);
+    if (!err) {
+      process.stdout.write(" ready\n");
+      return true;
+    }
+    process.stdout.write(".");
+    await new Promise((r) => setTimeout(r, 3_000));
+  }
+  process.stdout.write(" timed out\n");
+  return false;
+}
+
 // Pick an install path for local whisper, preferring uv if present (fastest, isolated venv).
 async function suggestInstall(): Promise<InstallChoice | null> {
   if (await isOnPath("uv")) {
@@ -102,6 +138,7 @@ export const whisperSetup: ChannelSetup = {
     let apiKeyValue: string | undefined;
     let apiKeyEnvName: string | undefined;
     let model: string;
+    let weStartedLocalServer = false;
 
     if (mode === "openai") {
       baseUrl = "https://api.openai.com/v1";
@@ -184,12 +221,6 @@ export const whisperSetup: ChannelSetup = {
         }
       }
 
-      console.log(
-        "\nStart the server in another terminal (defaults to port 8000):\n" +
-          "  faster-whisper-server\n" +
-          "Or run it as a service with your preferred supervisor (systemd, launchd, pm2, …).\n",
-      );
-
       const urlRes = await prompts({
         type: "text",
         name: "url",
@@ -200,15 +231,24 @@ export const whisperSetup: ChannelSetup = {
       baseUrl = (urlRes.url as string | undefined)?.trim() ?? "";
       if (!baseUrl) throw new Error("cancelled");
 
-      process.stdout.write(`probing ${baseUrl}/models… `);
-      const err = await probeOpenAIShape(baseUrl);
-      process.stdout.write(err ? `WARN (${err})\n` : "OK\n");
-      if (err) {
-        const cont = await confirm(
-          "Server didn't respond. Save anyway? (use this if you'll start it after setup)",
-          true,
-        );
-        if (!cont) throw new Error("cancelled");
+      // Check if something is already listening before we try to start our own instance.
+      const alreadyUp = (await probeOpenAIShape(baseUrl)) === null;
+
+      if (!alreadyUp) {
+        const port = portFromUrl(baseUrl);
+        console.log(`\nStarting faster-whisper-server on port ${port}…`);
+        startLocalServer(port);
+        weStartedLocalServer = true;
+        const ready = await waitForServer(baseUrl);
+        if (!ready) {
+          const cont = await confirm(
+            "Server didn't come up in time. Save config anyway? (you can start it manually later)",
+            true,
+          );
+          if (!cont) throw new Error("cancelled");
+        }
+      } else {
+        console.log("  (server already running — skipping start)");
       }
 
       // Local servers usually ignore the apiKey but the SDK requires a non-empty value.
@@ -257,6 +297,14 @@ export const whisperSetup: ChannelSetup = {
         `before the agent sees them. The transcript is also injected as a text part so the agent\n` +
         `can read it directly.\n`,
     );
+
+    if (weStartedLocalServer) {
+      console.log(
+        "faster-whisper-server is running now, but won't survive a reboot.\n" +
+          "To keep it running automatically, install it as a managed service:\n\n" +
+          "  dae service install whisper\n",
+      );
+    }
   },
 
   async disable(ctx: SetupContext, opts: DisableOptions): Promise<void> {
