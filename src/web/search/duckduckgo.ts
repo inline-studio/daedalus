@@ -1,4 +1,4 @@
-import * as cheerio from "cheerio";
+import { parse } from "node-html-parser";
 import { SearchError, type SearchProvider, type SearchResult } from "./base.js";
 
 // DuckDuckGo HTML scrape. Uses the no-JS endpoint at html.duckduckgo.com.
@@ -26,22 +26,21 @@ export class DuckDuckGoProvider implements SearchProvider {
       throw new SearchError(`duckduckgo fetch failed: ${(err as Error).message}`, this.id);
     }
 
-    const $ = cheerio.load(html);
+    const root = parse(html);
     const out: SearchResult[] = [];
-    $(".result").each((_, el) => {
-      if (out.length >= limit) return false;
-      const titleEl = $(el).find(".result__a").first();
-      const title = titleEl.text().trim();
-      let url = titleEl.attr("href") ?? "";
+    for (const el of root.querySelectorAll(".result")) {
+      if (out.length >= limit) break;
+      const titleEl = el.querySelector(".result__a");
+      const title = titleEl?.text.trim() ?? "";
+      let href = titleEl?.getAttribute("href") ?? "";
       // DDG wraps URLs in a redirect like //duckduckgo.com/l/?uddg=<encoded>
-      const m = url.match(/[?&]uddg=([^&]+)/);
-      if (m) url = decodeURIComponent(m[1]!);
-      if (url.startsWith("//")) url = "https:" + url;
-      const snippet = $(el).find(".result__snippet").text().trim();
-      const source = $(el).find(".result__url").text().trim();
-      if (title && url) out.push({ title, url, snippet, source });
-      return undefined;
-    });
+      const m = href.match(/[?&]uddg=([^&]+)/);
+      if (m) href = decodeURIComponent(m[1]!);
+      if (href.startsWith("//")) href = "https:" + href;
+      const snippet = el.querySelector(".result__snippet")?.text.trim() ?? "";
+      const source = el.querySelector(".result__url")?.text.trim() ?? "";
+      if (title && href) out.push({ title, url: href, snippet, source });
+    }
     return out;
   }
 }

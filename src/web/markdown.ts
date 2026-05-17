@@ -1,4 +1,4 @@
-import * as cheerio from "cheerio";
+import { parse } from "node-html-parser";
 import TurndownService from "turndown";
 
 // HTML → markdown with light main-content extraction. Strips scripts, styles, nav,
@@ -42,20 +42,25 @@ export interface ExtractedPage {
 }
 
 export function htmlToMarkdown(html: string, sourceUrl: string, maxBytes = 200_000): ExtractedPage {
-  const $ = cheerio.load(html);
-  const title = $("title").first().text().trim() || $("h1").first().text().trim() || sourceUrl;
+  const root = parse(html);
+  const title =
+    root.querySelector("title")?.text.trim() ||
+    root.querySelector("h1")?.text.trim() ||
+    sourceUrl;
 
-  for (const sel of SELECTORS_TO_DROP) $(sel).remove();
+  for (const sel of SELECTORS_TO_DROP) {
+    root.querySelectorAll(sel).forEach((el) => el.remove());
+  }
 
   let mainHtml = "";
   for (const sel of MAIN_CONTENT_SELECTORS) {
-    const el = $(sel).first();
-    if (el.length && el.text().trim().length > 200) {
-      mainHtml = el.html() ?? "";
+    const el = root.querySelector(sel);
+    if (el && el.text.trim().length > 200) {
+      mainHtml = el.innerHTML;
       break;
     }
   }
-  if (!mainHtml) mainHtml = $("body").html() ?? html;
+  if (!mainHtml) mainHtml = root.querySelector("body")?.innerHTML ?? html;
 
   let md = turndown.turndown(mainHtml).trim();
   // Collapse 3+ blank lines to 2.
