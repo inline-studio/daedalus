@@ -23,7 +23,8 @@ import {
 // servers (faster-whisper-server, whisper.cpp's --api mode, LocalAI, …) implement that shape,
 // so "local" and "openai" differ only in baseUrl + apiKey, not in implementation.
 
-const WHISPER_DOCKER_IMAGE = "fedirz/faster-whisper-server:latest";
+// CPU image — use latest-cuda for NVIDIA GPU hosts.
+const WHISPER_DOCKER_IMAGE = "ghcr.io/fedirz/faster-whisper-server:latest-cpu";
 
 async function isOnPath(cmd: string): Promise<boolean> {
   try {
