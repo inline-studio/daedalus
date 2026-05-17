@@ -41,29 +41,21 @@ smoke-tested across **14 smoke suites** covering ~150 assertions. See
 
 ## Install
 
-### Option A — install the released CLI
-
 ```bash
-# Latest release (substitute the version):
-npm install -g https://github.com/inline-studio/daedalus/releases/download/v0.1.0/daedalus-0.1.0.tgz
-
+npm install -g github:inline-studio/daedalus
 dae --version
 ```
 
-`dae` and `daedalus` are both installed (same binary). Use whichever reads better.
+The `prepare` hook builds the TypeScript automatically. Both `dae` and `daedalus` are
+installed as aliases — use whichever reads better.
 
-### Option B — install directly from git
+Once installed, keep it current with:
 
 ```bash
-npm install -g github:inline-studio/daedalus
-# or pin a tag/branch:
-npm install -g github:inline-studio/daedalus#main
+dae update
 ```
 
-The `prepare` lifecycle hook runs `npm run build` automatically, so the bin is ready
-to call right after install.
-
-### Option C — clone for development
+### Clone for development
 
 ```bash
 git clone git@github.com:inline-studio/daedalus.git
