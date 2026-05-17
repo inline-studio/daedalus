@@ -1,15 +1,14 @@
 name: CI
 
-# Runs tests on every push and PR.
-# On a push to main, stamps the version as {base}-{run_number} (e.g. 0.1.0-42),
-# packs, and publishes a GitHub Release. Every push to main produces a new release.
+# Runs only on pushes to main (and manual dispatch).
+# Each main push: typechecks, builds, runs CI-scope smoke tests, stamps the version as
+# {base}-{run_number} (e.g. 0.1.0-42), packs, and publishes a GitHub Release.
 # The release always includes daedalus-latest.tgz for a permanent versionless install URL:
 #   npm install -g https://github.com/inline-studio/daedalus/releases/latest/download/daedalus-latest.tgz
 
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
