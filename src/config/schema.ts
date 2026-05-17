@@ -26,6 +26,14 @@ export type ProvidersConfig = z.infer<typeof ProvidersConfigSchema>;
 
 export const RuntimeConfigSchema = z.object({
   default: z.enum(["host", "docker"]).default("host"),
+  // Where the AGENT itself runs (not the tools an agent uses).
+  //   "process"   — agents run in the same Node process as the supervisor (host mode;
+  //                 simplest; what you want for local dev). Subagents are in-process too.
+  //   "container" — supervisor spawns a fresh docker container per agent turn via the
+  //                 mounted docker.sock. Subagents inside those containers do the same
+  //                 thing recursively. This is what docker-compose.yml sets up.
+  // Overridable at runtime via the DAE_DISPATCHER env var (set by docker-compose).
+  dispatcher: z.enum(["process", "container"]).default("process"),
   docker: z
     .object({
       // Path to the docker binary. If unset, the runtime tries `docker` on PATH and

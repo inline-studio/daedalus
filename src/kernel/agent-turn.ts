@@ -1,0 +1,268 @@
+import path from "node:path";
+import type { ArtemisConfig } from "../config/schema.js";
+import type { Message, ToolUsePart, ToolResultPart } from "../types.js";
+import { Kernel } from "./agent.js";
+import { buildProvider } from "../providers/index.js";
+import { buildRuntime } from "../runtime/factory.js";
+import { selectBuiltins } from "../tools/registry.js";
+import { askUserTool } from "../tools/ask-user.js";
+import { composeSystemPrompt } from "../brain/composer.js";
+import { loadSkill } from "../brain/skills.js";
+import { loadAgent } from "../brain/agents.js";
+import { resolveProviderKey } from "../providers/resolve.js";
+import { buildSecretsBackend } from "../secrets/store/factory.js";
+import { connectMcpServer, type ConnectedServer } from "../mcp/client.js";
+import { loadMcpConfig } from "../mcp/loader.js";
+import { SessionStore, type PersistedMessage } from "../sessions/store.js";
+import { AttachmentStore } from "../attachments/store.js";
+import { readAttachmentTool } from "../tools/attachment.js";
+import { buildSpawnSubagentTool } from "./orchestrator.js";
+import { buildDispatcher } from "../dispatch/factory.js";
+import type { AgentDispatcher, DispatchResult } from "../dispatch/base.js";
+import { log } from "../log.js";
+
+// Single-turn agent runner. Invoked in two contexts:
+//
+//   1. In-process — by InProcessAgentDispatcher, inside the supervisor (host mode)
+//      or the parent agent's container (subagent call landing back in-process).
+//
+//   2. In an agent container — by the `dae agent-turn` subcommand, where this is the
+//      entire job of the container's lifetime: read session, run one kernel turn,
+//      persist response, exit.
+//
+// The caller is responsible for having already appended the user's message that
+// triggered this turn (or the tool_result that answers a pending ask_user) to the
+// session before invoking us.
+export interface RunAgentTurnInput {
+  config: ArtemisConfig;
+  agentName: string;
+  sessionId: string;
+  userId: string;
+  isSubagent: boolean;
+}
+
+export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchResult> {
+  const { config, agentName, sessionId, userId, isSubagent } = input;
+
+  // 1. Load the agent manifest + body from the brain.
+  const loaded = await loadAgent(config.brain.path, agentName);
+  const agent = loaded.manifest;
+  const agentBody = loaded.body;
+
+  // 2. Open the session store. In docker mode the sqlite file is on a mounted
+  // volume shared with the supervisor; reading + writing here is the same DB.
+  const sessions = new SessionStore(config.sessions.dbPath);
+  try {
+    const attachments = new AttachmentStore(config.sessions.attachmentsPath);
+    await attachments.ensureDir();
+
+    // 3. Skills + system prompt
+    const skills = (
+      await Promise.all(
+        agent.skills.map((s) => loadSkill(config.brain.path, s, config.brain.writable)),
+      )
+    ).filter((s): s is NonNullable<typeof s> => s !== null);
+    await hydrateSkillSecrets(config, skills);
+
+    const system = await composeSystemPrompt({
+      brainPath: config.brain.path,
+      agent,
+      agentBody,
+      skills,
+      identity: config.identity.nickname
+        ? { name: config.identity.name, nickname: config.identity.nickname }
+        : { name: config.identity.name },
+      isSubagent,
+    });
+
+    // 4. Resolve provider API key and build the provider client.
+    const secretsBackend = await buildSecretsBackend(config, { envFileBaseDir: process.cwd() });
+    await resolveProviderKey(agent, config, secretsBackend);
+    const provider = buildProvider(agent, config);
+
+    // 5. Runtime for tool exec. In docker mode this is the agent's own container,
+    // so HostRuntime runs commands locally inside the container. Per-agent docker
+    // bind/network overrides still apply via the manifest's container block.
+    const runtime = buildRuntime(agent, config);
+
+    // 6. MCP — connect everything this agent declares + auto-injected memory MCP.
+    // In docker mode these are typically HTTP endpoints reachable on the shared
+    // docker network (e.g. http://mempalace:11364/mcp).
+    const mcpServers = await connectAgentMcp(config, agent.mcpServers);
+
+    // 7. Build built-in tools strictly per the manifest. Empty list = no tools
+    // (was previously "all" — that was a security footgun for subagents).
+    const builtinTools = selectBuiltins(agent.tools, config);
+    builtinTools.push(readAttachmentTool(attachments));
+    if (isSubagent) {
+      // Subagents get ask_user so they can bubble questions up to the orchestrator.
+      builtinTools.push(askUserTool);
+    }
+
+    // Subagent spawning. Subagents themselves can spawn further subagents IF
+    // their manifest declares any.
+    const dispatcher: AgentDispatcher = buildDispatcher(config);
+    const orchestratorTool = buildSpawnSubagentTool({
+      config,
+      parent: agent,
+      sessions,
+      userId,
+      dispatcher,
+    });
+    if (orchestratorTool) builtinTools.push(orchestratorTool);
+
+    // 8. Read history tail and run kernel.
+    const tail = sessions.tail(sessionId, config.sessions.historyLimit);
+    const messages = await prepareMessagesForTurn(tail);
+
+    const kernel = new Kernel({
+      provider,
+      model: agent.model,
+      system,
+      builtinTools,
+      mcpServers,
+      toolContext: {
+        runtime,
+        brainPath: config.brain.path,
+        brainWritable: config.brain.writable,
+        workspacePath: path.resolve(process.cwd()),
+        agentName: agent.name,
+        ...(config.runtime.shared.enabled
+          ? {
+              shared: {
+                hostPath: config.runtime.shared.hostPath,
+                containerPath: config.runtime.shared.containerPath,
+              },
+            }
+          : {}),
+      },
+      maxTurns: agent.maxTurns,
+      maxTokens: agent.maxTokens,
+      ...(agent.temperature !== undefined ? { temperature: agent.temperature } : {}),
+    });
+
+    const result = await kernel.runWithMessages(messages);
+
+    // 9. Persist whatever the kernel produced beyond the existing tail.
+    const newMessages = result.messages.slice(messages.length);
+    for (const m of newMessages) {
+      sessions.appendMessage({ sessionId, role: m.role, content: m.content });
+    }
+
+    // Tear down MCP connections we opened (HTTP transport is per-connection cheap;
+    // in process mode the caller may have shared servers we don't own — we did open
+    // our own here, so close them).
+    for (const s of mcpServers.values()) {
+      await s.close().catch(() => undefined);
+    }
+
+    if (result.pendingQuestion) {
+      return {
+        status: "pending_question",
+        question: result.pendingQuestion.question,
+        turns: result.turns,
+      };
+    }
+    return { status: "complete", finalText: result.finalText, turns: result.turns };
+  } finally {
+    sessions.close();
+  }
+}
+
+// Tail conversion + resume-from-ask_user wiring. If the most recent assistant
+// message ends in an unanswered ask_user, the tail already contains a user-side
+// tool_result appended by the caller — we just feed everything to the kernel.
+async function prepareMessagesForTurn(tail: PersistedMessage[]): Promise<Message[]> {
+  return tail
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({ role: m.role, content: m.content }));
+}
+
+// Convenience: the agent-turn entrypoint expects the latest persisted user message
+// to be the trigger for this turn. If a previous assistant message had an open
+// ask_user tool_use, callers should have already appended a tool_result before
+// invoking us — that's the resume path.
+//
+// Exported so callers (supervisor's ingest path; subagent dispatchers) can use the
+// same logic to detect pending questions consistently.
+export function findPendingAskUser(
+  messages: Message[],
+): { toolUseId: string } | null {
+  if (messages.length === 0) return null;
+  const last = messages[messages.length - 1]!;
+  if (last.role !== "assistant") return null;
+  const askUse = last.content.find(
+    (c): c is ToolUsePart => c.type === "tool_use" && c.name === "ask_user",
+  );
+  return askUse ? { toolUseId: askUse.id } : null;
+}
+
+// Build a user message wrapping a tool_result for an open ask_user. Used by the
+// subagent-resume path: the parent's response to the question becomes the answer.
+export function buildResumeMessage(toolUseId: string, answer: string): Message {
+  const part: ToolResultPart = {
+    type: "tool_result",
+    toolUseId,
+    content: answer,
+  };
+  return { role: "user", content: [part] };
+}
+
+// Connect each MCP server this agent declares. Auto-injects the MemPalace HTTP
+// MCP when localHttp.enabled is true so every agent gets memory by default.
+async function connectAgentMcp(
+  config: ArtemisConfig,
+  declared: string[],
+): Promise<Map<string, ConnectedServer>> {
+  const out = new Map<string, ConnectedServer>();
+  const allDefs = await loadMcpConfig(config.mcp.configPath);
+
+  // Merge in the implicit MemPalace MCP if the config has it enabled.
+  const lh = config.mempalace?.localHttp;
+  if (lh?.enabled && !allDefs["memory"] && !allDefs["mempalace"]) {
+    allDefs["memory"] = {
+      url: `http://${lh.host}:${lh.port}${lh.urlPath}`,
+      transport: "http",
+      args: [],
+      env: {},
+      headers: {},
+    };
+  }
+
+  // Union: agent's declared + implicit "memory" (every agent gets memory by default).
+  const wanted = new Set<string>(declared);
+  if (allDefs["memory"]) wanted.add("memory");
+
+  for (const name of wanted) {
+    const def = allDefs[name];
+    if (!def) {
+      log.warn({ name }, "MCP server requested but not found in mcp config");
+      continue;
+    }
+    try {
+      out.set(name, await connectMcpServer(name, def));
+    } catch (err) {
+      log.error({ name, err }, "MCP connection failed");
+    }
+  }
+  return out;
+}
+
+async function hydrateSkillSecrets(
+  config: ArtemisConfig,
+  skills: Array<{ manifest: { name: string; requires: { secrets: string[] } } }>,
+): Promise<void> {
+  const needed = new Set<string>();
+  for (const s of skills) for (const n of s.manifest.requires.secrets) needed.add(n);
+  if (needed.size === 0) return;
+  const missing: string[] = [];
+  let backend: Awaited<ReturnType<typeof buildSecretsBackend>> | null = null;
+  for (const n of needed) {
+    if (process.env[n]) continue;
+    if (!backend) backend = await buildSecretsBackend(config, { envFileBaseDir: process.cwd() });
+    const v = await backend.get(n).catch(() => null);
+    if (!v) missing.push(n);
+    else process.env[n] = v;
+  }
+  if (missing.length) log.warn({ missing }, "skill secrets missing");
+}

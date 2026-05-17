@@ -68,6 +68,43 @@ program
     log.info({ turns: result.turns }, "run complete");
   });
 
+// In-container single-turn entrypoint. Called by ContainerAgentDispatcher to
+// run one turn of one agent inside a fresh container. The session's inbound
+// message has already been persisted by the caller — we just read history,
+// run the kernel, append the response, and print a JSON DispatchResult on stdout.
+//
+// Not really for human use; if you want to test it from a shell make sure the
+// session/user already exist.
+program
+  .command("agent-turn")
+  .description("(internal) run one turn of one agent against an existing session — used by the container dispatcher")
+  .requiredOption("--agent <name>", "agent name (from brain/agents)")
+  .requiredOption("--session <id>", "session id (the dispatcher caller persisted the inbound msg)")
+  .requiredOption("--user <id>", "user id (for subagent session keying)")
+  .option("--subagent", "system-prompt voice: 'you are operating as a subagent'", false)
+  .action(
+    async (opts: { agent: string; session: string; user: string; subagent: boolean }) => {
+      const config = loadConfig(program.opts().config);
+      await applyOneCli(config.onecli);
+      const { runAgentTurn } = await import("./kernel/agent-turn.js");
+      try {
+        const result = await runAgentTurn({
+          config,
+          agentName: opts.agent,
+          sessionId: opts.session,
+          userId: opts.user,
+          isSubagent: Boolean(opts.subagent),
+        });
+        // The container dispatcher scans stdout bottom-up for the JSON line.
+        // Keep this the LAST thing we write.
+        process.stdout.write(JSON.stringify(result) + "\n");
+      } catch (err) {
+        log.error({ err, agent: opts.agent }, "agent-turn failed");
+        process.exit(1);
+      }
+    },
+  );
+
 program
   .command("agents")
   .description("list agents in the brain repo")

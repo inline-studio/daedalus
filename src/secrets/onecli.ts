@@ -29,13 +29,19 @@ export async function applyOneCli(config: OneCliConfig): Promise<void> {
     return;
   }
 
+  // Per-process agent identity. The supervisor runs as config.agent (default
+  // "daedalus"); per-message agent containers spawned by ContainerAgentDispatcher
+  // set DAE_ONECLI_AGENT to the specific agent's name so OneCLI scopes credential
+  // injection to whatever THAT agent has been granted — not the supervisor.
+  const agentIdentifier = process.env.DAE_ONECLI_AGENT ?? config.agent;
+
   const onecli = new OneCLI({ url: config.baseUrl, apiKey });
   let bundle: Awaited<ReturnType<typeof onecli.getContainerConfig>>;
   try {
-    bundle = await onecli.getContainerConfig(config.agent);
+    bundle = await onecli.getContainerConfig(agentIdentifier);
   } catch (err) {
     log.error(
-      { err, baseUrl: config.baseUrl, agent: config.agent },
+      { err, baseUrl: config.baseUrl, agent: agentIdentifier },
       "OneCLI getContainerConfig failed — outbound traffic will NOT be proxied. Check that the agent exists and the daemon API key is valid.",
     );
     return;
@@ -80,7 +86,7 @@ export async function applyOneCli(config: OneCliConfig): Promise<void> {
   process.env.NODE_EXTRA_CA_CERTS = caPath;
 
   log.info(
-    { proxy: redactProxyUrl(proxyUrl), agent: config.agent, caPath },
+    { proxy: redactProxyUrl(proxyUrl), agent: agentIdentifier, caPath },
     "OneCLI proxy enabled (MITM CA trusted via undici requestTls)",
   );
 }
