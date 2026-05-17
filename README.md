@@ -72,6 +72,20 @@ npm install
 npm run link:cli       # build + npm link in one step; both `dae` and `daedalus` go global
 ```
 
+### Linux / Ubuntu — PATH note
+
+After `npm install -g`, the `dae` binary lands in `$(npm config get prefix)/bin`. On
+Ubuntu that directory is often not in `$PATH` by default. One-time fix:
+
+```bash
+mkdir -p ~/.npm-global
+npm config set prefix '~/.npm-global'
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+Then re-run the install command and `dae --version` should work.
+
 ### Prerequisites
 
 - **Node.js 24+** (LTS). Daedalus uses `node:sqlite` and other 24-era APIs.
