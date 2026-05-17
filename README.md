@@ -6,7 +6,7 @@ Daedalus is the platform; **your assistant is whatever you name it** (default `A
 The two are deliberately separated — Daedalus is the architecture; the persona is the
 character that performs on it.
 
-[![test](https://github.com/inline-studio/daedalus/actions/workflows/test.yml/badge.svg)](https://github.com/inline-studio/daedalus/actions/workflows/test.yml)
+[![CI](https://github.com/inline-studio/daedalus/actions/workflows/ci.yml/badge.svg)](https://github.com/inline-studio/daedalus/actions/workflows/ci.yml)
 
 ## Why
 
@@ -385,7 +385,7 @@ Test scopes are defined in [scripts/test.mjs](scripts/test.mjs):
 
 ## Releases
 
-Tags matching `v*` trigger [.github/workflows/release.yml](.github/workflows/release.yml),
+Merging to main triggers [.github/workflows/ci.yml](.github/workflows/ci.yml),
 which:
 
 1. Runs the CI test suite
