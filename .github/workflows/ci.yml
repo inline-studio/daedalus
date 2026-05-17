@@ -1,10 +1,10 @@
 name: CI
 
 # Runs tests on every push and PR.
-# On a push to main, also packs and publishes a GitHub Release using the
-# version in package.json — skipped if that tag already exists.
+# On a push to main, stamps the version as {base}-{run_number} (e.g. 0.1.0-42),
+# packs, and publishes a GitHub Release. Every push to main produces a new release.
 # Install the release with:
-#   npm install -g https://github.com/inline-studio/daedalus/releases/download/vX.Y.Z/daedalus-X.Y.Z.tgz
+#   npm install -g https://github.com/inline-studio/daedalus/releases/download/vX.Y.Z-N/daedalus-X.Y.Z-N.tgz
 
 on:
   push:
@@ -42,29 +42,23 @@ jobs:
 
       # --- Release steps: main branch pushes only ---
 
+      - name: Stamp build version
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          BASE=$(node -p "require('./package.json').version.replace(/-\d+$/, '')")
+          npm pkg set version="${BASE}-${{ github.run_number }}"
+
       - name: Read version
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         id: pkg
         run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
-      - name: Check if tag already exists
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        id: tag_check
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "v${{ steps.pkg.outputs.version }}" &>/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Pack tarball
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.tag_check.outputs.exists == 'false'
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: npm pack
 
       - name: Create GitHub Release
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.tag_check.outputs.exists == 'false'
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.pkg.outputs.version }}

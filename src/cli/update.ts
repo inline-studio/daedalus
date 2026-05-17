@@ -16,12 +16,20 @@ function currentVersion(): string {
 }
 
 function semverGt(a: string, b: string): boolean {
-  const parse = (v: string) => v.replace(/^v/, "").split(".").map(Number);
-  const [aMaj = 0, aMin = 0, aPat = 0] = parse(a);
-  const [bMaj = 0, bMin = 0, bPat = 0] = parse(b);
-  if (aMaj !== bMaj) return aMaj > bMaj;
-  if (aMin !== bMin) return aMin > bMin;
-  return aPat > bPat;
+  const parse = (v: string) => {
+    const s = v.replace(/^v/, "");
+    const dash = s.indexOf("-");
+    const base = dash >= 0 ? s.slice(0, dash) : s;
+    const build = dash >= 0 ? parseInt(s.slice(dash + 1), 10) : 0;
+    const [maj = 0, min = 0, pat = 0] = base.split(".").map(Number);
+    return { maj, min, pat, build };
+  };
+  const av = parse(a);
+  const bv = parse(b);
+  if (av.maj !== bv.maj) return av.maj > bv.maj;
+  if (av.min !== bv.min) return av.min > bv.min;
+  if (av.pat !== bv.pat) return av.pat > bv.pat;
+  return av.build > bv.build;
 }
 
 export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
