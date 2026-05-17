@@ -22,16 +22,21 @@ import { ServiceUnsupported } from "./service/base.js";
 import { SERVICE_SPECS } from "./service/specs.js";
 import { runServiceInstallWizard } from "./service/wizard.js";
 import { exportMempalace } from "./cli/export-mempalace.js";
+import { runUpdate } from "./cli/update.js";
 import prompts from "prompts";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { log } from "./log.js";
+
+const _require = createRequire(import.meta.url);
+const _pkg = _require("../package.json") as { version: string };
 
 const program = new Command();
 
 program
   .name("dae")
   .description("SDK-agnostic agent runner")
-  .version("0.1.0")
+  .version(_pkg.version)
   .option("-c, --config <path>", "path to daedalus.config.yaml");
 
 program
@@ -595,6 +600,14 @@ program
     }
     console.error(`Unknown export target: ${what}. Known: mempalace`);
     process.exit(2);
+  });
+
+program
+  .command("update")
+  .description("check for a newer release and install it")
+  .option("--check", "check for updates without installing")
+  .action(async (opts: { check?: boolean }) => {
+    await runUpdate(opts);
   });
 
 program
