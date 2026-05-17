@@ -45,7 +45,7 @@ smoke-tested across **14 smoke suites** covering ~150 assertions. See
 
 ```bash
 # Latest release (substitute the version):
-npm install -g https://github.com/inline-studio/daedalus-/releases/download/v0.1.0/daedalus-0.1.0.tgz
+npm install -g https://github.com/inline-studio/daedalus/releases/download/v0.1.0/daedalus-0.1.0.tgz
 
 dae --version
 ```
@@ -55,9 +55,9 @@ dae --version
 ### Option B — install directly from git
 
 ```bash
-npm install -g github:inline-studio/daedalus-
+npm install -g github:inline-studio/daedalus
 # or pin a tag/branch:
-npm install -g github:inline-studio/daedalus-#main
+npm install -g github:inline-studio/daedalus#main
 ```
 
 The `prepare` lifecycle hook runs `npm run build` automatically, so the bin is ready
@@ -66,8 +66,8 @@ to call right after install.
 ### Option C — clone for development
 
 ```bash
-git clone git@github.com:inline-studio/daedalus-.git
-cd daedalus-
+git clone git@github.com:inline-studio/daedalus.git
+cd daedalus
 npm install
 npm run link:cli       # build + npm link in one step; both `dae` and `daedalus` go global
 ```
@@ -398,7 +398,7 @@ Users install with `npm install -g <release-tarball-url>`.
 ## Contributing / development
 
 ```bash
-git clone git@github.com:inline-studio/daedalus-.git
+git clone git@github.com:inline-studio/daedalus.git
 cd daedalus-
 npm install                                 # also runs `prepare` → builds dist/
 npm run link:cli                            # build + global link
