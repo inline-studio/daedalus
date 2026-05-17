@@ -29,6 +29,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
     "@modelcontextprotocol/sdk": "^1.0.4",
+    "@onecli-sh/sdk": "^0.2.0",
     "chokidar": "^4.0.1",
     "commander": "^12.1.0",
     "croner": "^9.0.0",
