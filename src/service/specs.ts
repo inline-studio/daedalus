@@ -45,7 +45,7 @@ export const SERVICE_SPECS: Record<string, SpecBuilder> = {
         name: "dae-whisper",
         description: "faster-whisper-server in Docker (STT) — managed by daedalus",
         exec: "docker",
-        args: ["run", "--rm", "-p", `${port}:8000`, "ghcr.io/fedirz/faster-whisper-server:latest-cpu"],
+        args: ["run", "--rm", "-p", `${port}:8000`, "ghcr.io/speaches-ai/speaches:latest-cpu"],
         restart: "on-failure",
         restartDelaySec: 5,
         logsDir: LOGS_DIR,

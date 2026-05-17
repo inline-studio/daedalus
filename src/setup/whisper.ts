@@ -24,7 +24,8 @@ import {
 // so "local" and "openai" differ only in baseUrl + apiKey, not in implementation.
 
 // CPU image — use latest-cuda for NVIDIA GPU hosts.
-const WHISPER_DOCKER_IMAGE = "ghcr.io/fedirz/faster-whisper-server:latest-cpu";
+// speaches is the successor to fedirz/faster-whisper-server; same OpenAI-compatible API shape.
+const WHISPER_DOCKER_IMAGE = "ghcr.io/speaches-ai/speaches:latest-cpu";
 
 async function isOnPath(cmd: string): Promise<boolean> {
   try {
