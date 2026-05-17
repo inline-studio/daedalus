@@ -1,0 +1,74 @@
+name: CI
+
+# Runs tests on every push and PR.
+# On a push to main, also packs and publishes a GitHub Release using the
+# version in package.json — skipped if that tag already exists.
+# Install the release with:
+#   npm install -g https://github.com/inline-studio/daedalus/releases/download/vX.Y.Z/daedalus-X.Y.Z.tgz
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke tests (CI scope)
+        env:
+          DAE_TEST_SCOPE: ci
+        run: npm test
+
+      # --- Release steps: main branch pushes only ---
+
+      - name: Read version
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        id: pkg
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Check if tag already exists
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        id: tag_check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.pkg.outputs.version }}" &>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Pack tarball
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.tag_check.outputs.exists == 'false'
+        run: npm pack
+
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.tag_check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.pkg.outputs.version }}
+          files: 'daedalus-*.tgz'
+          generate_release_notes: true
+          draft: false
+          prerelease: false
