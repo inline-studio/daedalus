@@ -49,10 +49,23 @@ export const RuntimeConfigSchema = z.object({
 });
 export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
 
+// OneCLI v1.x is a credential-injecting HTTPS-MITM gateway. At startup we call
+// GET <baseUrl>/api/container-config?agent=<agent> via the official @onecli-sh/sdk;
+// the response carries the proxy URL, the env vars to set, and OneCLI's MITM CA cert.
+// The proxy URL and CA are NOT configured here — they come from the gateway itself,
+// so this stays correct across OneCLI versions and per-install CA regeneration.
 export const OneCliConfigSchema = z.object({
   enabled: z.boolean().default(false),
-  proxy: z.string().url().default("http://localhost:10255"),
-  token: z.string().optional(),
+  // Dashboard / REST URL. Defaults to the standard OneCLI Docker compose port.
+  baseUrl: z.string().url().default("http://localhost:10254"),
+  // OneCLI agent identifier — selects which agent's policy + assigned secrets apply.
+  // Create one with `onecli agents create --name Daedalus --identifier daedalus`.
+  agent: z.string().default("daedalus"),
+  // Daemon API key (oc_...). Resolution order at runtime:
+  //   1. this field   2. process.env.ONECLI_API_KEY   3. ~/.onecli/credentials/api-key
+  // NOT the per-agent token (aoc_...); the SDK auths with the user key and selects
+  // the agent via query string.
+  apiKey: z.string().optional(),
 });
 export type OneCliConfig = z.infer<typeof OneCliConfigSchema>;
 
@@ -201,7 +214,11 @@ export const ArtemisConfigSchema = z.object({
   identity: IdentityConfigSchema.default({ name: "Artemis" }),
   providers: ProvidersConfigSchema.default({}),
   runtime: RuntimeConfigSchema.default({ default: "host" }),
-  onecli: OneCliConfigSchema.default({ enabled: false, proxy: "http://localhost:10255" }),
+  onecli: OneCliConfigSchema.default({
+    enabled: false,
+    baseUrl: "http://localhost:10254",
+    agent: "daedalus",
+  }),
   secrets: SecretsConfigSchema.default({
     backend: "auto",
     envFile: { path: ".env.local" },

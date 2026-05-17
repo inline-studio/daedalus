@@ -46,7 +46,7 @@ program
   .option("--stdin", "read prompt from stdin")
   .action(async (agentName: string, opts: { prompt: string; stdin?: boolean }) => {
     const config = loadConfig(program.opts().config);
-    applyOneCli(config.onecli);
+    await applyOneCli(config.onecli);
 
     let prompt = opts.prompt;
     if (opts.stdin) {
@@ -102,7 +102,7 @@ program
   .description("run loaded schedules in the foreground (Ctrl-C to stop)")
   .action(async () => {
     const config = loadConfig(program.opts().config);
-    applyOneCli(config.onecli);
+    await applyOneCli(config.onecli);
     const schedules = await loadSchedules(config.brain.path);
     if (schedules.length === 0) {
       console.error("No schedules found in brain/schedules/.");

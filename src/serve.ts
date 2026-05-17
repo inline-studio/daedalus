@@ -17,7 +17,7 @@ import { log } from "./log.js";
 // MCP servers are connected once at startup (union of every channel-default-agent's needs)
 // and shared across runs.
 export async function serve(config: ArtemisConfig): Promise<void> {
-  applyOneCli(config.onecli);
+  await applyOneCli(config.onecli);
 
   const sessions = new SessionStore(config.sessions.dbPath);
   const attachments = new AttachmentStore(config.sessions.attachmentsPath);

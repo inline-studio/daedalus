@@ -17,7 +17,7 @@ const expect = (label, ok, detail = "") => {
 const list = spawnSync("node", ["dist/index.js", "setup", "--list"], { encoding: "utf8" });
 expect(
   "setup --list contains onecli",
-  /onecli\s+OneCLI proxy/.test(list.stdout),
+  /onecli\s+OneCLI gateway/.test(list.stdout),
   list.stdout.split("\n").find((l) => l.trim().startsWith("onecli")) ?? "(missing)",
 );
 

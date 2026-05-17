@@ -3,6 +3,7 @@ import type { ArtemisConfig } from "../../config/schema.js";
 import type { SecretsBackend } from "./base.js";
 import { EnvFileSecretsBackend } from "./env-file-backend.js";
 import { OneCliSecretsBackend } from "./onecli-backend.js";
+import { resolveDaemonApiKey } from "../onecli.js";
 import { log } from "../../log.js";
 
 export interface BuildSecretsOptions {
@@ -27,9 +28,13 @@ export async function buildSecretsBackend(
 
   if (cfg.backend === "env-file") return envBackend;
 
+  // Daemon API key is shared with the runtime proxy (config.onecli.apiKey, env,
+  // ~/.onecli/credentials/api-key). secrets.onecli.token is honored as an explicit
+  // override but most users won't need to set it separately.
+  const token = cfg.onecli.token ?? resolveDaemonApiKey(config.onecli);
   const oneCli = new OneCliSecretsBackend({
     baseUrl: cfg.onecli.baseUrl,
-    ...(cfg.onecli.token ? { token: cfg.onecli.token } : {}),
+    ...(token ? { token } : {}),
   });
 
   if (cfg.backend === "onecli") return oneCli;

@@ -5,7 +5,7 @@ import { log } from "../log.js";
 // Canonical env-var name per provider. Resolution chain at agent-start:
 //   1. config.providers.<provider>.apiKey  (explicit YAML override; advanced)
 //   2. process.env[CANONICAL_NAME]         (shell, .env, .env.local)
-//   3. SecretsBackend.get(CANONICAL_NAME)  (env-file backend, OneCLI store, etc.)
+//   3. SecretsBackend.get(CANONICAL_NAME)  (env-file backend only — OneCLI never reveals)
 //   4. OneCLI proxy enabled?               (send a placeholder; gateway injects real key)
 //   5. fail loudly with a fix-it hint
 //
