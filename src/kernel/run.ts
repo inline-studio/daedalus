@@ -12,6 +12,7 @@ import { buildSpawnSubagentTool } from "./orchestrator.js";
 import { buildSecretsBackend } from "../secrets/store/factory.js";
 import { resolveProviderKey } from "../providers/resolve.js";
 import { SessionStore } from "../sessions/store.js";
+import { buildDispatcher } from "../dispatch/factory.js";
 import { log } from "../log.js";
 
 export interface RunAgentInput {
@@ -94,12 +95,13 @@ export async function runAgent(input: RunAgentInput): Promise<{ finalText: strin
   // path, with a fixed local user_id matching the cli channel.
   const sessions = new SessionStore(config.sessions.dbPath);
   const userId = sessions.resolveUser("cli", "local");
+  const dispatcher = buildDispatcher(config);
   const orchestratorTool = buildSpawnSubagentTool({
     config,
     parent: agent,
-    mcpServers,
     sessions,
     userId,
+    dispatcher,
   });
   if (orchestratorTool) builtinTools.push(orchestratorTool);
 

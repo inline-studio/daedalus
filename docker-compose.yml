@@ -1,0 +1,108 @@
+# Reference docker-compose for running daedalus in "docker mode".
+#
+# Architecture:
+#   - daedalus     — supervisor (long-lived `dae serve`); spawns one agent container
+#                    per inbound message via the mounted docker socket.
+#   - onecli       — credential gateway (already deployed standalone on most installs;
+#                    referenced here for reference, comment out if it's external).
+#   - mempalace    — shared HTTP-MCP memory store every agent connects to.
+#
+# All services join the `daedalus` network so they reach each other by container name
+# (e.g. http://onecli:10254, http://mempalace:11364). Agent containers spawned by the
+# supervisor join the same network — their HTTPS_PROXY ends up pointing at the OneCLI
+# service name rather than `host.docker.internal`.
+#
+# Bring up: `docker compose up -d`
+# Logs:     `docker compose logs -f daedalus`
+
+name: daedalus
+
+services:
+  daedalus:
+    image: ${DAEDALUS_IMAGE:-ghcr.io/inline-studio/daedalus:latest}
+    # Build locally with `docker compose build daedalus` if you want a from-source image.
+    build:
+      context: .
+      args:
+        DAEDALUS_VERSION: ${DAEDALUS_VERSION:-latest}
+    restart: unless-stopped
+    init: true
+    environment:
+      DAE_CONFIG: /etc/daedalus/config.yaml
+      # OneCLI bootstrap — supervisor needs the daemon API key to fetch the gateway
+      # bundle at startup. The same key is forwarded into each agent container via
+      # ContainerAgentDispatcher.
+      ONECLI_API_KEY: ${ONECLI_API_KEY:?set ONECLI_API_KEY in .env}
+      # Tells the supervisor we're in docker mode and lets it pass the right network
+      # name + supervisor image into the agent containers it spawns.
+      DAE_DISPATCHER: docker
+      DAE_AGENT_IMAGE_DEFAULT: ${DAEDALUS_IMAGE:-ghcr.io/inline-studio/daedalus:latest}
+      DAE_AGENT_NETWORK: daedalus
+    volumes:
+      # Brain (the agent personas + skills + souls + mcp config). Mount RO by default.
+      - ${BRAIN_PATH:?set BRAIN_PATH in .env}:/brain:ro
+      # Per-config dir mount (config.yaml, .env.local). RO.
+      - ${DAEDALUS_CONFIG_DIR:?set DAEDALUS_CONFIG_DIR in .env}:/etc/daedalus:ro
+      # Persistent state: sessions sqlite, attachments. Owned by the dae user inside.
+      - daedalus-data:/data
+      # Shared workspace, RW for every agent. The cross-agent scratch space.
+      - daedalus-shared:/shared
+      # Docker socket so the supervisor can `docker run` per-agent containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - daedalus
+    depends_on:
+      - mempalace
+    # Run as the host UID/GID so bind-mounted brain files stay owned by the host user.
+    # Adjust if your host UID isn't 1000.
+    user: "${UID:-1000}:${DOCKER_GID:-998}"
+
+  # Reference MemPalace MCP — every agent gets this wired automatically when
+  # daedalus is in docker mode (see src/mcp/loader.ts).
+  mempalace:
+    image: ghcr.io/inline-studio/mempalace-mcp:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11364:11364"
+    volumes:
+      - mempalace-data:/data
+    networks:
+      - daedalus
+    command: ["--transport", "http", "--host", "0.0.0.0", "--port", "11364"]
+
+  # OneCLI is typically already deployed standalone (e.g. via ~/.onecli/docker-compose.yml).
+  # Uncomment if you want it inside this same stack instead. If you DO uncomment, point
+  # `onecli.baseUrl` in your daedalus config at `http://onecli:10254`.
+  #
+  # onecli:
+  #   image: ghcr.io/onecli/onecli:latest
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:10254:10254"
+  #     - "127.0.0.1:10255:10255"
+  #   environment:
+  #     DATABASE_URL: postgresql://onecli:onecli@onecli-db:5432/onecli
+  #   depends_on: [onecli-db]
+  #   networks: [daedalus]
+  #
+  # onecli-db:
+  #   image: postgres:18-alpine
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: onecli
+  #     POSTGRES_PASSWORD: onecli
+  #     POSTGRES_DB: onecli
+  #   volumes:
+  #     - onecli-pgdata:/var/lib/postgresql
+  #   networks: [daedalus]
+
+volumes:
+  daedalus-data:
+  daedalus-shared:
+  mempalace-data:
+  # onecli-pgdata:
+
+networks:
+  daedalus:
+    name: daedalus
+    driver: bridge

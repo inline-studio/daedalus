@@ -1,19 +1,19 @@
 import type { ToolImpl, ToolContext } from "../tools/base.js";
 import type { ArtemisConfig, AgentManifest } from "../config/schema.js";
 import { loadAgent } from "../brain/agents.js";
-import type { ConnectedServer } from "../mcp/client.js";
-import { runSubagentTurn } from "./subagent-run.js";
 import type { SessionStore } from "../sessions/store.js";
+import type { AgentDispatcher } from "../dispatch/base.js";
+import { findPendingAskUser, buildResumeMessage } from "./agent-turn.js";
 
 export interface OrchestratorContext {
   config: ArtemisConfig;
   parent: AgentManifest;
-  // Reuse the parent's MCP server connections rather than respawning per subagent.
-  mcpServers: Map<string, ConnectedServer>;
-  // Session store + the resolved user_id for the human at the channel. Subagents key
-  // their own per-user memory off this so calls within the same conversation accrete.
   sessions: SessionStore;
   userId: string;
+  // The dispatcher to use for subagent turns. In host mode this is the in-process
+  // dispatcher (synchronous kernel call). In docker mode this is the container
+  // dispatcher (docker run a fresh subagent container, recursively).
+  dispatcher: AgentDispatcher;
 }
 
 // `spawn_subagent` — the orchestrator's only handle to specialists. The subagent's
@@ -65,14 +65,39 @@ export function buildSpawnSubagentTool(ctx: OrchestratorContext): ToolImpl | nul
         return { content: `subagent '${name}' is not in this agent's allowlist`, isError: true };
       }
       const sub = await loadAgent(ctx.config.brain.path, name);
-      const result = await runSubagentTurn({
-        config: ctx.config,
-        agent: sub.manifest,
-        agentBody: sub.body,
-        prompt,
+
+      // The subagent owns its own per-user session (keyed by userId + subagent name).
+      // Append the inbound turn before dispatching so the agent reads it from history.
+      const subSession = ctx.sessions.getOrCreateSession(ctx.userId, sub.manifest.name);
+      const tail = ctx.sessions.tail(subSession.id, 200);
+      const pendingAsk = findPendingAskUser(
+        tail
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({ role: m.role, content: m.content })),
+      );
+
+      if (pendingAsk) {
+        // Resuming an open ask_user: append a tool_result with the answer.
+        const resume = buildResumeMessage(pendingAsk.toolUseId, prompt);
+        ctx.sessions.appendMessage({
+          sessionId: subSession.id,
+          role: resume.role,
+          content: resume.content,
+        });
+      } else {
+        // Fresh turn: append the orchestrator's prompt as the user message.
+        ctx.sessions.appendMessage({
+          sessionId: subSession.id,
+          role: "user",
+          content: [{ type: "text", text: prompt }],
+        });
+      }
+
+      const result = await ctx.dispatcher.dispatch({
+        agentName: sub.manifest.name,
+        sessionId: subSession.id,
         userId: ctx.userId,
-        sessions: ctx.sessions,
-        mcpServers: ctx.mcpServers,
+        isSubagent: true,
       });
 
       if (result.status === "pending_question") {

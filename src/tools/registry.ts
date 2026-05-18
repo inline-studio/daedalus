@@ -24,10 +24,12 @@ export function builtinNames(): string[] {
   return [...Object.keys(STATIC_TOOLS), ...Object.keys(FACTORY_TOOLS)];
 }
 
+// Strictly per the manifest's `tools:` list. Empty list = no built-in tools.
+// (Earlier behaviour was "empty = all" — a security footgun for subagents which
+// would otherwise inherit web_fetch / web_search / write / bash by default.)
 export function selectBuiltins(names: string[], config: ArtemisConfig): ToolImpl[] {
-  const wanted = names.length === 0 ? builtinNames() : names;
   const out: ToolImpl[] = [];
-  for (const n of wanted) {
+  for (const n of names) {
     if (STATIC_TOOLS[n]) {
       out.push(STATIC_TOOLS[n]);
       continue;
