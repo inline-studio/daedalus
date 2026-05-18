@@ -28,6 +28,7 @@ const CI_SAFE = [
   "smoke-secrets",
   "smoke-suppress-warnings",
   "smoke-terminal-modes",
+  "smoke-uninstall",
   "smoke-wizard-shell",
   "smoke-service",        // directly drives renderers; no live systemctl call
   "smoke-time-awareness",

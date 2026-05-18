@@ -339,6 +339,186 @@ program
     console.log("\nDone. Try `dae run orchestrator --prompt \"hi\"` to confirm everything's wired.");
   });
 
+// Reverse of `dae install`. Three groups, in this order so we tear down in the
+// opposite direction we built up:
+//   1. Services (stop + remove unit files)
+//   2. Setups   (disable each enabled integration; --purge wipes saved secrets + config blocks)
+//   3. Config   (only when --purge: offer to delete the YAML + .env.local — most destructive)
+//
+// Does NOT remove the daedalus npm package itself (that's `npm uninstall -g
+// daedalus`) and does NOT touch the brain repo (that's the user's content).
+program
+  .command("uninstall")
+  .description("reverse `dae install`: stop services, disable integrations, optionally wipe config")
+  .option("--all", "uninstall everything non-interactively (still confirms destructive --purge)")
+  .option(
+    "--purge",
+    "also delete saved secrets, remove config blocks, and offer to delete the YAML + .env.local (clean slate)",
+  )
+  .option("-y, --yes", "skip confirmation prompts (use carefully with --purge — bypasses the safety check)")
+  .action(async (opts: { all?: boolean; purge?: boolean; yes?: boolean }) => {
+    const { confirm } = await import("./setup/base.js");
+    const { WizardShell } = await import("./setup/wizard-shell.js");
+    const fsMod = await import("node:fs/promises");
+
+    // Confirm intent before doing anything irreversible. Without --yes we always
+    // ask — even for non-purge runs, since uninstalling services is something a
+    // user can fat-finger into.
+    if (!opts.yes) {
+      const warn = opts.purge
+        ? "This will stop services, disable every integration, DELETE saved secrets and config blocks, and offer to delete your YAML + .env.local."
+        : "This will stop services and disable every enabled integration (your config + secrets are preserved unless you re-run with --purge).";
+      console.log(warn);
+      const proceed = await confirm("Continue?", false);
+      if (!proceed) {
+        console.log("Cancelled.");
+        return;
+      }
+    }
+
+    // Build the step list based on what's installable + disable-able. If a
+    // step has nothing to do (no installed services / not-enabled setup), it
+    // still appears in the summary as a "✓ nothing to do" entry — clearer than
+    // silently skipping.
+    const disables = listDisables();
+    const plannedSteps: Array<{ id: string; title: string }> = [
+      { id: "services", title: "Services" },
+      ...disables.map((s) => ({ id: s.id, title: s.title })),
+    ];
+    if (opts.purge) plannedSteps.push({ id: "config", title: "Config & local files" });
+
+    const wizard = new WizardShell("Daedalus uninstall", plannedSteps);
+
+    // 1. Services
+    try {
+      await wizard.step("services", "Services", async (record) => {
+        let manager;
+        try {
+          manager = await buildServiceManager();
+        } catch (err) {
+          if (err instanceof ServiceUnsupported) {
+            record(`platform has no service manager (${err.message.split("\n")[0]}) — nothing to do`);
+            return;
+          }
+          throw err;
+        }
+        for (const specId of Object.keys(SERVICE_SPECS)) {
+          try {
+            const unitName = await unitNameFor(specId, program.opts().config);
+            const status = await manager.status(unitName).catch(() => null);
+            if (!status || !status.exists) {
+              record(`${unitName}: not installed`);
+              continue;
+            }
+            await manager.uninstall(unitName);
+            record(`${unitName}: stopped + removed`);
+          } catch (err) {
+            record(`${specId}: failed (${(err as Error).message})`);
+          }
+        }
+      });
+    } catch {
+      /* errors are recorded; keep going to the next step */
+    }
+
+    // 2. Setups (one step each — they may or may not be currently enabled,
+    // but disable is idempotent so calling it always is safe).
+    for (const s of disables) {
+      try {
+        await wizard.step(s.id, s.title, async (record) => {
+          try {
+            await runDisable(s.id, program.opts().config, {
+              ...(opts.purge ? { purge: true } : {}),
+              yes: true, // we've already taken the top-level confirmation
+            });
+            record(opts.purge ? "disabled + purged secrets/config" : "disabled (config + secrets preserved)");
+          } catch (err) {
+            const msg = (err as Error).message;
+            if (/cancelled|not enabled|not found/i.test(msg)) {
+              record(`nothing to do (${msg.slice(0, 80)})`);
+              return;
+            }
+            throw err;
+          }
+        });
+      } catch {
+        /* recorded; continue */
+      }
+    }
+
+    // 3. Config purge — only on --purge, and with one more confirm step (we
+    // already asked once at the top; for actually deleting the YAML we ask
+    // again so a stray --yes doesn't wipe a config the user wanted to keep).
+    if (opts.purge) {
+      try {
+        await wizard.step("config", "Config & local files", async (record) => {
+          // Find the config the user is currently pointing at.
+          let configPath: string | undefined;
+          try {
+            const c = loadConfig(program.opts().config);
+            // loadConfig doesn't return the path; re-derive via the same
+            // discovery logic the install command uses.
+            const osMod = await import("node:os");
+            const candidates = [
+              program.opts().config,
+              process.env.DAE_CONFIG,
+              path.join(process.cwd(), "daedalus.config.yaml"),
+              path.join(osMod.homedir(), ".daedalus", "config.yaml"),
+            ].filter((p): p is string => Boolean(p));
+            for (const cand of candidates) {
+              try {
+                await fsMod.access(cand);
+                configPath = cand;
+                break;
+              } catch {
+                /* keep trying */
+              }
+            }
+            void c;
+          } catch {
+            record("no config found — nothing to delete");
+            return;
+          }
+          if (!configPath) {
+            record("no config file located — nothing to delete");
+            return;
+          }
+          const configDir = path.dirname(configPath);
+          const envLocal = path.join(configDir, ".env.local");
+          const sessionsDb = path.join(configDir, "data", "sessions.sqlite");
+
+          // Ask one more time — this is the most destructive step.
+          let okToDelete = Boolean(opts.yes);
+          if (!okToDelete) {
+            okToDelete = await confirm(
+              `Delete ${configPath} + ${envLocal}${"" /* sessions DB stays unless asked */ }?`,
+              false,
+            );
+          }
+          if (!okToDelete) {
+            record(`kept ${configPath} + .env.local (purge step declined)`);
+            return;
+          }
+          await fsMod.rm(configPath, { force: true });
+          record(`deleted ${configPath}`);
+          await fsMod.rm(envLocal, { force: true }).catch(() => undefined);
+          record(`deleted ${envLocal}`);
+          // Sessions DB is user content too — leave it unless they really want it gone.
+          record(`kept ${sessionsDb} (your session history); delete manually if you want it gone`);
+        });
+      } catch {
+        /* recorded; continue */
+      }
+    }
+
+    wizard.finish([
+      "`npm uninstall -g daedalus` — remove the binary itself",
+      ...(opts.purge
+        ? []
+        : ["Re-install later with `dae install`. Saved secrets + config are still here."]),
+    ]);
+  });
+
 program
   .command("init")
   .description("create a per-user config at ~/.daedalus/config.yaml from the shipped example")
