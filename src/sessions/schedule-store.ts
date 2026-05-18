@@ -58,13 +58,54 @@ export interface EnqueueArgs {
 }
 
 export class ScheduleStore {
-  private db: DatabaseSync;
-  // We keep a separate connection so the SessionStore's locking and this
-  // store's locking don't fight on the same `prepare` cache. Same file though.
+  private db!: DatabaseSync;
+  private readonly dbPath: string;
+  // See SessionStore.openConnection() for the rationale. Same problem (file
+  // gets replaced under us by a reinstall / upgrade); same defensive fstat +
+  // reopen at the top of every public method.
+  private openedInode = 0;
+  private openedDev = 0;
+
   constructor(dbPath: string) {
+    this.dbPath = dbPath;
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    this.db = new DatabaseSync(dbPath);
+    this.openConnection();
+  }
+
+  private openConnection(): void {
+    if (this.db) {
+      try {
+        this.db.close();
+      } catch {
+        /* old fd may be invalid; ignore */
+      }
+    }
+    this.db = new DatabaseSync(this.dbPath);
     this.migrate();
+    try {
+      const st = fs.statSync(this.dbPath);
+      this.openedInode = Number(st.ino);
+      this.openedDev = Number(st.dev);
+    } catch {
+      this.openedInode = 0;
+      this.openedDev = 0;
+    }
+  }
+
+  private ensureFreshConnection(): void {
+    let inode = 0;
+    let dev = 0;
+    try {
+      const st = fs.statSync(this.dbPath);
+      inode = Number(st.ino);
+      dev = Number(st.dev);
+    } catch {
+      this.openConnection();
+      return;
+    }
+    if (inode !== this.openedInode || dev !== this.openedDev) {
+      this.openConnection();
+    }
   }
 
   private migrate(): void {
@@ -90,6 +131,7 @@ export class ScheduleStore {
   }
 
   enqueue(args: EnqueueArgs): ScheduledMessage {
+    this.ensureFreshConnection();
     const id = `sched_${crypto.randomBytes(8).toString("hex")}`;
     const now = new Date().toISOString();
     const userExternalId = args.userExternalId ?? id;
@@ -114,6 +156,7 @@ export class ScheduleStore {
   }
 
   get(id: string): ScheduledMessage | null {
+    this.ensureFreshConnection();
     const row = this.db
       .prepare(`SELECT * FROM scheduled_messages WHERE id = ?`)
       .get(id) as Record<string, unknown> | undefined;
@@ -126,6 +169,7 @@ export class ScheduleStore {
   // them twice. Caller is responsible for calling markFired / reschedule /
   // markFailed after running each one.
   claimDue(asOf = new Date()): ScheduledMessage[] {
+    this.ensureFreshConnection();
     const iso = asOf.toISOString();
     const rows = this.db
       .prepare(
@@ -151,6 +195,7 @@ export class ScheduleStore {
 
   // After a successful fire of a one-shot row.
   markFired(id: string, firedAt = new Date()): void {
+    this.ensureFreshConnection();
     this.db
       .prepare(
         `UPDATE scheduled_messages
@@ -164,6 +209,7 @@ export class ScheduleStore {
 
   // After a successful fire of a recurring row — re-arm with the supplied next-fire time.
   reschedule(id: string, nextDueAt: string, firedAt = new Date()): void {
+    this.ensureFreshConnection();
     this.db
       .prepare(
         `UPDATE scheduled_messages
@@ -179,6 +225,7 @@ export class ScheduleStore {
   // If a fire fails, return the row to pending so the next tick retries. Simple
   // for now; could add backoff / max-retries later.
   markFailed(id: string): void {
+    this.ensureFreshConnection();
     this.db
       .prepare(
         `UPDATE scheduled_messages SET status = 'pending' WHERE id = ? AND status = 'firing'`,
@@ -187,6 +234,7 @@ export class ScheduleStore {
   }
 
   cancel(id: string, byAgent: string): boolean {
+    this.ensureFreshConnection();
     const r = this.db
       .prepare(
         `UPDATE scheduled_messages
@@ -199,6 +247,7 @@ export class ScheduleStore {
 
   // List active (pending / firing) schedules created by a given agent.
   listForAgent(byAgent: string): ScheduledMessage[] {
+    this.ensureFreshConnection();
     const rows = this.db
       .prepare(
         `SELECT * FROM scheduled_messages
