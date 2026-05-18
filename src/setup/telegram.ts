@@ -9,6 +9,7 @@ import {
   type DisableOptions,
   type SetupContext,
 } from "./base.js";
+import { secretPrompt } from "./secret-prompt.js";
 
 const TOKEN_REGEX = /^\d{5,}:[A-Za-z0-9_-]{30,}$/;
 
@@ -46,13 +47,11 @@ export const telegramSetup: ChannelSetup = {
     let bot: TelegramBotInfo | null = null;
     let token = "";
     while (!bot) {
-      const res = await prompts({
-        type: "password",
-        name: "token",
-        message: "Bot token from @BotFather:",
-        validate: (v: string) => TOKEN_REGEX.test(v) || "expected format <id>:<35+ char secret>",
-      });
-      token = (res.token as string | undefined) ?? "";
+      token =
+        (await secretPrompt({
+          message: "Bot token from @BotFather:",
+          validate: (v: string) => TOKEN_REGEX.test(v) || "expected format <id>:<35+ char secret>",
+        })) ?? "";
       if (!token) throw new Error("cancelled");
       try {
         process.stdout.write("validating with Telegram… ");

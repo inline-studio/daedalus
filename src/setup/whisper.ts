@@ -15,6 +15,7 @@ import {
   type DisableOptions,
   type SetupContext,
 } from "./base.js";
+import { secretPrompt } from "./secret-prompt.js";
 
 // Whisper / transcription setup.
 //
@@ -267,12 +268,9 @@ export const whisperSetup: ChannelSetup = {
           );
         }
       } else {
-        const r = await prompts({
-          type: "password",
-          name: "key",
+        apiKeyValue = ((await secretPrompt({
           message: "OpenAI API key (saved separately as WHISPER_OPENAI_API_KEY):",
-        });
-        apiKeyValue = ((r.key as string | undefined) ?? "").trim();
+        })) ?? "").trim();
         if (!apiKeyValue) throw new Error("cancelled");
         apiKeyEnvName = "WHISPER_OPENAI_API_KEY";
 

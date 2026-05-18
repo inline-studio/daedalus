@@ -9,6 +9,7 @@ import {
   type DisableOptions,
   type SetupContext,
 } from "./base.js";
+import { secretPrompt } from "./secret-prompt.js";
 
 interface PhoneInfo {
   id: string;
@@ -40,13 +41,11 @@ export const whatsappSetup: ChannelSetup = {
     console.log("  2. 'Temporary access token' (24h) or generate a permanent System User token");
     console.log("  3. 'Phone number ID' shown on the same page (a long numeric string)\n");
 
-    const tokenRes = await prompts({
-      type: "password",
-      name: "token",
-      message: "WhatsApp access token:",
-      validate: (v: string) => v.length > 30 || "token looks too short",
-    });
-    const token = (tokenRes.token as string | undefined) ?? "";
+    const token =
+      (await secretPrompt({
+        message: "WhatsApp access token:",
+        validate: (v: string) => v.length > 30 || "token looks too short",
+      })) ?? "";
     if (!token) throw new Error("cancelled");
 
     const phoneRes = await prompts({
