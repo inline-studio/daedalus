@@ -82,14 +82,52 @@ Two enforcement points:
 
 ## Scheduled tasks
 
-`brain/schedules/*.yaml` cron triggers go through the same dispatcher as channel
-messages. In docker mode that means each scheduled run spawns its own agent
-container with the agent's image, mounts, and OneCLI identity — no work
-accidentally happens in the supervisor.
+Two flavours, both go through the same dispatcher and both spawn per-agent
+containers in docker mode.
 
-Each schedule gets its own persistent session (synthetic channel `schedule`,
-external id = schedule name) so repeated fires accrete history. An
-"every 10 minutes status report" agent can see what it reported last time.
+**Static (`brain/schedules/*.yaml`).** Cron triggers loaded at supervisor
+startup. Useful for "every morning at 7 summarise yesterday."
+
+**Runtime (`schedule_message` tool).** An agent arms a callback at runtime —
+`schedule_message(when: "in 30 minutes", prompt: "remind me to ship X")` or
+`schedule_message(when: "*/10 * * * *", prompt: "report build progress")`. The
+row goes into a `scheduled_messages` sqlite table next to sessions; the
+supervisor polls it (default every 30s) and dispatches due rows. One-shots fire
+once; cron rows re-arm with their next occurrence.
+
+Agents can also `cancel_scheduled_message(id)` to call off recurring callbacks
+once the underlying work is done, or `list_scheduled_messages()` to see what's
+armed. Cancellation is **creator-scoped** — an agent can only cancel its own
+schedules, so subagents can't reach into a sibling's callbacks.
+
+Each schedule (static or runtime) gets its own persistent session — synthetic
+channel `schedule` / `scheduled`, external id = schedule name or row id — so
+repeated fires accrete history. "Every 10 minutes status report" can see what
+it reported last time.
+
+Tools to declare in an agent's manifest when you want it to schedule:
+
+```yaml
+tools:
+  - schedule_message
+  - cancel_scheduled_message
+  - list_scheduled_messages
+```
+
+Typical pattern for a long-running flow:
+
+```
+user → artemis: "build feature X"
+artemis → cypher (subagent): "build feature X, write progress to /shared/cypher.log"
+artemis → schedule_message(in: 10m, prompt: "check cypher's progress on X")
+  ... 10 min later ...
+artemis (woken by schedule fire) → reads /shared/cypher.log
+artemis → user: "still working on the migration; will update again in 10m"
+artemis → schedule_message(in: 10m, prompt: "check cypher's progress on X")
+  ... eventually cypher finishes ...
+artemis (next fire) → reads log, sees DONE, calls cancel_scheduled_message
+artemis → user: "shipped feature X"
+```
 
 ## OneCLI credential isolation per agent
 

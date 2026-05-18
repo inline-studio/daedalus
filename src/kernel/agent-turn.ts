@@ -14,6 +14,7 @@ import { buildSecretsBackend } from "../secrets/store/factory.js";
 import { connectMcpServer, type ConnectedServer } from "../mcp/client.js";
 import { loadMcpConfig } from "../mcp/loader.js";
 import { SessionStore, type PersistedMessage } from "../sessions/store.js";
+import { ScheduleStore } from "../sessions/schedule-store.js";
 import { AttachmentStore } from "../attachments/store.js";
 import { readAttachmentTool } from "../tools/attachment.js";
 import { buildSpawnSubagentTool } from "./orchestrator.js";
@@ -52,6 +53,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
   // 2. Open the session store. In docker mode the sqlite file is on a mounted
   // volume shared with the supervisor; reading + writing here is the same DB.
   const sessions = new SessionStore(config.sessions.dbPath);
+  const scheduleStore = new ScheduleStore(config.sessions.dbPath);
   try {
     const attachments = new AttachmentStore(config.sessions.attachmentsPath);
     await attachments.ensureDir();
@@ -92,7 +94,9 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
 
     // 7. Build built-in tools strictly per the manifest. Empty list = no tools
     // (was previously "all" — that was a security footgun for subagents).
-    const builtinTools = selectBuiltins(agent.tools, config);
+    // Scheduling tools (schedule_message / cancel / list) need the schedule
+    // store; pass it through deps.
+    const builtinTools = selectBuiltins(agent.tools, config, { scheduleStore });
     builtinTools.push(readAttachmentTool(attachments));
     if (isSubagent) {
       // Subagents get ask_user so they can bubble questions up to the orchestrator.
@@ -166,6 +170,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     return { status: "complete", finalText: result.finalText, turns: result.turns };
   } finally {
     sessions.close();
+    scheduleStore.close();
   }
 }
 

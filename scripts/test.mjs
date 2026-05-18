@@ -22,6 +22,7 @@ const CI_SAFE = [
   "smoke-mempalace-localhttp",
   "smoke-mempalace-remote",
   "smoke-onecli-setup",
+  "smoke-runtime-scheduling",
   "smoke-secrets",
   "smoke-service",        // directly drives renderers; no live systemctl call
   "smoke-time-awareness",
