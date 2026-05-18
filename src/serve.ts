@@ -1,6 +1,7 @@
 import type { ArtemisConfig } from "./config/schema.js";
 import { applyOneCli } from "./secrets/onecli.js";
 import { SessionStore } from "./sessions/store.js";
+import { ScheduleStore } from "./sessions/schedule-store.js";
 import { AttachmentStore } from "./attachments/store.js";
 import { NoopTranscriber, OpenAITranscriber, type Transcriber } from "./attachments/transcribe.js";
 import { MessageBus } from "./channels/bus.js";
@@ -8,6 +9,7 @@ import { buildChannels } from "./channels/registry.js";
 import { ingestIncomingMessage } from "./kernel/ingest.js";
 import { buildDispatcher } from "./dispatch/factory.js";
 import { loadSchedules, startScheduler } from "./scheduler/cron.js";
+import { startSchedulePoller } from "./scheduler/poller.js";
 import { log } from "./log.js";
 
 // Long-running supervisor. Per inbound message:
@@ -24,6 +26,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
   await applyOneCli(config.onecli);
 
   const sessions = new SessionStore(config.sessions.dbPath);
+  const scheduleStore = new ScheduleStore(config.sessions.dbPath);
   const attachments = new AttachmentStore(config.sessions.attachmentsPath);
   await attachments.ensureDir();
   const transcriber = buildTranscriber(config);
@@ -87,6 +90,17 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     transcriber,
     dispatcher,
   });
+
+  // Runtime scheduling: poll the ScheduleStore for due rows armed by agents
+  // (via the schedule_message tool) and dispatch them the same way.
+  const poller = startSchedulePoller(config, {
+    store: scheduleStore,
+    sessions,
+    attachments,
+    transcriber,
+    dispatcher,
+  });
+
   log.info(
     { schedules: running.length, channels: channels.length, dispatcher: dispatcher.id },
     "daedalus serving",
@@ -94,9 +108,11 @@ export async function serve(config: ArtemisConfig): Promise<void> {
 
   const shutdown = async () => {
     log.info("shutting down");
+    poller.stop();
     for (const r of running) r.job.stop();
     await bus.stopAll();
     sessions.close();
+    scheduleStore.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
