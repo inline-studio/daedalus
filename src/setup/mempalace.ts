@@ -128,15 +128,24 @@ export const mempalaceSetup: ChannelSetup = {
           "port your other devices can reach. ALWAYS set a token if binding to 0.0.0.0.\n",
       );
 
+      // Use type:text rather than type:number — prompts' number widget has a
+      // known quirk where pressing Enter on the initial value can return
+      // undefined instead of the default, causing the wizard to crash on
+      // "cancelled" when the user just wanted to accept 11364. Text + numeric
+      // validate behaves identically to every other prompt in the wizard.
       const portRes = await prompts({
-        type: "number",
+        type: "text",
         name: "port",
         message: "Port (each MCP server on this host needs its own):",
-        initial: 11364,
-        validate: (v: number) => (v > 0 && v <= 65535) || "must be a valid port",
+        initial: "11364",
+        validate: (v: string) => {
+          const n = Number(v);
+          return Number.isInteger(n) && n > 0 && n <= 65535 || "must be a valid port (1-65535)";
+        },
       });
-      const port = (portRes.port as number | undefined) ?? 0;
-      if (!port) throw new Error("cancelled");
+      const portStr = (portRes.port as string | undefined)?.trim() ?? "";
+      if (!portStr) throw new Error("cancelled");
+      const port = Number(portStr);
 
       const hostRes = await prompts({
         type: "select",

@@ -1,7 +1,15 @@
 #!/usr/bin/env node
-// Side-effect import — MUST be first. Attaches a process.on('warning')
-// listener before SessionStore/ScheduleStore transitively load node:sqlite
-// and fire the experimental notice.
+// Verbose flag has to be detected BEFORE log.ts and suppress-warnings.ts load
+// (they both read process.env at module-evaluation time). Cheap argv scan does
+// the job — commander runs later and re-validates the same flag, so this is
+// purely for early-startup env setup.
+if (process.argv.slice(2).some((a) => a === "--verbose")) {
+  process.env.DAE_VERBOSE = "1";
+  if (!process.env.DAE_LOG_LEVEL) process.env.DAE_LOG_LEVEL = "debug";
+}
+// Side-effect import — MUST be after the verbose detection above so it sees
+// DAE_VERBOSE; MUST be before SessionStore/ScheduleStore transitively load
+// node:sqlite.
 import "./cli/suppress-warnings.js";
 import dotenv from "dotenv";
 // Load .env first, then .env.local on top so local overrides win. .env.local is
@@ -46,7 +54,11 @@ program
   .name("dae")
   .description("SDK-agnostic agent runner")
   .version(_pkg.version)
-  .option("-c, --config <path>", "path to daedalus.config.yaml");
+  .option("-c, --config <path>", "path to daedalus.config.yaml")
+  .option(
+    "--verbose",
+    "show all logs (debug level) AND surface warnings normally filtered out (node:sqlite experimental notice, etc.)",
+  );
 
 program
   .command("run <agent>")

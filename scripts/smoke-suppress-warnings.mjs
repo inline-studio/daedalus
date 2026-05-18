@@ -85,5 +85,38 @@ function runNode(script) {
   expect("dae --help exits 0", r.status === 0, `status=${r.status}`);
 }
 
+// 6. DAE_VERBOSE=1 disables the suppression — the SQLite warning that's
+// normally swallowed comes through to stderr. This is what --verbose mode
+// sets early in src/index.ts.
+{
+  const r = spawnSync(
+    "node",
+    [
+      "--input-type=module",
+      "-e",
+      `import "./dist/cli/suppress-warnings.js";
+       process.emitWarning('SQLite is an experimental feature and might change at any time', 'ExperimentalWarning');`,
+    ],
+    { encoding: "utf8", env: { ...process.env, DAE_VERBOSE: "1" } },
+  );
+  const stderr = r.stderr ?? "";
+  expect(
+    "DAE_VERBOSE=1 disables SQLite suppression",
+    /SQLite is an experimental feature/.test(stderr),
+    `stderr: ${stderr.slice(0, 200)}`,
+  );
+}
+
+// 7. --verbose on the CLI sets DAE_VERBOSE for the same effect end-to-end.
+// (No SQLite warning fires in --help, so we just confirm the env var landed.)
+{
+  const r = spawnSync(
+    "node",
+    ["dist/index.js", "--verbose", "--help"],
+    { encoding: "utf8" },
+  );
+  expect("dae --verbose --help exits 0", r.status === 0, `status=${r.status}`);
+}
+
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);

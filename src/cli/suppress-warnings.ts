@@ -23,6 +23,11 @@ type StderrWrite = typeof process.stderr.write;
 const HEADER_RE = /^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature/;
 const HINT_RE = /^\(Use `node --trace-warnings/;
 
+// --verbose mode (DAE_VERBOSE=1, set early in src/index.ts before this module
+// loads) skips the suppression entirely. The intent of verbose is "tell me
+// everything Node has to say," which includes this warning.
+const VERBOSE = process.env.DAE_VERBOSE === "1";
+
 let skipNextHint = false;
 const orig: StderrWrite = process.stderr.write.bind(process.stderr);
 
@@ -40,6 +45,11 @@ process.stderr.write = function patchedWrite(
       : chunk && (chunk as { toString?: () => string }).toString
         ? (chunk as { toString: () => string }).toString()
         : "";
+  // Verbose: write everything through unchanged.
+  if (VERBOSE) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (orig as any).call(process.stderr, chunk, encodingOrCb, cb);
+  }
   // Match the SQLite warning header — swallow it AND set a flag so the
   // immediately-following "(Use `node --trace-warnings …`)" hint also gets
   // swallowed. Node always pairs them on the same emit.
