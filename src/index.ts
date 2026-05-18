@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+// Side-effect import — MUST be first. Attaches a process.on('warning')
+// listener before SessionStore/ScheduleStore transitively load node:sqlite
+// and fire the experimental notice.
+import "./cli/suppress-warnings.js";
 import dotenv from "dotenv";
 // Load .env first, then .env.local on top so local overrides win. .env.local is
 // gitignored — the canonical place for personal secrets (API keys, tokens).
