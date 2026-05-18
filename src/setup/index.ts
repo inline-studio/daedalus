@@ -29,8 +29,8 @@ export function listSetups(): ChannelSetup[] {
 const ALL_ORDER = ["onecli", "search", "whisper", "mempalace", "telegram", "whatsapp"] as const;
 
 export async function runSetupAll(configPathArg: string | undefined): Promise<void> {
-  // Lazy import so we don't pull prompts before we know we need it.
   const { default: prompts } = await import("prompts");
+  const { WizardShell } = await import("./wizard-shell.js");
 
   const config = loadConfig(configPathArg);
   const configPath = await resolveConfigPath(configPathArg);
@@ -42,18 +42,22 @@ export async function runSetupAll(configPathArg: string | undefined): Promise<vo
   const envPath = path.join(path.dirname(configPath), ".env.local");
   const ctx: SetupContext = { configPath, envPath, brainPath: config.brain.path };
 
-  console.log(`\nGuided setup. I'll ask about each integration in turn.\n`);
-  console.log(`Config: ${configPath}\n`);
+  const planned = ALL_ORDER
+    .map((id) => REGISTRY[id])
+    .filter((s): s is NonNullable<typeof s> => Boolean(s))
+    .map((s) => ({ id: s.id, title: s.title }));
+  const wizard = new WizardShell("Daedalus setup", planned);
 
   for (const id of ALL_ORDER) {
     const setup = REGISTRY[id];
     if (!setup) continue;
-    console.log(`\n── ${setup.id}: ${setup.title} ──`);
-    console.log(`   ${setup.summary}\n`);
-    const r = await prompts({
+    // Ask per-step BEFORE clearing — the question is part of the step header
+    // visually. The step body (the actual setup run) is what fills the screen
+    // after the user picks "yes".
+    const ask = await prompts({
       type: "select",
       name: "action",
-      message: "Set this up now?",
+      message: `${setup.title} — ${setup.summary}`,
       choices: [
         { title: "yes — walk me through it", value: "yes" },
         { title: "skip this one", value: "skip" },
@@ -61,31 +65,47 @@ export async function runSetupAll(configPathArg: string | undefined): Promise<vo
       ],
       initial: 0,
     });
-    const action = r.action as "yes" | "skip" | "stop" | undefined;
+    const action = ask.action as "yes" | "skip" | "stop" | undefined;
     if (!action || action === "stop") {
-      console.log("\nWizard stopped. Re-run later with `dae setup` to continue.");
+      // Render whatever we've done so far + the user's stop.
+      wizard.finish([
+        "Wizard stopped. Re-run later with `dae setup` to continue.",
+      ]);
       return;
     }
-    if (action === "skip") continue;
+    if (action === "skip") {
+      wizard.skip(setup.id, setup.title, "user skipped");
+      continue;
+    }
     try {
-      await setup.run(ctx);
+      await wizard.step(setup.id, setup.title, async (record) => {
+        await setup.run(ctx, { record });
+      });
     } catch (err) {
       const msg = (err as Error).message;
       if (msg === "cancelled") {
-        console.log(`(skipped ${id})`);
-      } else {
-        console.error(`✗ ${id} failed: ${msg}`);
-        const cont = await prompts({
-          type: "confirm",
-          name: "ok",
-          message: "Continue with the rest of the wizard?",
-          initial: true,
-        });
-        if (!cont.ok) return;
+        // step() already recorded status=skipped on "cancelled". Just continue.
+        continue;
+      }
+      // Failed step: ask whether to bail out of the whole wizard.
+      const cont = await prompts({
+        type: "confirm",
+        name: "ok",
+        message: `'${setup.id}' failed: ${msg}\n  Continue with the rest of the wizard?`,
+        initial: true,
+      });
+      if (!cont.ok) {
+        wizard.finish([
+          "Wizard stopped after a failure. Fix the issue and re-run `dae setup`.",
+        ]);
+        return;
       }
     }
   }
-  console.log("\nAll done. Run `dae service install --all` to run the runner + helpers as services.\n");
+  wizard.finish([
+    "`dae service install --all` — run daedalus + helpers as services that survive logout",
+    "`dae serve`                — start the runner in the foreground (Ctrl-C to stop)",
+  ]);
 }
 
 export function listDisables(): ChannelSetup[] {
