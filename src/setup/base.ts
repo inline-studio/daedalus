@@ -25,11 +25,18 @@ export interface DisableOptions {
   yes: boolean;
 }
 
+// Setups can optionally record key outcomes for the step-based wizard summary
+// (e.g. "API key saved as ONECLI_API_KEY", "agent 'daedalus' ensured"). When
+// run standalone (no wizard shell), this is a no-op.
+export interface SetupRunOptions {
+  record?: (line: string) => void;
+}
+
 export interface ChannelSetup {
   readonly id: string;
   readonly title: string;
   readonly summary: string;
-  run(ctx: SetupContext): Promise<void>;
+  run(ctx: SetupContext, opts?: SetupRunOptions): Promise<void>;
   // Reverse `run`. Optional — setups without a disable flow surface a clear error.
   disable?(ctx: SetupContext, opts: DisableOptions): Promise<void>;
 }

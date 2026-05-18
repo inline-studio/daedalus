@@ -11,6 +11,7 @@ import {
   type ChannelSetup,
   type DisableOptions,
   type SetupContext,
+  type SetupRunOptions,
 } from "./base.js";
 import { upsertMcpServer, removeMcpServer, hasMcpServer, type McpServerEntry } from "./mcp-edit.js";
 import { secretPrompt } from "./secret-prompt.js";
@@ -50,7 +51,8 @@ export const mempalaceSetup: ChannelSetup = {
   summary:
     "Wire MemPalace as the persistent memory store. Adds the MCP server to your brain config, sets memory.backend, and optionally enables brain-repo memory snapshots.",
 
-  async run(ctx: SetupContext): Promise<void> {
+  async run(ctx: SetupContext, opts: SetupRunOptions = {}): Promise<void> {
+    const record = opts.record ?? (() => {});
     console.log(`\n${this.title} setup\n`);
     console.log(
       "MemPalace is a local-first memory system (https://github.com/mempalace/mempalace).",
@@ -321,6 +323,14 @@ export const mempalaceSetup: ChannelSetup = {
         (envUpdates.MEMPALACE_TOKEN ? `✓ Saved MEMPALACE_TOKEN via secrets backend\n` : "") +
         `\nAny agent that lists 'mempalace' in its mcpServers will now reach the ${mode} instance.\n`,
     );
+
+    record(`memory backend set to mempalace (${mode})`);
+    if (localHttpDetails) {
+      record(`local HTTP daemon: ${localHttpDetails.host}:${localHttpDetails.port}${localHttpDetails.urlPath}`);
+      record(`service: \`dae service install dae-mempalace\` to run on boot`);
+    }
+    if (enableBrainSync) record(`brain-sync scheduled (${schedule})`);
+    if (envUpdates.MEMPALACE_TOKEN) record(`MEMPALACE_TOKEN saved via secrets backend`);
 
     // 3. Remote-access panel (local-http only). Print enough to copy onto another device.
     if (localHttpDetails) {

@@ -12,6 +12,7 @@ import {
   type ChannelSetup,
   type DisableOptions,
   type SetupContext,
+  type SetupRunOptions,
 } from "./base.js";
 import { secretPrompt } from "./secret-prompt.js";
 
@@ -35,7 +36,8 @@ export const onecliSetup: ChannelSetup = {
   summary:
     "Route outbound HTTPS through the OneCLI gateway so credentials are injected on the wire — runner never holds real API keys.",
 
-  async run(ctx: SetupContext): Promise<void> {
+  async run(ctx: SetupContext, opts: SetupRunOptions = {}): Promise<void> {
+    const record = opts.record ?? (() => {});
     console.log(`\n${this.title} setup\n`);
     console.log("OneCLI is a credential-injecting MITM proxy. At startup daedalus fetches");
     console.log("OneCLI's proxy config + CA cert via the SDK, then routes all outbound traffic");
@@ -105,6 +107,11 @@ export const onecliSetup: ChannelSetup = {
           ? `\n✓ created agent '${ensured.identifier}' in OneCLI`
           : `\n✓ agent '${ensured.identifier}' already exists in OneCLI (no changes)`,
       );
+      record(
+        ensured.created
+          ? `created agent '${ensured.identifier}' in OneCLI`
+          : `agent '${ensured.identifier}' already existed`,
+      );
     }
 
     const proceed = await confirm("Save config and enable OneCLI?", true);
@@ -134,6 +141,9 @@ export const onecliSetup: ChannelSetup = {
         `  • Assign them to the '${identifier}' agent (or set the agent's secret-mode to 'all').\n` +
         "  • Run `dae run <agent> --prompt ...` — outbound HTTPS goes through OneCLI, credentials are injected on the wire.\n",
     );
+    record(`daemon key saved to .env.local as ONECLI_API_KEY`);
+    record(`outbound HTTPS now routes through ${baseUrl}`);
+    record(`assign secrets to agent '${identifier}' via \`onecli agents set-secrets\``);
   },
 
   async disable(ctx: SetupContext, opts: DisableOptions): Promise<void> {

@@ -8,6 +8,7 @@ import {
   type ChannelSetup,
   type DisableOptions,
   type SetupContext,
+  type SetupRunOptions,
 } from "./base.js";
 import { secretPrompt } from "./secret-prompt.js";
 
@@ -37,7 +38,8 @@ export const telegramSetup: ChannelSetup = {
   title: "Telegram",
   summary: "Set up a Telegram bot. You'll need a bot token from @BotFather (https://t.me/BotFather).",
 
-  async run(ctx: SetupContext): Promise<void> {
+  async run(ctx: SetupContext, opts: SetupRunOptions = {}): Promise<void> {
+    const record = opts.record ?? (() => {});
     console.log(`\n${this.title} setup — ${this.summary}\n`);
     console.log("If you don't have a bot yet:");
     console.log("  1. Open https://t.me/BotFather");
@@ -81,6 +83,10 @@ export const telegramSetup: ChannelSetup = {
       ],
       channelId: "telegram",
     });
+
+    record(`bot @${bot.username} (${bot.first_name ?? "—"})`);
+    record(`default agent for telegram inbounds: ${defaultAgent}`);
+    record(`bot token saved as TELEGRAM_BOT_TOKEN`);
   },
 
   async disable(ctx: SetupContext, opts: DisableOptions): Promise<void> {
