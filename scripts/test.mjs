@@ -21,6 +21,7 @@ const CI_SAFE = [
   "smoke-mempalace",
   "smoke-mempalace-localhttp",
   "smoke-mempalace-remote",
+  "smoke-linger",
   "smoke-onecli-setup",
   "smoke-runtime-scheduling",
   "smoke-secret-prompt",

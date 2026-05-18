@@ -3,10 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { execa } from "execa";
 import type { InstallResult, ServiceManager, ServiceSpec, ServiceStatus } from "./base.js";
+import { ensureLinger } from "./linger.js";
 
 // systemd user-unit manager. Writes to ~/.config/systemd/user/<name>.service.
-// Doesn't require sudo. After install, the unit auto-runs at login; for boot-time
-// startup the user must run `sudo loginctl enable-linger $USER` once — we don't try.
+// Doesn't require sudo for the unit itself. After install, the unit auto-runs at
+// login; for boot-time startup / survival across logout we run `sudo loginctl
+// enable-linger $USER` interactively (with the user's consent) — see linger.ts.
 export class SystemdManager implements ServiceManager {
   readonly id = "systemd" as const;
   readonly platformLabel = "Linux (systemd, user mode)";
@@ -29,9 +31,6 @@ export class SystemdManager implements ServiceManager {
       `  systemctl --user status ${spec.name}`,
       `  systemctl --user restart ${spec.name}`,
       `  ${this.logsCommand(spec.name)}`,
-      ``,
-      `User services stop on logout. To survive logout / start at boot, run once:`,
-      `  sudo loginctl enable-linger $USER`,
     ];
 
     if (opts.dryRun) {
@@ -40,6 +39,7 @@ export class SystemdManager implements ServiceManager {
         unitContent: content,
         notes: [
           `(dry-run) would write ${unitPath} and run: daemon-reload → enable → start`,
+          `(dry-run) would also offer to: sudo loginctl enable-linger $USER (if currently disabled)`,
           ``,
           ...postInstallNotes,
         ],
@@ -52,6 +52,20 @@ export class SystemdManager implements ServiceManager {
     await execa("systemctl", ["--user", "daemon-reload"]);
     await execa("systemctl", ["--user", "enable", spec.name]);
     await execa("systemctl", ["--user", "start", spec.name]);
+
+    // Offer to enable linger so the service survives logout + starts at boot.
+    // Cached after the first call, so a multi-service install (`--all`) only
+    // prompts once. Non-fatal on every failure path.
+    try {
+      const linger = await ensureLinger({});
+      postInstallNotes.push(...linger.notes);
+    } catch (err) {
+      postInstallNotes.push(
+        `(could not check linger: ${(err as Error).message})`,
+        `Run this if services stop when you log out:`,
+        `  sudo loginctl enable-linger $USER`,
+      );
+    }
 
     return { unitPath, unitContent: content, notes: postInstallNotes };
   }
