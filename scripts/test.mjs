@@ -26,6 +26,7 @@ const CI_SAFE = [
   "smoke-runtime-scheduling",
   "smoke-secret-prompt",
   "smoke-secrets",
+  "smoke-terminal-modes",
   "smoke-service",        // directly drives renderers; no live systemctl call
   "smoke-time-awareness",
   "smoke-whisper",

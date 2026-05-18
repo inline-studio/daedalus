@@ -4,6 +4,11 @@ import dotenv from "dotenv";
 // gitignored — the canonical place for personal secrets (API keys, tokens).
 dotenv.config({ path: ".env" });
 dotenv.config({ path: ".env.local", override: true });
+import { installCliTerminalModes } from "./cli/terminal-modes.js";
+// Disable terminal focus reporting + bracketed paste at startup so
+// alt-tabbing / clicking-out mid-prompt doesn't inject escape sequences into
+// the prompts library and crash on confirm/select widgets. Restored on exit.
+installCliTerminalModes();
 import { Command } from "commander";
 import { loadConfig } from "./config/load.js";
 import { applyOneCli } from "./secrets/onecli.js";
