@@ -78,7 +78,15 @@ export async function serve(config: ArtemisConfig): Promise<void> {
   await bus.startAll();
 
   const schedules = await loadSchedules(config.brain.path);
-  const running = startScheduler(config, schedules);
+  // Scheduled cron fires share the supervisor's resources (sessions DB,
+  // attachments, dispatcher) so they take the same per-message-container path
+  // as channel inbounds in docker mode.
+  const running = startScheduler(config, schedules, {
+    sessions,
+    attachments,
+    transcriber,
+    dispatcher,
+  });
   log.info(
     { schedules: running.length, channels: channels.length, dispatcher: dispatcher.id },
     "daedalus serving",

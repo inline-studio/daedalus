@@ -80,6 +80,17 @@ Two enforcement points:
    supervisor's config, so every agent can persist + recall memories without
    declaring it.
 
+## Scheduled tasks
+
+`brain/schedules/*.yaml` cron triggers go through the same dispatcher as channel
+messages. In docker mode that means each scheduled run spawns its own agent
+container with the agent's image, mounts, and OneCLI identity — no work
+accidentally happens in the supervisor.
+
+Each schedule gets its own persistent session (synthetic channel `schedule`,
+external id = schedule name) so repeated fires accrete history. An
+"every 10 minutes status report" agent can see what it reported last time.
+
 ## OneCLI credential isolation per agent
 
 Each spawned agent container calls `OneCLI.getContainerConfig(agent)` at

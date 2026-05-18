@@ -145,12 +145,23 @@ program
       console.error("No schedules found in brain/schedules/.");
       process.exit(0);
     }
-    const running = startScheduler(config, schedules);
+    // Open the same SessionStore + AttachmentStore the scheduler needs to dispatch
+    // through the AgentDispatcher (per-schedule persistent thread, docker-mode aware).
+    const { SessionStore } = await import("./sessions/store.js");
+    const { AttachmentStore } = await import("./attachments/store.js");
+    const sessions = new SessionStore(config.sessions.dbPath);
+    const attachments = new AttachmentStore(config.sessions.attachmentsPath);
+    await attachments.ensureDir();
+    const { defaultSchedulerDeps } = await import("./scheduler/cron.js");
+    const running = startScheduler(config, schedules, defaultSchedulerDeps(sessions, attachments));
     log.info({ count: running.length }, "scheduler running");
-    process.on("SIGINT", () => {
+    const shutdown = () => {
       for (const r of running) r.job.stop();
+      sessions.close();
       process.exit(0);
-    });
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
   });
 
 const setup = program
