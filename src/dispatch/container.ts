@@ -7,18 +7,25 @@ import { log } from "../log.js";
 
 // Spawns one short-lived container per agent turn via the local docker socket.
 //
-// Container entrypoint: `dae agent-turn` (see src/index.ts). The turn reads
-// session state from the mounted sqlite, runs the kernel, persists the response,
-// and prints a JSON DispatchResult to stdout before exiting.
+// Container entrypoint: `/dae-runtime/agent-turn.sh` (injected runtime). The
+// supervisor mounts a named docker volume populated with a Node binary and
+// the daedalus install at /dae-runtime in every per-agent container, so user
+// images don't need Node or daedalus baked in — just a glibc-compatible libc
+// and a posix shell. See docs/docker-mode.md for the compatibility note.
+//
+// Set DAE_AGENT_RUNTIME_INJECT=false to fall back to the older "image must
+// have `dae` on PATH" behaviour (useful for power users who've baked daedalus
+// into their image and want to skip the runtime mount).
 //
 // Mounts every container gets (read from supervisor's config; paths in the
 // supervisor process map onto host paths that the container then bind-mounts):
-//   - brain        → /brain                (ro unless brain.writable)
-//   - shared       → /shared               (rw — cross-agent scratch)
-//   - sessions.db  → /data/sessions.sqlite (rw)
-//   - attachments  → /data/attachments     (rw)
-//   - docker.sock  → /var/run/docker.sock  (rw, so nested subagent spawns work)
-//   - config dir   → /etc/daedalus         (ro — config + .env)
+//   - brain          → /brain                (ro unless brain.writable)
+//   - shared         → /shared               (rw — cross-agent scratch)
+//   - sessions.db    → /data/sessions.sqlite (rw)
+//   - attachments    → /data/attachments     (rw)
+//   - docker.sock    → /var/run/docker.sock  (rw, so nested subagent spawns work)
+//   - config dir     → /etc/daedalus         (ro — config + .env)
+//   - dae-runtime    → /dae-runtime          (ro — injected node + daedalus)
 //
 // Per-agent containers join the daedalus docker network so MCPs / OneCLI /
 // LiteLLM are reachable by container name (mempalace, onecli, …).
@@ -46,6 +53,12 @@ export interface ContainerDispatcherOptions {
   // OneCLI bootstrap forwarded into the agent container so it can call
   // getContainerConfig itself at startup with the agent's own identifier.
   onecliApiKey?: string;
+  // Named docker volume holding the injectable agent runtime (populated by the
+  // dae-runtime-init compose service). When set, agent containers mount this
+  // at /dae-runtime and the dispatcher overrides their entrypoint to use it.
+  // When unset, the dispatcher assumes the agent image has `dae` on PATH
+  // (the original behaviour).
+  runtimeVolume?: string;
 }
 
 export class ContainerAgentDispatcher implements AgentDispatcher {
@@ -93,60 +106,94 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     image: string;
     args: DispatchArgs;
   }): string[] {
-    const a: string[] = [];
-    if (this.opts.socket) a.push("-H", this.opts.socket);
-    a.push("run", "--rm", "-i", "--name", opts.containerName);
-    a.push("--network", this.opts.network);
-
-    // Mounts — host paths come from supervisor env; container-side paths are the
-    // conventional /brain, /shared, /data, /etc/daedalus.
-    const ro = this.config.brain.writable ? "rw" : "ro";
-    a.push("-v", `${this.opts.hostBrainPath}:/brain:${ro}`);
-    a.push("-v", `${this.opts.hostSharedPath}:/shared:rw`);
-    a.push("-v", `${this.opts.hostDataPath}:/data:rw`);
-    a.push("-v", `${this.opts.hostConfigDir}:/etc/daedalus:ro`);
-    a.push("-v", "/var/run/docker.sock:/var/run/docker.sock");
-
-    // Per-agent extra binds from the manifest.
-    if (opts.args.agentName && this.config.brain.path) {
-      // (Agent manifest binds are handled by buildRuntime inside the container.)
-    }
-
-    // Env. The agent inside the container resolves its own OneCLI bundle so it
-    // gets a per-agent identity for credential scoping — we just forward the
-    // daemon API key. ONECLI agent identifier is derived from the daedalus agent
-    // name inside agent-turn (see applyOneCli call site).
-    a.push("-e", "DAE_CONFIG=/etc/daedalus/config.yaml");
-    a.push("-e", "DAE_DISPATCHER=container"); // nested subagent spawns recurse
-    a.push("-e", `DAE_AGENT_IMAGE_DEFAULT=${this.opts.defaultImage}`);
-    a.push("-e", `DAE_AGENT_NETWORK=${this.opts.network}`);
-    a.push("-e", `DAE_AGENT_HOST_BRAIN=${this.opts.hostBrainPath}`);
-    a.push("-e", `DAE_AGENT_HOST_SHARED=${this.opts.hostSharedPath}`);
-    a.push("-e", `DAE_AGENT_HOST_DATA=${this.opts.hostDataPath}`);
-    a.push("-e", `DAE_AGENT_HOST_CONFIG=${this.opts.hostConfigDir}`);
-    if (this.opts.onecliApiKey) {
-      a.push("-e", `ONECLI_API_KEY=${this.opts.onecliApiKey}`);
-    }
-    // Override the OneCLI agent identifier with THIS specific agent's name so
-    // OneCLI scopes injection to whatever credentials this agent has been
-    // granted — not what the supervisor agent has been granted.
-    a.push("-e", `DAE_ONECLI_AGENT=${opts.args.agentName}`);
-
-    a.push(opts.image);
-    // The container's CMD defaults to `dae serve`; override with agent-turn args.
-    a.push(
-      "dae",
-      "agent-turn",
-      "--agent",
-      opts.args.agentName,
-      "--session",
-      opts.args.sessionId,
-      "--user",
-      opts.args.userId,
-      ...(opts.args.isSubagent ? ["--subagent"] : []),
-    );
-    return a;
+    return buildContainerArgs({
+      containerName: opts.containerName,
+      image: opts.image,
+      dispatchArgs: opts.args,
+      opts: this.opts,
+      brainWritable: this.config.brain.writable,
+    });
   }
+}
+
+// Pure, side-effect-free arg builder so tests can inspect what we'd hand to
+// docker without ever spawning a process. The dispatcher class is a thin shell
+// around this + execa.
+export function buildContainerArgs(input: {
+  containerName: string;
+  image: string;
+  dispatchArgs: DispatchArgs;
+  opts: ContainerDispatcherOptions;
+  brainWritable: boolean;
+}): string[] {
+  const { containerName, image, dispatchArgs, opts, brainWritable } = input;
+  const a: string[] = [];
+  if (opts.socket) a.push("-H", opts.socket);
+  a.push("run", "--rm", "-i", "--name", containerName);
+  a.push("--network", opts.network);
+
+  // Mounts — host paths come from supervisor env; container-side paths are the
+  // conventional /brain, /shared, /data, /etc/daedalus.
+  const ro = brainWritable ? "rw" : "ro";
+  a.push("-v", `${opts.hostBrainPath}:/brain:${ro}`);
+  a.push("-v", `${opts.hostSharedPath}:/shared:rw`);
+  a.push("-v", `${opts.hostDataPath}:/data:rw`);
+  a.push("-v", `${opts.hostConfigDir}:/etc/daedalus:ro`);
+  a.push("-v", "/var/run/docker.sock:/var/run/docker.sock");
+
+  // Injectable runtime — the Node binary + daedalus install the agent will
+  // actually execute. With this, the user's image needs only a posix shell
+  // and glibc-compatible libc; Node/daedalus need not be installed.
+  if (opts.runtimeVolume) {
+    a.push("-v", `${opts.runtimeVolume}:/dae-runtime:ro`);
+  }
+
+  // Env. The agent inside the container resolves its own OneCLI bundle so it
+  // gets a per-agent identity for credential scoping — we just forward the
+  // daemon API key. ONECLI agent identifier is derived from the daedalus agent
+  // name inside agent-turn (see applyOneCli call site).
+  a.push("-e", "DAE_CONFIG=/etc/daedalus/config.yaml");
+  a.push("-e", "DAE_DISPATCHER=container"); // nested subagent spawns recurse
+  a.push("-e", `DAE_AGENT_IMAGE_DEFAULT=${opts.defaultImage}`);
+  a.push("-e", `DAE_AGENT_NETWORK=${opts.network}`);
+  a.push("-e", `DAE_AGENT_HOST_BRAIN=${opts.hostBrainPath}`);
+  a.push("-e", `DAE_AGENT_HOST_SHARED=${opts.hostSharedPath}`);
+  a.push("-e", `DAE_AGENT_HOST_DATA=${opts.hostDataPath}`);
+  a.push("-e", `DAE_AGENT_HOST_CONFIG=${opts.hostConfigDir}`);
+  if (opts.runtimeVolume) {
+    a.push("-e", `DAE_AGENT_RUNTIME_VOLUME=${opts.runtimeVolume}`);
+  }
+  if (opts.onecliApiKey) {
+    a.push("-e", `ONECLI_API_KEY=${opts.onecliApiKey}`);
+  }
+  // Override the OneCLI agent identifier with THIS specific agent's name so
+  // OneCLI scopes injection to whatever credentials this agent has been
+  // granted — not what the supervisor agent has been granted.
+  a.push("-e", `DAE_ONECLI_AGENT=${dispatchArgs.agentName}`);
+
+  // Entrypoint override. With the injected runtime, we ignore the image's
+  // own ENTRYPOINT and run daedalus through the mounted shim — agents work
+  // regardless of what the image was designed to do at startup. Without the
+  // runtime mount, fall back to `dae` on PATH (requires daedalus in image).
+  if (opts.runtimeVolume) {
+    a.push("--entrypoint", "/dae-runtime/agent-turn.sh");
+  }
+
+  a.push(image);
+  // With the runtime mount, the entrypoint shim is `dae`'s equivalent and
+  // we pass `agent-turn …` directly. Without it, we need `dae` on PATH.
+  if (!opts.runtimeVolume) a.push("dae");
+  a.push(
+    "agent-turn",
+    "--agent",
+    dispatchArgs.agentName,
+    "--session",
+    dispatchArgs.sessionId,
+    "--user",
+    dispatchArgs.userId,
+    ...(dispatchArgs.isSubagent ? ["--subagent"] : []),
+  );
+  return a;
 }
 
 function sanitize(name: string): string {
@@ -200,5 +247,12 @@ export function dispatcherOptionsFromEnv(config: ArtemisConfig): ContainerDispat
   };
   if (env.ONECLI_API_KEY) opts.onecliApiKey = env.ONECLI_API_KEY;
   if (env.DOCKER_HOST) opts.socket = env.DOCKER_HOST;
+  // Inject the runtime by default if a volume is named. Opt out with
+  // DAE_AGENT_RUNTIME_INJECT=false (useful when the agent image already has
+  // daedalus baked in and the operator wants to skip the mount).
+  const injectOptOut = (env.DAE_AGENT_RUNTIME_INJECT ?? "true").toLowerCase() === "false";
+  if (!injectOptOut && env.DAE_AGENT_RUNTIME_VOLUME) {
+    opts.runtimeVolume = env.DAE_AGENT_RUNTIME_VOLUME;
+  }
   return opts;
 }
