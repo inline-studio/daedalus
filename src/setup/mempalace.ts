@@ -13,6 +13,7 @@ import {
   type SetupContext,
 } from "./base.js";
 import { upsertMcpServer, removeMcpServer, hasMcpServer, type McpServerEntry } from "./mcp-edit.js";
+import { secretPrompt } from "./secret-prompt.js";
 import { editYamlFile, setIn, deleteIn } from "./yaml-edit.js";
 import { loadConfig } from "../config/load.js";
 import { upsertEnvFile } from "./env-file.js";
@@ -157,12 +158,9 @@ export const mempalaceSetup: ChannelSetup = {
       });
       const urlPath = ((urlPathRes.urlPath as string | undefined) ?? "/mcp").replace(/^\/?/, "/");
 
-      const tokenRes = await prompts({
-        type: "password",
-        name: "token",
+      let token = ((await secretPrompt({
         message: "Auth token (leave blank to auto-generate a strong one):",
-      });
-      let token = ((tokenRes.token as string | undefined) ?? "").trim();
+      })) ?? "").trim();
       if (!token) token = crypto.randomBytes(32).toString("hex");
 
       console.log(
@@ -224,12 +222,9 @@ export const mempalaceSetup: ChannelSetup = {
       });
       const transport = (transportRes.transport as "http" | "sse" | undefined) ?? "http";
 
-      const tokenRes = await prompts({
-        type: "password",
-        name: "token",
+      const token = ((await secretPrompt({
         message: "Bearer token (leave blank if the server is unauthenticated):",
-      });
-      const token = ((tokenRes.token as string | undefined) ?? "").trim();
+      })) ?? "").trim();
 
       // Probe — fast feedback on URL typos / unreachable hosts.
       process.stdout.write(`probing ${url}… `);

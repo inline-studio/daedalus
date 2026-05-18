@@ -8,6 +8,7 @@ import {
   type DisableOptions,
   type SetupContext,
 } from "./base.js";
+import { secretPrompt } from "./secret-prompt.js";
 import { DuckDuckGoProvider } from "../web/search/duckduckgo.js";
 import { BraveProvider } from "../web/search/brave.js";
 
@@ -75,13 +76,11 @@ export const searchSetup: ChannelSetup = {
 
     // brave
     console.log("Get a Brave Search API key at https://api.search.brave.com (free tier available).\n");
-    const keyRes = await prompts({
-      type: "password",
-      name: "apiKey",
-      message: "Brave Search API key:",
-      validate: (v: string) => v.length > 10 || "key looks too short",
-    });
-    const apiKey = (keyRes.apiKey as string | undefined) ?? "";
+    const apiKey =
+      (await secretPrompt({
+        message: "Brave Search API key:",
+        validate: (v: string) => v.length > 10 || "key looks too short",
+      })) ?? "";
     if (!apiKey) throw new Error("cancelled");
 
     try {

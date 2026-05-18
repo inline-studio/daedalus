@@ -365,8 +365,8 @@ secretCmd
 
       let value = opts.value;
       if (!value) {
-        const r = await prompts({ type: "password", name: "v", message: `Value for ${name}:` });
-        value = (r.v as string | undefined) ?? "";
+        const { secretPrompt } = await import("./setup/secret-prompt.js");
+        value = (await secretPrompt({ message: `Value for ${name}:` })) ?? "";
       }
       if (!value) {
         console.error("cancelled (empty value)");

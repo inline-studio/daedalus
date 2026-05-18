@@ -13,6 +13,7 @@ import {
   type DisableOptions,
   type SetupContext,
 } from "./base.js";
+import { secretPrompt } from "./secret-prompt.js";
 
 // Tries to extract the daemon API key from the file the `onecli` CLI drops on local installs.
 // Format is JSON (`{"apiKey":"oc_..."}`) on newer builds, bare string on older ones.
@@ -54,14 +55,12 @@ export const onecliSetup: ChannelSetup = {
 
     // Daemon API key (oc_...). Default to what the local `onecli` CLI stored.
     const localKey = readLocalApiKey();
-    const keyRes = await prompts({
-      type: "password",
-      name: "apiKey",
+    const typedKey = ((await secretPrompt({
       message: localKey
         ? "OneCLI daemon API key (oc_...) — leave blank to use the one in ~/.onecli/credentials/api-key:"
         : "OneCLI daemon API key (oc_...) — find it with `onecli auth api-key`:",
-    });
-    const apiKey = ((keyRes.apiKey as string | undefined) ?? "").trim() || localKey;
+    })) ?? "").trim();
+    const apiKey = typedKey || localKey;
     if (!apiKey) throw new Error("cancelled: no API key supplied");
 
     const idRes = await prompts({
