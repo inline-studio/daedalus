@@ -336,6 +336,15 @@ program
         throw err;
       }
     }
+    // If the supervisor service is already running, restart it so a live
+    // `dae serve` picks up any new files we just wrote / replaced (avoids the
+    // "attempt to write a readonly database" trap from a stale sqlite fd).
+    {
+      const { restartSupervisorIfActive } = await import("./service/restart-supervisor.js");
+      const r = await restartSupervisorIfActive(program.opts().config);
+      if (r.restarted) console.log(`\n↻ ${r.reason}`);
+    }
+
     console.log("\nDone. Try `dae run orchestrator --prompt \"hi\"` to confirm everything's wired.");
   });
 
@@ -509,6 +518,17 @@ program
       } catch {
         /* recorded; continue */
       }
+    }
+
+    // If we DIDN'T uninstall the supervisor service (it was already gone, or
+    // the user picked a partial path), and it happens to still be running,
+    // restart it so it picks up the disabled-channels config rather than
+    // bleeding errors. After a full purge this is a no-op (status check below
+    // confirms the unit doesn't exist).
+    {
+      const { restartSupervisorIfActive } = await import("./service/restart-supervisor.js");
+      const r = await restartSupervisorIfActive(program.opts().config);
+      if (r.restarted) console.log(`\n↻ ${r.reason}`);
     }
 
     wizard.finish([
@@ -733,6 +753,14 @@ serviceCmd
           console.log(result.unitContent);
         }
         for (const note of result.notes) console.log(note);
+      }
+      // If the supervisor is already running, restart it after any service
+      // install — the user asked for the runner to pick up new state /
+      // sibling units immediately. Skipped in dry-run.
+      if (!opts.dryRun) {
+        const { restartSupervisorIfActive } = await import("./service/restart-supervisor.js");
+        const r = await restartSupervisorIfActive(program.opts().config);
+        if (r.restarted) console.log(`\n↻ ${r.reason}`);
       }
     } catch (err) {
       handleServiceError(err);

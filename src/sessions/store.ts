@@ -40,12 +40,62 @@ export interface UserChannelBinding {
 }
 
 export class SessionStore {
-  private db: DatabaseSync;
+  private db!: DatabaseSync;
+  private readonly dbPath: string;
+  // Inode + device of the file we opened. If the file at dbPath gets replaced
+  // out from under us (e.g. by a reinstall / upgrade), our existing fd points
+  // at a now-deleted inode and SQLite surfaces "attempt to write a readonly
+  // database" the moment it tries to create a WAL/journal sibling. We
+  // ensureFreshConnection() at the top of every public method — cheap fstat +
+  // a reopen on mismatch.
+  private openedInode = 0;
+  private openedDev = 0;
 
   constructor(dbPath: string) {
+    this.dbPath = dbPath;
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    this.db = new DatabaseSync(dbPath);
+    this.openConnection();
+  }
+
+  private openConnection(): void {
+    if (this.db) {
+      try {
+        this.db.close();
+      } catch {
+        /* old fd may already be invalid; ignore */
+      }
+    }
+    this.db = new DatabaseSync(this.dbPath);
     this.migrate();
+    try {
+      const st = fs.statSync(this.dbPath);
+      this.openedInode = Number(st.ino);
+      this.openedDev = Number(st.dev);
+    } catch {
+      // Couldn't stat — leave inode/dev at 0; next ensureFreshConnection() may reopen.
+      this.openedInode = 0;
+      this.openedDev = 0;
+    }
+  }
+
+  // Cheap path-stat → inode comparison. If different (or file gone), close +
+  // reopen. Called by every public method so a wizard / upgrade that replaces
+  // the sqlite file doesn't leave the supervisor stuck on a deleted fd.
+  private ensureFreshConnection(): void {
+    let inode = 0;
+    let dev = 0;
+    try {
+      const st = fs.statSync(this.dbPath);
+      inode = Number(st.ino);
+      dev = Number(st.dev);
+    } catch {
+      // File doesn't exist (got deleted entirely). Reopen will recreate it.
+      this.openConnection();
+      return;
+    }
+    if (inode !== this.openedInode || dev !== this.openedDev) {
+      this.openConnection();
+    }
   }
 
   private migrate(): void {
@@ -84,6 +134,7 @@ export class SessionStore {
 
   // Resolve a channel/external_id pair to a user_id, creating a user lazily.
   resolveUser(channel: string, externalId: string): string {
+    this.ensureFreshConnection();
     const row = this.db
       .prepare(`SELECT user_id FROM user_identities WHERE channel = ? AND external_id = ?`)
       .get(channel, externalId) as { user_id: string } | undefined;
@@ -100,6 +151,7 @@ export class SessionStore {
 
   // Link an existing user to another channel binding (for cross-channel identity merge).
   linkIdentity(userId: string, channel: string, externalId: string): void {
+    this.ensureFreshConnection();
     this.db
       .prepare(
         `INSERT OR IGNORE INTO user_identities (user_id, channel, external_id) VALUES (?, ?, ?)`,
@@ -109,6 +161,7 @@ export class SessionStore {
 
   // Get-or-create the (user, agent) session.
   getOrCreateSession(userId: string, agentName: string): PersistedSession {
+    this.ensureFreshConnection();
     const row = this.db
       .prepare(`SELECT * FROM sessions WHERE user_id = ? AND agent_name = ?`)
       .get(userId, agentName) as
@@ -140,6 +193,7 @@ export class SessionStore {
     channel?: string;
     externalMessageId?: string;
   }): PersistedMessage {
+    this.ensureFreshConnection();
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     this.db
@@ -170,6 +224,7 @@ export class SessionStore {
 
   // Tail: returns up to `limit` most-recent messages in chronological order.
   tail(sessionId: string, limit = 100): PersistedMessage[] {
+    this.ensureFreshConnection();
     const rows = this.db
       .prepare(
         `SELECT * FROM (
@@ -198,6 +253,7 @@ export class SessionStore {
 
   // Most-recent inbound channel for a user, used to route agent-initiated outbound.
   lastInboundChannel(userId: string): { channel: string; externalId: string } | null {
+    this.ensureFreshConnection();
     const row = this.db
       .prepare(
         `SELECT m.channel as channel, ui.external_id as external_id
@@ -213,6 +269,7 @@ export class SessionStore {
   }
 
   identitiesFor(userId: string): UserChannelBinding[] {
+    this.ensureFreshConnection();
     const rows = this.db
       .prepare(`SELECT user_id, channel, external_id FROM user_identities WHERE user_id = ?`)
       .all(userId) as Array<{ user_id: string; channel: string; external_id: string }>;
