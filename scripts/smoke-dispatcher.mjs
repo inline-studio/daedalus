@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildDispatcher } from "../dist/dispatch/factory.js";
 import { InProcessAgentDispatcher } from "../dist/dispatch/in-process.js";
-import { ContainerAgentDispatcher } from "../dist/dispatch/container.js";
+import { ContainerAgentDispatcher, buildContainerArgs } from "../dist/dispatch/container.js";
 
 let pass = true;
 const expect = (label, ok, detail = "") => {
@@ -132,6 +132,82 @@ function fakeConfig() {
     JSON.stringify(names) === JSON.stringify(["bash", "read"]),
     `got ${names.join(",")}`,
   );
+}
+
+// 8. ContainerAgentDispatcher: when DAE_AGENT_RUNTIME_VOLUME is set, the dispatch
+// args include the runtime bind-mount, the entrypoint override, AND DO NOT
+// prepend `dae` (the shim handles that). This is the "user image is third-party"
+// path that lets any glibc image work without Node/daedalus pre-installed.
+{
+  const opts = {
+    defaultImage: "ghcr.io/test/daedalus:test",
+    network: "daedalus",
+    hostBrainPath: "/host/brain",
+    hostSharedPath: "/host/shared",
+    hostDataPath: "/host/data",
+    hostConfigDir: "/host/etc",
+    runtimeVolume: "daedalus_dae-runtime",
+  };
+  const args = buildContainerArgs({
+    containerName: "dae-test-abc",
+    image: "python:3.12-slim",
+    dispatchArgs: { agentName: "vector", sessionId: "sess1", userId: "user1", isSubagent: true },
+    opts,
+    brainWritable: false,
+  });
+  expect(
+    "runtime mount present",
+    args.includes("-v") && args.includes("daedalus_dae-runtime:/dae-runtime:ro"),
+    `args: ${args.join(" ").slice(0, 300)}`,
+  );
+  expect(
+    "entrypoint override present",
+    args.includes("--entrypoint") && args.includes("/dae-runtime/agent-turn.sh"),
+  );
+  expect(
+    "image is the user's image, NOT the daedalus default",
+    args.includes("python:3.12-slim"),
+  );
+  expect(
+    "dae prefix is NOT present (the shim is the binary)",
+    !args.includes("dae"),
+    `args: ${args.join(" ")}`,
+  );
+  expect(
+    "agent-turn args land directly after the image",
+    args.lastIndexOf("python:3.12-slim") + 1 === args.indexOf("agent-turn"),
+  );
+  expect(
+    "--subagent flag present for subagent dispatch",
+    args.includes("--subagent"),
+  );
+  expect(
+    "DAE_AGENT_RUNTIME_VOLUME env propagated to nested subagent containers",
+    args.some((v, i) => args[i - 1] === "-e" && v.startsWith("DAE_AGENT_RUNTIME_VOLUME=")),
+  );
+}
+
+// 9. Without runtime volume (legacy path), `dae` is prepended and no entrypoint override.
+{
+  const opts = {
+    defaultImage: "ghcr.io/test/daedalus:test",
+    network: "daedalus",
+    hostBrainPath: "/host/brain",
+    hostSharedPath: "/host/shared",
+    hostDataPath: "/host/data",
+    hostConfigDir: "/host/etc",
+    // no runtimeVolume
+  };
+  const args = buildContainerArgs({
+    containerName: "dae-test-abc",
+    image: "ghcr.io/test/daedalus:test",
+    dispatchArgs: { agentName: "artemis", sessionId: "s", userId: "u", isSubagent: false },
+    opts,
+    brainWritable: false,
+  });
+  expect("no --entrypoint override in legacy path", !args.includes("--entrypoint"));
+  expect("dae prefix present in legacy path", args.includes("dae"));
+  expect("no dae-runtime mount", !args.some((s) => s.includes("/dae-runtime")));
 }
 
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);

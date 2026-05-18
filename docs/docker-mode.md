@@ -60,9 +60,45 @@ Every spawned agent container gets:
 | `daedalus-data` volume             | `/data`                     | rw   | sessions sqlite + attachments                |
 | config dir from compose            | `/etc/daedalus`             | ro   | daedalus.config.yaml + .env.local            |
 | `/var/run/docker.sock`             | `/var/run/docker.sock`      | rw   | nested subagent spawning                     |
+| `dae-runtime` named volume         | `/dae-runtime`              | ro   | injected Node + daedalus (see below)         |
 
 Brain mount becomes RW only if `brain.writable: true` in the supervisor's
 config — the supervisor and every agent honor that single setting.
+
+## Agent images can be anything (with a glibc + a shell)
+
+The supervisor mounts its own Node binary + daedalus install into every
+per-agent container at `/dae-runtime` and overrides the container's entrypoint
+to use them. So your agent images don't need Node, npm, or daedalus
+pre-installed — `python:3.12-slim`, `golang:1.22`, `mcr.microsoft.com/playwright`,
+some random third-party image you can't modify — they all just work.
+
+What an agent image **does** need:
+
+- A POSIX shell at `/bin/sh` (every common base image has this).
+- A glibc-compatible libc: debian/ubuntu, fedora/rhel/almalinux, oraclelinux,
+  amazonlinux. Anything where the supervisor's Node binary can dynamically link
+  against the image's libc.
+
+**Not supported (yet):** musl-based images like `alpine`. The Node binary
+mounted from `/dae-runtime/node` is glibc-linked and segfaults on musl. If you
+need an alpine-based agent, either base it on `node:24-alpine` and install
+daedalus into the image (the legacy path — see below), or use a slim Debian
+variant of the same toolchain.
+
+How the runtime gets there: the `dae-runtime-init` service in
+`docker-compose.yml` runs once at `docker compose up`, copies
+`/dae-runtime/{node,daedalus,agent-turn.sh}` from the daedalus image into a
+named volume (`daedalus_dae-runtime`), and exits. The supervisor mounts that
+volume read-only into every container it spawns. The `entrypoint` of the
+container is rewritten to `/dae-runtime/agent-turn.sh`, which execs the bundled
+Node + daedalus regardless of what was in the image's CMD/ENTRYPOINT.
+
+**Opt out** — if you've already baked daedalus into your agent image and prefer
+the older behaviour where the image's own `dae` is invoked from PATH, set
+`DAE_AGENT_RUNTIME_INJECT=false` on the supervisor (or unset
+`DAE_AGENT_RUNTIME_VOLUME`). The dispatcher will fall back to running
+`dae agent-turn …` against the image's PATH.
 
 ## Tool scoping
 

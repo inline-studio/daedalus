@@ -18,6 +18,22 @@
 name: daedalus
 
 services:
+  # Populates the shared `dae-runtime` named volume with the Node binary +
+  # daedalus install from the daedalus image. Runs once at `docker compose up`
+  # and exits. The supervisor and every per-agent container then mount this
+  # volume so user-provided agent images don't need Node/daedalus baked in.
+  # See docs/docker-mode.md for the glibc compatibility note.
+  dae-runtime-init:
+    image: ${DAEDALUS_IMAGE:-ghcr.io/inline-studio/daedalus:latest}
+    build:
+      context: .
+      args:
+        DAEDALUS_VERSION: ${DAEDALUS_VERSION:-latest}
+    command: ["sh", "-c", "rm -rf /shared/* && cp -RL /dae-runtime/. /shared/ && echo 'dae-runtime volume populated'"]
+    volumes:
+      - dae-runtime:/shared
+    restart: "no"
+
   daedalus:
     image: ${DAEDALUS_IMAGE:-ghcr.io/inline-studio/daedalus:latest}
     # Build locally with `docker compose build daedalus` if you want a from-source image.
@@ -38,6 +54,10 @@ services:
       DAE_DISPATCHER: docker
       DAE_AGENT_IMAGE_DEFAULT: ${DAEDALUS_IMAGE:-ghcr.io/inline-studio/daedalus:latest}
       DAE_AGENT_NETWORK: daedalus
+      # Name of the docker volume the agent runtime lives in. The dispatcher
+      # mounts this into each spawned agent container at /dae-runtime so user
+      # images can be free of Node/daedalus installs.
+      DAE_AGENT_RUNTIME_VOLUME: daedalus_dae-runtime
     volumes:
       # Brain (the agent personas + skills + souls + mcp config). Mount RO by default.
       - ${BRAIN_PATH:?set BRAIN_PATH in .env}:/brain:ro
@@ -52,7 +72,10 @@ services:
     networks:
       - daedalus
     depends_on:
-      - mempalace
+      mempalace:
+        condition: service_started
+      dae-runtime-init:
+        condition: service_completed_successfully
     # Run as the host UID/GID so bind-mounted brain files stay owned by the host user.
     # Adjust if your host UID isn't 1000.
     user: "${UID:-1000}:${DOCKER_GID:-998}"
@@ -100,6 +123,10 @@ volumes:
   daedalus-data:
   daedalus-shared:
   mempalace-data:
+  # Holds the injectable agent runtime (node binary + daedalus install).
+  # Populated by dae-runtime-init at startup; mounted ro into every per-agent
+  # container so they don't need Node/daedalus pre-installed.
+  dae-runtime:
   # onecli-pgdata:
 
 networks:

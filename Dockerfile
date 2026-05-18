@@ -45,6 +45,33 @@ RUN useradd --create-home --shell /bin/bash --uid 1000 dae \
     && mkdir -p /brain /shared /data \
     && chown -R dae:dae /home/dae /shared /data
 
+# ─────────────────────────────────────────────────────────────────────────
+# Injectable agent runtime
+#
+# Per-agent containers in docker mode don't need Node or daedalus pre-installed
+# in their image — instead, the supervisor mounts /dae-runtime/ (this directory)
+# into them and overrides the entrypoint so the agent turn runs through the
+# bundled Node + daedalus rather than the image's own.
+#
+# Constraints:
+#   - The Node binary here is glibc-linked (debian-based). It works in any
+#     glibc-compatible image (debian, ubuntu, fedora, rhel, almalinux, …) but
+#     NOT in musl-based images like alpine. Document this in docs/docker-mode.md.
+#   - We resolve the npm-global location at build time so this keeps working
+#     across Node + npm upgrades.
+RUN mkdir -p /dae-runtime \
+    && cp -L "$(command -v node)" /dae-runtime/node \
+    && DAE_PKG="$(npm root -g)/daedalus" \
+    && cp -RL "$DAE_PKG" /dae-runtime/daedalus \
+    && printf '%s\n' \
+         '#!/bin/sh' \
+         '# Injected agent runtime — runs daedalus through the supervisor-provided' \
+         '# Node + dist regardless of what the agent image has installed.' \
+         'exec /dae-runtime/node /dae-runtime/daedalus/dist/index.js "$@"' \
+       > /dae-runtime/agent-turn.sh \
+    && chmod +x /dae-runtime/agent-turn.sh \
+    && chmod -R a+rX /dae-runtime
+
 # Sensible defaults — overridden by docker-compose / `docker run -e`.
 ENV DAE_CONFIG=/etc/daedalus/config.yaml \
     NODE_ENV=production
