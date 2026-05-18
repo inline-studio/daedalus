@@ -82,6 +82,7 @@ export function startScheduler(
             externalUserId: s.name,
             text: s.prompt,
             attachments: [],
+            receivedAt: new Date().toISOString(),
           },
           sessions: deps.sessions,
           attachments: deps.attachments,
