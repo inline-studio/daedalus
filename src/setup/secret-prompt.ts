@@ -15,9 +15,22 @@ import prompts from "prompts";
 // hides the cursor position relative to the real buffer). Result: secrets get
 // junk prefixed/suffixed and authentication fails downstream.
 //
-// Fix: disable focus reporting + bracketed paste for the duration of the
-// prompt, and defensively strip any leftover CSI/escape sequences from the
-// captured value before returning. Restore terminal modes after.
+// PRIMARY DEFENCE: installCliTerminalModes() (src/cli/terminal-modes.ts) runs
+// at `dae` startup and disables these terminal modes process-wide, restoring
+// on exit. That covers ALL prompts() calls in the CLI, not just secret ones.
+//
+// THIS WRAPPER's job is now only: (1) defensively strip any leftover
+// CSI/OSC/SS3/control-byte noise that somehow made it into the captured value
+// (e.g. a terminal that ignores ?1004l / ?2004l); (2) keep one consistent
+// password-prompt entrypoint so per-call options are uniform across the setup
+// wizards.
+//
+// IMPORTANT: do NOT toggle terminal modes here. An earlier version of this
+// wrapper wrote ?1004h / ?2004h in its `finally` block to "restore" the
+// modes — but that effectively undid the process-wide disable for every
+// subsequent non-secret prompt (confirm/text/select). Symptom: after the
+// auth-token prompt, the next text-prompt's `initial` value would get
+// clobbered with phantom characters from focus events.
 export interface SecretPromptOptions {
   message: string;
   initial?: string;
@@ -29,10 +42,6 @@ export interface SecretPromptOptions {
 
 const ESC = String.fromCharCode(0x1b);
 const BEL = String.fromCharCode(0x07);
-
-// Wire-level control sequences to disable / re-enable while the prompt is open.
-const TERM_DISABLE = `${ESC}[?1004l${ESC}[?2004l`;
-const TERM_ENABLE = `${ESC}[?1004h${ESC}[?2004h`;
 
 // Built via RegExp constructor so the source file doesn't need literal control
 // characters that some toolchains (and `git diff`) handle poorly.
@@ -60,40 +69,21 @@ export function sanitizeSecret(raw: string): string {
 }
 
 export async function secretPrompt(opts: SecretPromptOptions): Promise<string | undefined> {
-  const isTTY = process.stdout.isTTY === true;
-  if (isTTY) {
-    try {
-      process.stdout.write(TERM_DISABLE);
-    } catch {
-      // not fatal — sanitization will still clean the result.
-    }
-  }
-  let raw: string | undefined;
-  try {
-    const promptOpts: {
-      type: "password";
-      name: "v";
-      message: string;
-      initial?: string;
-      validate?: (v: string) => boolean | string;
-    } = {
-      type: "password",
-      name: "v",
-      message: opts.message,
-    };
-    if (opts.initial !== undefined) promptOpts.initial = opts.initial;
-    if (opts.validate) promptOpts.validate = opts.validate;
-    const r = await prompts(promptOpts);
-    raw = r.v as string | undefined;
-  } finally {
-    if (isTTY) {
-      try {
-        process.stdout.write(TERM_ENABLE);
-      } catch {
-        // ignore — terminal state is the user's problem at this point.
-      }
-    }
-  }
+  const promptOpts: {
+    type: "password";
+    name: "v";
+    message: string;
+    initial?: string;
+    validate?: (v: string) => boolean | string;
+  } = {
+    type: "password",
+    name: "v",
+    message: opts.message,
+  };
+  if (opts.initial !== undefined) promptOpts.initial = opts.initial;
+  if (opts.validate) promptOpts.validate = opts.validate;
+  const r = await prompts(promptOpts);
+  const raw = r.v as string | undefined;
   if (raw === undefined) return undefined;
   return sanitizeSecret(raw);
 }

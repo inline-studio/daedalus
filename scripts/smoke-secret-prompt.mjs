@@ -85,5 +85,26 @@ expect(
   `got: ${JSON.stringify(sanitizeSecret(realistic))}`,
 );
 
+// 10. secretPrompt must NOT write terminal-mode toggle codes. Toggling here used
+// to undo the process-wide disable from installCliTerminalModes(), which then
+// caused every NON-secret prompt that ran after a secret one to be vulnerable
+// to focus/paste injection again (symptom: `initial` value of the next text
+// prompt got clobbered with garbage characters). Lock that bug out.
+{
+  const src = await import("node:fs").then((m) =>
+    m.readFileSync("dist/setup/secret-prompt.js", "utf8"),
+  );
+  // Look for the specific re-enable sequence the buggy version wrote — it was
+  // `\x1b[?1004h\x1b[?2004h` in a template literal, so the compiled JS contains
+  // either the raw escape byte or the explicit hex/unicode escape.
+  const hasReenable = /\\u001b\[\?1004h|\\x1b\[\?1004h|\[\?1004h/.test(src) ||
+    /\\u001b\[\?2004h|\\x1b\[\?2004h|\[\?2004h/.test(src);
+  expect(
+    "secret-prompt.js does not contain a terminal-mode RE-ENABLE write",
+    !hasReenable,
+    `re-enable code still present — would break installCliTerminalModes()'s global disable`,
+  );
+}
+
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);
