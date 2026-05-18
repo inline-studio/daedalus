@@ -4,7 +4,10 @@ import type { SessionStore } from "../sessions/store.js";
 import type { AttachmentStore } from "../attachments/store.js";
 import type { Transcriber } from "../attachments/transcribe.js";
 import { formatGap } from "../brain/now.js";
+import { loadAgent } from "../brain/agents.js";
+import { loadAgentCommands, detectSlashCommand, resolveCommand } from "../brain/commands.js";
 import { log } from "../log.js";
+import type { ArtemisConfig } from "../config/schema.js";
 
 // Run by the SUPERVISOR before dispatching to an agent. Does all the IO-side work
 // that wants to happen exactly once per inbound message:
@@ -23,6 +26,11 @@ export interface IngestArgs {
   sessions: SessionStore;
   attachments: AttachmentStore;
   transcriber: Transcriber;
+  // Required for slash-command expansion: we need to look up the agent's
+  // manifest to find its declared commands, and the brain path to load the
+  // command bodies. Optional so existing callers that don't care about
+  // commands (e.g. the scheduler) keep working.
+  config?: ArtemisConfig;
 }
 
 export interface IngestResult {
@@ -54,7 +62,15 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
       text: `[session resumed after ${formatGap(sessionGapMs)} of inactivity]`,
     });
   }
-  if (incoming.text) inboundParts.push({ type: "text", text: incoming.text });
+  // Slash-command expansion. If the user typed `/ship` and the receiving
+  // agent has `commands: ['*']` (or `['ship']`), prepend the command body as
+  // a separate text block so the model sees what to do before reading the
+  // user's args. Unknown / not-allowed commands pass through verbatim so the
+  // agent can decide whether it was a typo.
+  if (incoming.text) {
+    const expanded = await maybeExpandSlashCommand(incoming.text, agentName, args.config);
+    for (const part of expanded) inboundParts.push(part);
+  }
   for (const a of incoming.attachments ?? []) {
     const buf = a.data ?? (a.url ? await fetchUrl(a.url) : null);
     if (!buf) continue;
@@ -120,4 +136,51 @@ async function fetchUrl(url: string): Promise<Buffer | null> {
     log.warn({ url, err }, "fetch attachment failed");
     return null;
   }
+}
+
+// Detect + expand a leading slash-command. Returns a list of ContentParts that
+// should replace the raw text input. Three outcomes:
+//   - text isn't `/word …`               → [text part with the original]
+//   - `/word` but agent has no commands  → [text part with the original]
+//   - `/word` matches a loaded command   → [text(preamble + body), text(user args)]
+// Always returns at least one part so we never drop the user's input.
+async function maybeExpandSlashCommand(
+  text: string,
+  agentName: string,
+  config: ArtemisConfig | undefined,
+): Promise<ContentPart[]> {
+  const slash = detectSlashCommand(text);
+  if (!slash || !config) {
+    return [{ type: "text", text }];
+  }
+  // Load the receiving agent's manifest to find its declared commands.
+  // Failure to load (missing manifest) just passes through — the dispatcher
+  // will surface the real error.
+  let declared: string[] | undefined;
+  try {
+    const loaded = await loadAgent(config.brain.path, agentName);
+    declared = loaded.manifest.commands;
+  } catch {
+    return [{ type: "text", text }];
+  }
+  if (!declared || declared.length === 0) {
+    return [{ type: "text", text }];
+  }
+  const available = await loadAgentCommands(config.brain.path, declared);
+  const match = resolveCommand(available, slash.name);
+  if (!match) {
+    return [{ type: "text", text }];
+  }
+  log.info({ command: match.manifest.name, agent: agentName }, "slash-command expanded");
+  // Preamble is wrapped in clear markers so the agent knows what's the
+  // command instruction vs the user's args.
+  const preamble =
+    `[slash-command /${match.manifest.name} invoked — instructions follow]\n\n` +
+    `${match.body}\n\n` +
+    `[end of /${match.manifest.name} instructions; user-provided args below]`;
+  const parts: ContentPart[] = [{ type: "text", text: preamble }];
+  if (slash.rest.trim()) {
+    parts.push({ type: "text", text: slash.rest });
+  }
+  return parts;
 }

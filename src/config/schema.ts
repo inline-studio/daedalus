@@ -279,6 +279,11 @@ export const AgentManifestSchema = z.object({
   container: AgentContainerSchema.optional(),
   mcpServers: z.array(z.string()).default([]), // names from mcp config
   skills: z.array(z.string()).default([]),
+  // Slash-commands the agent can invoke (e.g. `/ship`). Loaded from
+  // <brain>/commands/<name>.md. `['*']` = all commands in the brain; named
+  // list = subset; omit = none (the default — typical for subagents).
+  // Recommended for the orchestrator: `commands: ['*']`.
+  commands: z.array(z.string()).default([]),
   souls: z.array(z.string()).default([]),
   personas: z.array(z.string()).default([]),
   standards: z.array(z.string()).default([]).optional(), // empty = include all

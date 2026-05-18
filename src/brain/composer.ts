@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentManifest } from "../config/schema.js";
 import type { LoadedSkill } from "./skills.js";
+import type { LoadedCommand } from "./commands.js";
 import { nowContext } from "./now.js";
 
 // Read every *.md from `dir`, optionally filtered to a list of names (without .md).
@@ -33,6 +34,11 @@ export interface ComposerInput {
   agent: AgentManifest;
   agentBody: string;
   skills: LoadedSkill[];
+  // Slash-commands available to this agent (already filtered per the
+  // manifest's `commands:` list). When non-empty, a "Commands" section is
+  // injected into the system prompt with names + descriptions so the agent
+  // knows what to expect when the user types /word.
+  commands?: LoadedCommand[];
   // Time since the most recent prior message in this session, if known. Used to surface
   // session-resume gaps to the model.
   sessionGapMs?: number;
@@ -67,6 +73,19 @@ export async function composeSystemPrompt(input: ComposerInput): Promise<string>
   if (souls.length) parts.push(section("Soul", souls));
   if (personas.length) parts.push(section("Persona", personas));
   if (skills.length) parts.push(section("Skills", skills.map((s) => `### ${s.manifest.name}\n${s.body}`)));
+  if (input.commands && input.commands.length) {
+    const lines = input.commands.map((c) => {
+      const aliases = c.manifest.aliases.length ? ` (alias: ${c.manifest.aliases.join(", ")})` : "";
+      const desc = c.manifest.description ? ` — ${c.manifest.description}` : "";
+      return `- \`/${c.manifest.name}\`${aliases}${desc}`;
+    });
+    parts.push(
+      section("Commands", [
+        `When the user's message starts with one of these, the command body is prepended ` +
+          `as a system-style preamble before their message reaches you:\n\n${lines.join("\n")}`,
+      ]),
+    );
+  }
   if (agentBody) parts.push(section("Agent", [agentBody]));
   if (agent.timeAware) {
     parts.push(
