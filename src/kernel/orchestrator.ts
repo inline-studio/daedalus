@@ -1,6 +1,6 @@
 import type { ToolImpl, ToolContext } from "../tools/base.js";
 import type { ArtemisConfig, AgentManifest } from "../config/schema.js";
-import { loadAgent } from "../brain/agents.js";
+import { loadAgent, listAgents } from "../brain/agents.js";
 import type { SessionStore } from "../sessions/store.js";
 import type { AgentDispatcher } from "../dispatch/base.js";
 import { findPendingAskUser, buildResumeMessage } from "./agent-turn.js";
@@ -24,9 +24,16 @@ export interface OrchestratorContext {
 //     orchestrator is system-prompted to relay; the user's reply on the next orchestrator
 //     turn becomes the next prompt for spawn_subagent, which the subagent receives as
 //     the answer to its open question.
-export function buildSpawnSubagentTool(ctx: OrchestratorContext): ToolImpl | null {
+export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<ToolImpl | null> {
   if (ctx.parent.subagents.length === 0) return null;
-  const allowed = ctx.parent.subagents;
+  // `subagents: ['*']` expands to every agent in the brain (minus self —
+  // an agent that can spawn itself is almost certainly a config mistake).
+  // `[]` (omitted) means no spawn_subagent tool at all; the early return
+  // above handles that.
+  const allowed = ctx.parent.subagents.includes("*")
+    ? (await listAgents(ctx.config.brain.path)).filter((n) => n !== ctx.parent.name)
+    : ctx.parent.subagents;
+  if (allowed.length === 0) return null;
 
   return {
     definition: {
