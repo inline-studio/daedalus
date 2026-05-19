@@ -22,14 +22,21 @@ const expect = (label, ok, detail = "") => {
 
 // 1. SessionStore: replace file underneath, next write succeeds + lands in the
 // new file.
+//
+// Note on inodes: many filesystems (ext4, the GitHub Actions ubuntu runner
+// included) reuse inode numbers immediately after unlink. We do NOT assert on
+// "inode changed" because the kernel can — and often does — hand back the
+// same numeric inode after delete+recreate. The behaviour we actually care
+// about is that the write succeeds + the row is queryable from the recreated
+// file, which is what the rest of this case checks.
 {
   const dir = mkdtempSync(join(tmpdir(), "dae-store-reopen-"));
   const dbPath = join(dir, "sessions.sqlite");
   const store = new SessionStore(dbPath);
   const userId1 = store.resolveUser("cli", "alice");
-  const inodeBefore = Number(statSync(dbPath).ino);
 
-  // Replace the file: delete + the next write recreates a fresh inode.
+  // Replace the file: unlink + the next write will trigger ensureFreshConnection,
+  // which sees the file is missing and reopens (creating a fresh db).
   unlinkSync(dbPath);
 
   // Without the fix this would throw "attempt to write a readonly database"
@@ -43,23 +50,27 @@ const expect = (label, ok, detail = "") => {
     expect(
       "SessionStore: write after file-replace did NOT throw",
       false,
-      `got: ${(err).message}`,
+      `got: ${err.message}`,
     );
   }
   if (!errored) {
-    const inodeAfter = Number(statSync(dbPath).ino);
     expect(
-      "SessionStore: file was recreated (inode changed)",
-      inodeAfter !== inodeBefore,
-      `before=${inodeBefore} after=${inodeAfter}`,
+      "SessionStore: dbPath exists again on disk (store recreated it)",
+      statSync(dbPath).size > 0,
     );
     expect(
       "SessionStore: new write returned a valid user id",
       typeof userId2 === "string" && userId2.length > 0,
     );
-    // The previous user_id is GONE — that's expected behaviour when the file
-    // was deleted. We're verifying the store doesn't *crash*; we're not
-    // claiming pre-replace data magically survives.
+    // Round-trip: the new user-id should resolve to the same value (proving
+    // the write landed in the live file the next read sees, not the deleted
+    // one our fd used to point at).
+    expect(
+      "SessionStore: round-trip — second resolveUser returns the same id",
+      store.resolveUser("cli", "bob") === userId2,
+    );
+    // The pre-replace user_id is GONE — expected behaviour, the file we
+    // wrote it to was deleted. Just confirm we don't see it.
     void userId1;
   }
   store.close();
