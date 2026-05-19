@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --disable-warning=ExperimentalWarning
 // Verbose flag has to be detected BEFORE log.ts and suppress-warnings.ts load
 // (they both read process.env at module-evaluation time). Cheap argv scan does
 // the job — commander runs later and re-validates the same flag, so this is

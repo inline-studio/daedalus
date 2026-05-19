@@ -85,6 +85,22 @@ function runNode(script) {
   expect("dae --help exits 0", r.status === 0, `status=${r.status}`);
 }
 
+// 5b. The shebang carries `--disable-warning=ExperimentalWarning`. This is
+// the primary layer of suppression — covers the Node versions (24.14, at
+// least) where the warning is emitted from C++ via a path that bypasses
+// user-space process.stderr.write. Without the shebang flag, the JS-level
+// patch can't catch it. Lock the flag into the built file so a future tsc
+// version that strips shebangs doesn't silently regress us.
+{
+  const fs = await import("node:fs");
+  const firstLine = fs.readFileSync("dist/index.js", "utf8").split("\n")[0];
+  expect(
+    "dist/index.js shebang includes --disable-warning=ExperimentalWarning",
+    /^#!\/usr\/bin\/env -S node --disable-warning=ExperimentalWarning\b/.test(firstLine),
+    `shebang: ${firstLine}`,
+  );
+}
+
 // 6. DAE_VERBOSE=1 disables the suppression — the SQLite warning that's
 // normally swallowed comes through to stderr. This is what --verbose mode
 // sets early in src/index.ts.
