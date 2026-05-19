@@ -100,6 +100,45 @@ the older behaviour where the image's own `dae` is invoked from PATH, set
 `DAE_AGENT_RUNTIME_VOLUME`). The dispatcher will fall back to running
 `dae agent-turn …` against the image's PATH.
 
+## Skill-installed binaries (gh, doctl, agent-browser, …)
+
+Skills that depend on a CLI binary (e.g. `gh` for GitHub, `doctl` for
+DigitalOcean) ship a `bootstrap.sh` next to their `SKILL.md`. Daedalus runs
+each bootstrap exactly once per content-hash, downloading the binary into
+`/data/skill-bin/bin/` — which is automatically prepended to `$PATH` for every
+`bash` tool invocation. Because `/data` is on a persistent volume, the binary
+sticks across container restarts and across new agent dispatches.
+
+The bootstrap contract:
+
+- **Idempotent**: fast-path with `command -v <bin> >/dev/null && exit 0`.
+- **Install destination**: `$DAE_SKILL_PATH_DIR` (the shared `/data/skill-bin/bin/`)
+  for binaries; `$DAE_SKILL_BIN` (a per-skill subdir) for scratch like npm
+  prefixes, gem homes, or venvs.
+- **Non-fatal failure**: a bootstrap that exits non-zero is logged but doesn't
+  abort the agent turn. The skill body should describe a curl fallback for
+  this case.
+
+Example (`brain/skills/github-api/bootstrap.sh`):
+
+```sh
+#!/bin/sh
+set -e
+command -v gh >/dev/null 2>&1 && exit 0
+ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+ver=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest \
+  | grep tag_name | head -1 | cut -d'"' -f4 | sed 's/^v//')
+tmp=$(mktemp -d)
+curl -fsSL "https://github.com/cli/cli/releases/download/v${ver}/gh_${ver}_linux_${ARCH}.tar.gz" \
+  | tar -xz -C "$tmp"
+mv "$tmp/gh_${ver}_linux_${ARCH}/bin/gh" "$DAE_SKILL_PATH_DIR/gh"
+chmod +x "$DAE_SKILL_PATH_DIR/gh"
+rm -rf "$tmp"
+```
+
+First run: ~5s download. Every subsequent run: instant. No edits to the agent's
+base image required.
+
 ## Tool scoping
 
 Two enforcement points:

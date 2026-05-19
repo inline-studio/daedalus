@@ -24,6 +24,7 @@ const CI_SAFE = [
   "smoke-linger",
   "smoke-onecli-setup",
   "smoke-runtime-scheduling",
+  "smoke-skill-bootstrap",
   "smoke-store-reopen",
   "smoke-secret-prompt",
   "smoke-secrets",

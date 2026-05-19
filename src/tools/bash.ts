@@ -28,7 +28,20 @@ export const bashTool: ToolImpl = {
     if (ctx.shared) {
       env.DAE_SHARED = ctx.runtime.id === "docker" ? ctx.shared.containerPath : ctx.shared.hostPath;
     }
-    const result = await ctx.runtime.exec(cmd, {
+    // Prepend the skill-bin dir to $PATH so binaries installed by skill
+    // bootstrap.sh scripts (gh, doctl, agent-browser, …) are discoverable.
+    // We don't replace PATH — we extend it — so system binaries still work.
+    let prefixedCmd = cmd;
+    if (ctx.skillBinDir) {
+      const dir = ctx.runtime.id === "docker"
+        ? `${ctx.skillBinDir.containerPath}/bin`
+        : `${ctx.skillBinDir.hostPath}/bin`;
+      // Use a PATH= prefix on the command instead of env: works regardless of
+      // whether the runtime forwards env vars cleanly (DockerRuntime does;
+      // HostRuntime does; defensive in case a future runtime is stricter).
+      prefixedCmd = `export PATH="${dir}:$PATH"; ${cmd}`;
+    }
+    const result = await ctx.runtime.exec(prefixedCmd, {
       timeoutMs,
       cwd: ctx.runtime.id === "docker" ? "/workspace" : ctx.workspacePath,
       env,

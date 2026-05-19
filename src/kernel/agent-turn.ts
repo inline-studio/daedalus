@@ -8,6 +8,7 @@ import { selectBuiltins } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
 import { composeSystemPrompt } from "../brain/composer.js";
 import { loadSkill } from "../brain/skills.js";
+import { runSkillBootstraps } from "../brain/skill-bootstrap.js";
 import { loadAgent } from "../brain/agents.js";
 import { resolveProviderKey } from "../providers/resolve.js";
 import { buildSecretsBackend } from "../secrets/store/factory.js";
@@ -65,6 +66,11 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       )
     ).filter((s): s is NonNullable<typeof s> => s !== null);
     await hydrateSkillSecrets(config, skills);
+    // Each skill with a bootstrap.sh gets one chance to install its binaries
+    // into the shared skill-bin dir on PATH. Idempotent + content-hashed —
+    // only re-runs if the script changes.
+    const dataDir = path.dirname(config.sessions.dbPath);
+    await runSkillBootstraps(skills, dataDir);
 
     const system = await composeSystemPrompt({
       brainPath: config.brain.path,
@@ -139,6 +145,12 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
               },
             }
           : {}),
+        // Shared skill-bin dir — same path inside the agent container as on the
+        // host (mounted via /data → /data). bash tool prepends this to $PATH.
+        skillBinDir: {
+          hostPath: path.join(dataDir, "skill-bin"),
+          containerPath: "/data/skill-bin",
+        },
       },
       maxTurns: agent.maxTurns,
       maxTokens: agent.maxTokens,
