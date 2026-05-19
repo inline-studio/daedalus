@@ -56,6 +56,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         sessions,
         attachments,
         transcriber,
+        config,
       });
       const result = await dispatcher.dispatch({
         agentName,

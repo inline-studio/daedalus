@@ -9,6 +9,7 @@ import { askUserTool } from "../tools/ask-user.js";
 import { composeSystemPrompt } from "../brain/composer.js";
 import { loadSkill } from "../brain/skills.js";
 import { runSkillBootstraps } from "../brain/skill-bootstrap.js";
+import { loadAgentCommands } from "../brain/commands.js";
 import { loadAgent } from "../brain/agents.js";
 import { resolveProviderKey } from "../providers/resolve.js";
 import { buildSecretsBackend } from "../secrets/store/factory.js";
@@ -72,11 +73,17 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     const dataDir = path.dirname(config.sessions.dbPath);
     await runSkillBootstraps(skills, dataDir);
 
+    // Slash-commands available to this agent (per manifest's commands:).
+    // Subagents typically don't have any, so this is usually empty on the
+    // subagent-dispatch path.
+    const commands = await loadAgentCommands(config.brain.path, agent.commands);
+
     const system = await composeSystemPrompt({
       brainPath: config.brain.path,
       agent,
       agentBody,
       skills,
+      commands,
       identity: config.identity.nickname
         ? { name: config.identity.name, nickname: config.identity.nickname }
         : { name: config.identity.name },

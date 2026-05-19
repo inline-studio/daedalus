@@ -139,6 +139,47 @@ rm -rf "$tmp"
 First run: ~5s download. Every subsequent run: instant. No edits to the agent's
 base image required.
 
+## Slash-commands (`/ship`, `/standup`, …)
+
+Prompt templates the user can invoke from chat. Each lives at
+`<brain>/commands/<name>.md` with optional frontmatter:
+
+```markdown
+---
+description: stage, commit, push       # shown in the agent's system-prompt menu
+aliases: [s, send]                     # alternate names the user can type
+---
+
+Run `git status`, then stage and commit everything, then push.
+```
+
+**Manifest opt-in.** An agent only sees commands when its manifest declares
+`commands:`. Three shapes:
+
+```yaml
+commands: ['*']               # all commands in <brain>/commands/
+commands: ['ship', 'standup'] # named subset
+# (omit)                      # no commands — the default; typical for subagents
+```
+
+The orchestrator usually gets `['*']`; subagents typically get none, so a user
+typing `/ship` to a subagent doesn't accidentally trigger anything.
+
+**Runtime behaviour.** When the user's message starts with `/<word>`:
+
+1. Daedalus checks the receiving agent's loaded commands for a match by name
+   or alias (case-insensitive).
+2. If matched, the command body is prepended to the user message as a clearly-
+   labelled preamble (`[slash-command /ship invoked — instructions follow] …
+   [end of /ship instructions; user-provided args below]`), and any args after
+   the command name follow as a second text block.
+3. If no match, the message passes through unchanged so the agent can handle
+   "is this a typo?" itself.
+
+The expansion happens once in the supervisor's ingest step — the persisted
+user message contains the full expanded prompt, so subagents and history all
+see what the agent saw.
+
 ## Tool scoping
 
 Two enforcement points:
