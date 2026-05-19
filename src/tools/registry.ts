@@ -44,16 +44,23 @@ export function builtinNames(): string[] {
   ];
 }
 
-// Strictly per the manifest's `tools:` list. Empty list = no built-in tools.
-// (Earlier behaviour was "empty = all" — a security footgun for subagents which
-// would otherwise inherit web_fetch / web_search / write / bash by default.)
+// Strictly per the manifest's `tools:` list. Three shapes:
+//   tools: []     — no built-in tools (default; what subagents typically want)
+//   tools: ['*']  — every built-in tool (the explicit "give me everything"
+//                   opt-in; recommended for the orchestrator)
+//   tools: [...]  — that exact subset
+// Empty was previously "all" — that was a security footgun for subagents which
+// would otherwise inherit web_fetch / web_search / write / bash by default.
+// The wildcard restores the convenience without the silent surprise.
 export function selectBuiltins(
   names: string[],
   config: ArtemisConfig,
   deps: { scheduleStore?: ScheduleStore } = {},
 ): ToolImpl[] {
+  const isWildcard = names.includes("*");
+  const resolved = isWildcard ? builtinNames() : names;
   const out: ToolImpl[] = [];
-  for (const n of names) {
+  for (const n of resolved) {
     if (STATIC_TOOLS[n]) {
       out.push(STATIC_TOOLS[n]);
       continue;
@@ -66,6 +73,13 @@ export function selectBuiltins(
     const sf = SCHEDULE_TOOLS[n];
     if (sf) {
       if (!deps.scheduleStore) {
+        // Two cases:
+        //  - Explicit named selection ("tools: ['schedule_message']") with no
+        //    store → wrong call site; throw so the caller knows to plumb it.
+        //  - Wildcard ("tools: ['*']") with no store (e.g. `dae run` which is
+        //    one-shot and doesn't open a ScheduleStore) → skip the tool
+        //    silently; wildcard semantics are "give me what's available."
+        if (isWildcard) continue;
         throw new Error(
           `Tool '${n}' requires a ScheduleStore — the caller didn't pass one. ` +
             `(Internal: pass deps.scheduleStore to selectBuiltins when running an agent turn.)`,

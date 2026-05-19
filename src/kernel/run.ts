@@ -5,7 +5,7 @@ import { buildProvider } from "../providers/index.js";
 import { buildRuntime } from "../runtime/factory.js";
 import { selectBuiltins } from "../tools/registry.js";
 import { composeSystemPrompt } from "../brain/composer.js";
-import { loadSkill } from "../brain/skills.js";
+import { loadSkill, listSkills } from "../brain/skills.js";
 import { connectMcpServer, type ConnectedServer } from "../mcp/client.js";
 import { loadMcpConfig } from "../mcp/loader.js";
 import { buildSpawnSubagentTool } from "./orchestrator.js";
@@ -34,9 +34,12 @@ function identityFromConfig(config: ArtemisConfig): { name: string; nickname?: s
 export async function runAgent(input: RunAgentInput): Promise<{ finalText: string; turns: number }> {
   const { config, agent, agentBody, prompt } = input;
 
-  // 1. Skills
+  // 1. Skills — `['*']` expands to every skill in the brain.
+  const skillNames = agent.skills.includes("*")
+    ? await listSkills(config.brain.path)
+    : agent.skills;
   const skills = (
-    await Promise.all(agent.skills.map((s) => loadSkill(config.brain.path, s, config.brain.writable)))
+    await Promise.all(skillNames.map((s) => loadSkill(config.brain.path, s, config.brain.writable)))
   ).filter((s): s is NonNullable<typeof s> => s !== null);
 
   // 1a. Required-secrets check: if any loaded skill declares secrets it needs, verify they
@@ -58,7 +61,9 @@ export async function runAgent(input: RunAgentInput): Promise<{ finalText: strin
   let mcpServers = input.sharedMcp ?? new Map<string, ConnectedServer>();
   if (ownsMcp && agent.mcpServers.length > 0) {
     const allDefs = await loadMcpConfig(config.mcp.configPath);
-    for (const name of agent.mcpServers) {
+    // `mcpServers: ['*']` expands to every server in the mcp config.
+    const wanted = agent.mcpServers.includes("*") ? Object.keys(allDefs) : agent.mcpServers;
+    for (const name of wanted) {
       const def = allDefs[name];
       if (!def) {
         log.warn({ name }, "MCP server requested but not found in mcp config");
@@ -72,9 +77,13 @@ export async function runAgent(input: RunAgentInput): Promise<{ finalText: strin
       }
     }
   } else if (input.sharedMcp) {
-    // Filter to only those this agent declares.
+    // Filter to only those this agent declares. Wildcard means "take everything
+    // the parent has connected" rather than what we'd have connected ourselves.
     const filtered = new Map<string, ConnectedServer>();
-    for (const name of agent.mcpServers) {
+    const wanted = agent.mcpServers.includes("*")
+      ? Array.from(input.sharedMcp.keys())
+      : agent.mcpServers;
+    for (const name of wanted) {
       const s = input.sharedMcp.get(name);
       if (s) filtered.set(name, s);
     }
@@ -96,7 +105,7 @@ export async function runAgent(input: RunAgentInput): Promise<{ finalText: strin
   const sessions = new SessionStore(config.sessions.dbPath);
   const userId = sessions.resolveUser("cli", "local");
   const dispatcher = buildDispatcher(config);
-  const orchestratorTool = buildSpawnSubagentTool({
+  const orchestratorTool = await buildSpawnSubagentTool({
     config,
     parent: agent,
     sessions,

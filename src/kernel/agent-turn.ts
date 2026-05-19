@@ -7,7 +7,7 @@ import { buildRuntime } from "../runtime/factory.js";
 import { selectBuiltins } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
 import { composeSystemPrompt } from "../brain/composer.js";
-import { loadSkill } from "../brain/skills.js";
+import { loadSkill, listSkills } from "../brain/skills.js";
 import { runSkillBootstraps } from "../brain/skill-bootstrap.js";
 import { loadAgentCommands } from "../brain/commands.js";
 import { loadAgent } from "../brain/agents.js";
@@ -61,9 +61,15 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     await attachments.ensureDir();
 
     // 3. Skills + system prompt
+    // `skills: ['*']` expands to every skill in the brain — convenient for an
+    // orchestrator. `[]` (omitted / explicit empty) means no skills; subagent
+    // default.
+    const skillNames = agent.skills.includes("*")
+      ? await listSkills(config.brain.path)
+      : agent.skills;
     const skills = (
       await Promise.all(
-        agent.skills.map((s) => loadSkill(config.brain.path, s, config.brain.writable)),
+        skillNames.map((s) => loadSkill(config.brain.path, s, config.brain.writable)),
       )
     ).filter((s): s is NonNullable<typeof s> => s !== null);
     await hydrateSkillSecrets(config, skills);
@@ -119,7 +125,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     // Subagent spawning. Subagents themselves can spawn further subagents IF
     // their manifest declares any.
     const dispatcher: AgentDispatcher = buildDispatcher(config);
-    const orchestratorTool = buildSpawnSubagentTool({
+    const orchestratorTool = await buildSpawnSubagentTool({
       config,
       parent: agent,
       sessions,
@@ -253,8 +259,11 @@ async function connectAgentMcp(
     };
   }
 
+  // `mcpServers: ['*']` expands to every server in the mcp config. Subagents
+  // typically declare a specific subset; the orchestrator can take everything.
+  const expanded = declared.includes("*") ? Object.keys(allDefs) : declared;
   // Union: agent's declared + implicit "memory" (every agent gets memory by default).
-  const wanted = new Set<string>(declared);
+  const wanted = new Set<string>(expanded);
   if (allDefs["memory"]) wanted.add("memory");
 
   for (const name of wanted) {
