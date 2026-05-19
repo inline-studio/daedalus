@@ -66,9 +66,39 @@ export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
   console.log(`\nInstalling v${latest}…\n`);
   try {
     await execa("npm", ["install", "-g", tarball], { stdio: "inherit" });
-    console.log(`\n✓ Updated to v${latest}. Restart any running \`dae serve\` processes.`);
   } catch (err) {
     console.error(`\nInstall failed: ${(err as Error).message}`);
     process.exit(1);
+  }
+
+  console.log(`\n✓ Updated to v${latest}.`);
+
+  // Restart every daedalus-managed service that's currently installed + active
+  // so the live `dae serve` (and any sidecars like dae-whisper / dae-mempalace)
+  // actually load the new code instead of running yesterday's binary.
+  // Non-fatal — a missing service manager just surfaces a friendly note.
+  try {
+    const { restartAllActiveServices } = await import("../service/restart-supervisor.js");
+    const results = await restartAllActiveServices(undefined);
+    const restarted = results.filter((r) => r.restarted);
+    const skipped = results.filter((r) => !r.attempted);
+    const failed = results.filter((r) => r.attempted && !r.restarted);
+    if (restarted.length > 0) {
+      console.log(`\nRestarted ${restarted.length} service(s):`);
+      for (const r of restarted) console.log(`  ↻ ${r.reason}`);
+    }
+    if (failed.length > 0) {
+      console.log(`\nFailed to restart:`);
+      for (const r of failed) console.log(`  ✗ ${r.reason}`);
+    }
+    if (restarted.length === 0 && failed.length === 0) {
+      // Either nothing's installed/active, or no service manager at all.
+      // Surface the first non-attempted reason so the user knows.
+      const sample = skipped[0];
+      if (sample) console.log(`\n(no daedalus services restarted: ${sample.reason})`);
+    }
+  } catch (err) {
+    console.error(`\nCould not restart services automatically: ${(err as Error).message}`);
+    console.error(`Restart manually with: systemctl --user restart dae`);
   }
 }

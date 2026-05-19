@@ -52,15 +52,27 @@ export async function restartSupervisorIfActive(
       reason: `unknown service spec '${SUPERVISOR_SPEC_ID}' — skipped`,
     };
   }
-  const spec = await specBuilder(configPath);
-  if (!spec) {
+  let unitName: string;
+  try {
+    const spec = await specBuilder(configPath);
+    if (!spec) {
+      return {
+        attempted: false,
+        restarted: false,
+        reason: `spec '${SUPERVISOR_SPEC_ID}' produced no unit — skipped`,
+      };
+    }
+    unitName = spec.name;
+  } catch (err) {
+    // Spec builders call loadConfig which throws on fresh checkout. That's not
+    // an error condition for "should I restart" — it just means there's
+    // nothing to restart yet.
     return {
       attempted: false,
       restarted: false,
-      reason: `spec '${SUPERVISOR_SPEC_ID}' produced no unit — skipped`,
+      reason: `${SUPERVISOR_SPEC_ID}: spec failed to build (${(err as Error).message.split("\n")[0]})`,
     };
   }
-  const unitName = spec.name;
 
   const status = await manager.status(unitName).catch(() => null);
   if (!status || !status.exists) {
@@ -93,4 +105,80 @@ export async function restartSupervisorIfActive(
       reason: `${unitName}: restart failed (${(err as Error).message})`,
     };
   }
+}
+
+// Restart every installed-and-active daedalus-managed service. Used after a
+// `dae update` so the supervisor AND its sidecars (dae-whisper,
+// dae-mempalace, …) all pick up the new binary / config / image hash.
+//
+// Idempotent + non-fatal — every spec is checked independently; a missing or
+// inactive unit is skipped with a per-spec reason. Returns one result per
+// spec considered so the caller can render a summary.
+export async function restartAllActiveServices(
+  configPath: string | undefined,
+): Promise<SupervisorRestartResult[]> {
+  let manager;
+  try {
+    manager = await buildServiceManager();
+  } catch (err) {
+    if (err instanceof ServiceUnsupported) {
+      return [
+        {
+          attempted: false,
+          restarted: false,
+          reason: "no service manager on this platform (nothing to restart)",
+        },
+      ];
+    }
+    throw err;
+  }
+
+  const results: SupervisorRestartResult[] = [];
+  for (const specId of Object.keys(SERVICE_SPECS)) {
+    const specBuilder = SERVICE_SPECS[specId];
+    if (!specBuilder) continue;
+    let unitName: string;
+    try {
+      const spec = await specBuilder(configPath);
+      unitName = spec.name;
+    } catch (err) {
+      results.push({
+        attempted: false,
+        restarted: false,
+        reason: `${specId}: spec failed to build (${(err as Error).message})`,
+      });
+      continue;
+    }
+
+    const status = await manager.status(unitName).catch(() => null);
+    if (!status || !status.exists) {
+      results.push({ attempted: false, restarted: false, reason: `${unitName}: not installed` });
+      continue;
+    }
+    if (!status.active) {
+      results.push({
+        attempted: false,
+        restarted: false,
+        reason: `${unitName}: installed but not active`,
+      });
+      continue;
+    }
+
+    try {
+      await manager.restart(unitName);
+      log.info({ unit: unitName }, "restarted service after dae update");
+      results.push({
+        attempted: true,
+        restarted: true,
+        reason: `${unitName}: restarted`,
+      });
+    } catch (err) {
+      results.push({
+        attempted: true,
+        restarted: false,
+        reason: `${unitName}: restart failed (${(err as Error).message})`,
+      });
+    }
+  }
+  return results;
 }
