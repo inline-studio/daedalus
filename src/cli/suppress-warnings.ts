@@ -3,20 +3,27 @@
 // SessionStore + ScheduleStore — we know it's experimental; the user doesn't
 // need to be told every command.
 //
-// MUST be imported BEFORE anything that transitively loads node:sqlite (and
-// before any other stderr writer); we patch process.stderr.write here.
+// TWO LAYERS, because Node's warning path isn't uniform:
 //
-// Implementation note: `process.on('warning')` doesn't suppress Node's
-// built-in stderr print — it ADDS a listener. Confirmed on Node 24.15.0:
-// emitting a warning with our listener attached still produces the default
-// "(node:PID) WarningName: …" lines. So we patch stderr.write and filter the
-// specific two lines Node emits for the SQLite warning (the header + the
-// trace-warnings hint that follows it).
+//   1. Primary — shebang flag `--disable-warning=ExperimentalWarning` in
+//      src/index.ts. This is what actually works on Node 24.14, where the
+//      warning is emitted from C++ via a path that bypasses user-space
+//      process.stderr.write (confirmed empirically: instrumenting write()
+//      shows the warning never arrives at the JS layer). The shebang only
+//      applies when `dae` is executed via its shebang line, not when
+//      someone runs `node dist/index.js` directly.
 //
-// We deliberately do NOT use --disable-warning=ExperimentalWarning at the
-// shebang level: it'd be too broad (suppresses every experimental warning
-// going forward), and changing the shebang has packaging implications for
-// `env -S` portability that we don't want to take on for one warning.
+//   2. Fallback — this module patches process.stderr.write to filter the
+//      same warning header + the trace-warnings hint that follows it.
+//      Catches the case where (a) the shebang was bypassed AND (b) the
+//      runtime version DOES write warnings through user-space stderr.
+//      Tested working on at least Node 24.15.
+//
+// Either layer alone closes the loop on its respective Node version. Together
+// they cover both code paths.
+//
+// `process.on('warning')` is NOT a solution — it ADDS a listener, doesn't
+// suppress Node's default print. Confirmed on every Node 24.x.
 
 type StderrWrite = typeof process.stderr.write;
 
