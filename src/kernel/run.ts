@@ -59,10 +59,26 @@ export async function runAgent(input: RunAgentInput): Promise<{ finalText: strin
   // 3. MCP servers (shared or fresh)
   const ownsMcp = !input.sharedMcp;
   let mcpServers = input.sharedMcp ?? new Map<string, ConnectedServer>();
-  if (ownsMcp && agent.mcpServers.length > 0) {
+  if (ownsMcp) {
     const allDefs = await loadMcpConfig(config.mcp.configPath);
+    // Auto-inject the MemPalace HTTP MCP as the implicit "memory" server when
+    // localHttp.enabled and no explicit memory/mempalace def exists. Mirrors the
+    // container agent-turn path so `dae run` exercises the same memory wiring as
+    // the live service — every agent gets memory by default.
+    const lh = config.mempalace?.localHttp;
+    if (lh?.enabled && !allDefs["memory"] && !allDefs["mempalace"]) {
+      allDefs["memory"] = {
+        url: `http://${lh.host}:${lh.port}${lh.urlPath}`,
+        transport: "http",
+        args: [],
+        env: {},
+        headers: {},
+      };
+    }
     // `mcpServers: ['*']` expands to every server in the mcp config.
-    const wanted = agent.mcpServers.includes("*") ? Object.keys(allDefs) : agent.mcpServers;
+    const expanded = agent.mcpServers.includes("*") ? Object.keys(allDefs) : agent.mcpServers;
+    const wanted = new Set<string>(expanded);
+    if (allDefs["memory"]) wanted.add("memory"); // every agent gets memory by default
     for (const name of wanted) {
       const def = allDefs[name];
       if (!def) {

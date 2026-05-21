@@ -17,7 +17,12 @@
 // Restored on every plausible exit path so the user's shell goes back to normal.
 const ESC = String.fromCharCode(0x1b);
 const DISABLE = `${ESC}[?1004l${ESC}[?2004l`; // focus-off + bracketed-paste-off
-const ENABLE = `${ESC}[?1004h${ESC}[?2004h`;
+// On exit, restore the terminal to a normal interactive shell's state — NOT to
+// "everything on". A shell never has focus reporting (1004) enabled, so writing
+// ?1004h here would *enable* it and leak ESC[I / ESC[O into the user's next
+// prompt after every `dae` command. Keep focus reporting OFF; re-enable
+// bracketed-paste (2004) since readline uses it and expects it back on.
+const RESTORE = `${ESC}[?1004l${ESC}[?2004h`; // focus stays OFF, bracketed-paste back ON
 
 let installed = false;
 
@@ -33,15 +38,15 @@ export function installCliTerminalModes(): void {
   // Restore on every exit path we can hook. exit handlers are SYNC by design.
   const restore = (): void => {
     try {
-      process.stdout.write(ENABLE);
+      process.stdout.write(RESTORE);
     } catch {
       /* terminal is gone; nothing we can do */
     }
   };
   process.on("exit", restore);
   // For signals, re-emit AFTER restore so the parent shell sees the expected
-  // exit status. Otherwise Ctrl-C just shows the user a prompt with focus
-  // reporting still disabled in their next shell command.
+  // exit status (the restore itself runs first so the shell isn't left with
+  // a half-changed terminal mode).
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     process.on(sig, () => {
       restore();

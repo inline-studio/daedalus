@@ -265,6 +265,11 @@ memory:
     schedule: "0 */6 * * *"
 
 mempalace:
+  # When localHttp.enabled is true, daedalus auto-injects an MCP server named
+  # `memory` (→ this host:port) into EVERY agent. NOTE: this auto-inject is
+  # suppressed if an MCP server named `memory` OR `mempalace` already exists in
+  # your `mcp:` config — an explicit def overrides the built-in. To rely on the
+  # built-in, don't define one (and remove any leftover brain/mcp/memory.json).
   localHttp: # only used when you ran `dae setup mempalace` in local-http mode
     enabled: false
     command: uvx
