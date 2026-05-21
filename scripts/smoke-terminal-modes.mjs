@@ -28,7 +28,11 @@ function captureStdout(fn) {
 }
 
 const DISABLE = "\x1b[?1004l\x1b[?2004l";
-const ENABLE = "\x1b[?1004h\x1b[?2004h";
+// On exit dae restores the SHELL's normal state: focus reporting (1004) stays
+// OFF — re-enabling it would leak ESC[I/ESC[O into the user's next prompt —
+// and bracketed-paste (2004) goes back ON for readline.
+const RESTORE = "\x1b[?1004l\x1b[?2004h";
+const FOCUS_ON = "\x1b[?1004h"; // must NEVER be written on exit
 
 // 1. With a TTY, install writes the disable codes.
 {
@@ -77,7 +81,25 @@ const ENABLE = "\x1b[?1004h\x1b[?2004h";
   );
 }
 
-// 4. End-to-end: invoking `dae --help` (which doesn't prompt) on a piped stdout
+// 4. On exit, the restore must put focus reporting OFF (never ?1004h) and
+// bracketed-paste back ON. Regression guard for the bug where exit wrote
+// ?1004h, leaving the user's shell leaking ESC[I focus events after every
+// `dae` command.
+{
+  _resetCliTerminalModesForTests();
+  const orig = process.stdout.isTTY;
+  Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+  installCliTerminalModes();
+  const out = captureStdout(() => process.emit("exit", 0));
+  Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: orig });
+  expect(
+    "on exit: focus reporting restored OFF (RESTORE written, never ?1004h)",
+    out.includes(RESTORE) && !out.includes(FOCUS_ON),
+    `wrote: ${JSON.stringify(out)}`,
+  );
+}
+
+// 5. End-to-end: invoking `dae --help` (which doesn't prompt) on a piped stdout
 // must NOT emit the escape sequences into the captured output — the install is
 // gated on isTTY, so help output stays plain text.
 {
@@ -86,7 +108,7 @@ const ENABLE = "\x1b[?1004h\x1b[?2004h";
   const combined = (r.stdout ?? "") + (r.stderr ?? "");
   expect(
     "dae --help on a piped stdout emits no escape codes",
-    !combined.includes(DISABLE) && !combined.includes(ENABLE) && !/\x1b\[\?(1004|2004)[hl]/.test(combined),
+    !combined.includes(DISABLE) && !combined.includes(RESTORE) && !/\x1b\[\?(1004|2004)[hl]/.test(combined),
     `looking for absence of escape codes in ${combined.length}B`,
   );
 }
