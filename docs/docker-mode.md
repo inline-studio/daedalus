@@ -196,6 +196,16 @@ Two enforcement points:
    supervisor's config, so every agent can persist + recall memories without
    declaring it.
 
+   > **Gotcha — an explicit def overrides the built-in injection.** The
+   > auto-inject only fires when *no* MCP server named `memory` **or**
+   > `mempalace` already exists in your mcp config (the guard in `connectAgentMcp`
+   > is `!allDefs["memory"] && !allDefs["mempalace"]`). Define either one — a
+   > leftover `mcp/memory.json`, or the entry `dae setup mempalace` writes — and
+   > it *replaces* the built-in: agents connect to your def instead. If that def
+   > points somewhere dead, agents silently get no memory even though
+   > `mempalace.localHttp.enabled` looks correct. To use the built-in mempalace,
+   > leave `memory`/`mempalace` out of the mcp config entirely.
+
 ## Scheduled tasks
 
 Two flavours, both go through the same dispatcher and both spawn per-agent
