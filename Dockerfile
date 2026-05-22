@@ -24,26 +24,32 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 
 WORKDIR /app
 
-# Two installation modes:
-#   1. Production: copy a pre-built tarball into the image (CI builds the tarball first).
-#   2. Development: install daedalus from npm directly.
-# We default to (2) for now; CI / release flows can override with build args.
+# Install daedalus. `dae install` packs the EXACT installed CLI into the build
+# context (daedalus-<version>.tgz) so the image always matches your `dae` version
+# — no dependency on what's been released. The COPY is tolerant: docker-compose.yml
+# is always present as the anchor, and daedalus-*.tg[z] is an optional glob, so a
+# build context without the tarball still works and falls back to the published
+# release.
 ARG DAEDALUS_VERSION=latest
-ARG DAEDALUS_TARBALL=
-RUN if [ -n "$DAEDALUS_TARBALL" ]; then \
-      npm install -g "$DAEDALUS_TARBALL"; \
+COPY docker-compose.yml daedalus-*.tg[z] /tmp/dae/
+RUN if ls /tmp/dae/daedalus-*.tgz >/dev/null 2>&1; then \
+      npm install -g /tmp/dae/daedalus-*.tgz; \
     else \
       npm install -g "daedalus@$DAEDALUS_VERSION" \
         || npm install -g "https://github.com/inline-studio/daedalus/releases/latest/download/daedalus-latest.tgz"; \
     fi \
+    && rm -rf /tmp/dae \
     && npm cache clean --force
 
 # A non-root user for the supervisor + agent processes. We deliberately don't switch
 # to it here — the host's UID/GID get mapped in at `docker run --user` time so
 # bind-mounted brain / shared paths line up with host ownership.
-RUN useradd --create-home --shell /bin/bash --uid 1000 dae \
+# node:24-slim already ships a `node` user at uid 1000, so create `dae` with
+# --non-unique (it shares uid 1000); ownership of /shared + /data is what matters
+# (named volumes inherit it, so the uid-1000 runtime user can write).
+RUN useradd --create-home --shell /bin/bash --non-unique --uid 1000 dae \
     && mkdir -p /brain /shared /data \
-    && chown -R dae:dae /home/dae /shared /data
+    && chown -R 1000 /home/dae /shared /data
 
 # ─────────────────────────────────────────────────────────────────────────
 # Injectable agent runtime

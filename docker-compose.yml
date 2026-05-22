@@ -33,9 +33,20 @@ services:
       context: .
       args:
         DAEDALUS_VERSION: ${DAEDALUS_VERSION:-latest}
-    command: ["sh", "-c", "rm -rf /shared/* && cp -RL /dae-runtime/. /shared/ && echo 'dae-runtime volume populated'"]
+    # Two jobs, both needing root (so no `user:` override):
+    #   1. Populate the injectable runtime volume from the image's /dae-runtime.
+    #   2. chown the data + shared volumes to ${UID} — named volumes are root-owned
+    #      on first create, but the supervisor + agents run as ${UID}, so without
+    #      this they can't write sessions.sqlite / the shared workspace on any host
+    #      whose uid isn't the image default.
+    command:
+      - "sh"
+      - "-c"
+      - "rm -rf /runtime/* && cp -RL /dae-runtime/. /runtime/ && chown -R ${UID:-1000} /data /shared && echo 'runtime populated + data/shared chowned to ${UID:-1000}'"
     volumes:
-      - dae-runtime:/shared
+      - dae-runtime:/runtime
+      - daedalus-data:/data
+      - daedalus-shared:/shared
     restart: "no"
 
   daedalus:
@@ -57,9 +68,9 @@ services:
       # Bearer token for the mempalace MCP. When set, the supervisor adds it to the
       # auto-injected `memory` server and forwards it into every agent container.
       MEMPALACE_TOKEN: ${MEMPALACE_TOKEN:-}
-      # Tells the supervisor we're in docker mode and lets it pass the right network
-      # name + supervisor image into the agent containers it spawns.
-      DAE_DISPATCHER: docker
+      # Tells the supervisor to spawn each agent turn as its own container (vs
+      # in-process), and lets it pass the right network name + image into them.
+      DAE_DISPATCHER: container
       DAE_AGENT_IMAGE_DEFAULT: ${DAEDALUS_IMAGE:-ghcr.io/inline-studio/daedalus:latest}
       DAE_AGENT_NETWORK: daedalus
       # Host-side paths/volumes the dispatcher bind-mounts into each spawned agent
@@ -148,9 +159,13 @@ services:
       - "127.0.0.1:10255:10255"
     environment:
       DATABASE_URL: postgresql://onecli:onecli@onecli-db:5432/onecli
+    # Wait until postgres ACCEPTS CONNECTIONS, not just until the container starts.
+    # onecli runs prisma migrations at boot; if the DB isn't reachable yet it
+    # mis-bootstraps the baseline migration and then crash-loops (relation does not
+    # exist), so service_healthy here is required, not just nice-to-have.
     depends_on:
       onecli-db:
-        condition: service_started
+        condition: service_healthy
     networks:
       - daedalus
 
@@ -163,6 +178,12 @@ services:
       POSTGRES_DB: onecli
     volumes:
       - onecli-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U onecli -d onecli"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
     networks:
       - daedalus
 

@@ -34,11 +34,14 @@ export async function runInstall(configFlag?: string): Promise<void> {
   const brainPath = config.brain.path; // already resolved to an absolute host path
   const defaultAgent = config.channels?.cli?.defaultAgent ?? "orchestrator";
 
-  // Locate the compose file up front so we can pre-fill answers from a previous
-  // install's .env ("leave blank to keep") and bring the stack up at the end.
-  const composeFile = await findComposeFile();
-  const composeEnvPath = composeFile ? path.join(path.dirname(composeFile), ".env") : null;
-  const prev = composeEnvPath ? await readEnvFile(composeEnvPath) : {};
+  // Compose project dir is a dedicated subdir of the config dir — kept separate so
+  // the docker BUILD context (this dir) never includes the brain, memory data, or
+  // .env.local secrets that live in the config dir itself. `dae install`
+  // materialises the compose files + writes .env here. Pre-fill answers from a
+  // previous install's .env ("leave blank to keep").
+  const composeDir = path.join(configDir, "compose");
+  const composeEnvPath = path.join(composeDir, ".env");
+  const prev = await readEnvFile(composeEnvPath);
   const prevMempalaceToken = prev.MEMPALACE_TOKEN ?? process.env.MEMPALACE_TOKEN ?? "";
   const prevOnecliKey = prev.ONECLI_API_KEY ?? process.env.ONECLI_API_KEY ?? "";
 
@@ -134,15 +137,22 @@ export async function runInstall(configFlag?: string): Promise<void> {
     console.log(`✓ saved ${Object.keys(runnerEnv).join(", ")} to ${rel(envLocalPath)}`);
   }
 
-  // 4. Write the compose `.env` (the ${...} interpolation vars docker-compose reads).
-  if (!composeFile || !composeEnvPath) {
+  // 4. Materialise the compose stack into the compose dir (so a global `dae`
+  // install is self-contained, no repo checkout needed) and write the compose
+  // `.env`. Also pack the installed CLI into the build context so the image is
+  // built from THIS version (not whatever's released).
+  const materialised = await materializeComposeFiles(composeDir);
+  const composeFile = path.join(composeDir, "docker-compose.yml");
+  if (!materialised || !(await exists(composeFile))) {
     console.log(
-      "\nCouldn't find docker-compose.yml (run `dae install` from the daedalus repo, or copy " +
-        "the compose file next to your config). Skipping the compose bring-up.",
+      "\nCouldn't find the bundled docker-compose.yml to install. Re-run from a daedalus " +
+        "checkout, or copy docker-compose.yml + Dockerfile + Dockerfile.mempalace next to your config.",
     );
     return;
   }
-  const composeDir = path.dirname(composeFile);
+  await packCliInto(composeDir);
+  console.log(`✓ compose files → ${rel(composeDir)}`);
+
   const palacePath = path.join(os.homedir(), ".daedalus", "mempalace");
   await fs.mkdir(palacePath, { recursive: true });
 
@@ -160,8 +170,10 @@ export async function runInstall(configFlag?: string): Promise<void> {
   await upsertEnvFile(composeEnvPath, composeEnv);
   console.log(`✓ wrote compose env → ${rel(composeEnvPath)}`);
 
-  // 5. Bring the stack up. `--build` so from-source checkouts work without a
-  //    published image; the whisper profile is only included when requested.
+  // 5. Bring the stack up. `--build` builds the daedalus + mempalace images (the
+  //    daedalus Dockerfile installs daedalus from the packed local CLI tarball we
+  //    just dropped in the context, falling back to the published release).
+  //    Whisper is only included on request.
   const profileArgs = wantWhisper ? ["--profile", "whisper"] : [];
   const composeArgs = ["compose", "-f", composeFile, ...profileArgs, "up", "-d", "--build"];
   console.log(`\n$ docker ${composeArgs.join(" ")}\n`);
@@ -206,14 +218,88 @@ async function ensureConfig(configFlag?: string): Promise<string | null> {
   return path.join(os.homedir(), ".daedalus", "config.yaml");
 }
 
-// Locate docker-compose.yml: prefer the cwd (running from a checkout), then the
-// package root (dist/install.js → ../docker-compose.yml).
+// The compose stack files shipped in the npm package (next to dist/). `dae install`
+// copies these into the compose dir so a global install is self-contained.
+const COMPOSE_FILES = ["docker-compose.yml", "Dockerfile", "Dockerfile.mempalace"];
+
+// Restrict the docker build context to just the build inputs — never the compose
+// .env (secrets), config, brain, or memory data that may sit nearby.
+const DOCKERIGNORE = [
+  "# Written by `dae install`. Keeps secrets/data out of the docker build context.",
+  "*",
+  "!Dockerfile",
+  "!Dockerfile.mempalace",
+  "!docker-compose.yml",
+  "!daedalus-*.tgz",
+  "",
+].join("\n");
+
+// The package root (dist/install.js → ..), where the bundled compose files live.
+function bundleDir(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+}
+
+// Copy the bundled compose files into `targetDir` (overwriting, to keep them in
+// sync with the installed CLI version) and write a .dockerignore. Returns false if
+// the bundle is missing (e.g. an old package without the files).
+async function materializeComposeFiles(targetDir: string): Promise<boolean> {
+  const src = bundleDir();
+  await fs.mkdir(targetDir, { recursive: true });
+  let copiedCompose = false;
+  for (const name of COMPOSE_FILES) {
+    const from = path.join(src, name);
+    if (!(await exists(from))) continue;
+    await fs.copyFile(from, path.join(targetDir, name));
+    if (name === "docker-compose.yml") copiedCompose = true;
+  }
+  await fs.writeFile(path.join(targetDir, ".dockerignore"), DOCKERIGNORE, "utf8");
+  return copiedCompose;
+}
+
+// Pack the installed daedalus CLI into the build context so the image is built
+// from THIS exact version. Best-effort: on failure the Dockerfile falls back to
+// the published release. --ignore-scripts skips the (dev-only) build prepare step.
+async function packCliInto(targetDir: string): Promise<void> {
+  // Clear any stale packed tarballs first (a leftover wrong-version one, or two
+  // matching the Dockerfile glob, would break `npm install -g`).
+  for (const f of await fs.readdir(targetDir).catch(() => [])) {
+    if (/^daedalus-.*\.tgz$/.test(f)) await fs.rm(path.join(targetDir, f)).catch(() => undefined);
+  }
+  try {
+    await execa(
+      "npm",
+      ["pack", "--ignore-scripts", "--pack-destination", targetDir, bundleDir()],
+      { stdio: "ignore" },
+    );
+  } catch (err) {
+    console.warn(
+      `  (couldn't pack the local CLI — the image will build from the published release): ${(err as Error).message}`,
+    );
+  }
+}
+
+// Re-materialise the compose files + re-pack the installed CLI into `composeDir`.
+// `dae update` calls this before `docker compose up -d --build` so the rebuilt
+// image picks up the newly-installed CLI version (rather than the stale tarball
+// from the last install).
+export async function refreshComposeAssets(composeDir: string): Promise<boolean> {
+  const ok = await materializeComposeFiles(composeDir);
+  if (ok) await packCliInto(composeDir);
+  return ok;
+}
+
+// Locate the active docker-compose.yml for uninstall/update: the cwd (running
+// from a checkout), then the compose dir where `dae install` materialised it,
+// then the package bundle.
 export async function findComposeFile(): Promise<string | null> {
-  const cwdCompose = path.join(process.cwd(), "docker-compose.yml");
-  if (await exists(cwdCompose)) return cwdCompose;
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const pkgCompose = path.resolve(here, "..", "docker-compose.yml");
-  if (await exists(pkgCompose)) return pkgCompose;
+  const candidates = [
+    path.join(process.cwd(), "docker-compose.yml"),
+    path.join(os.homedir(), ".daedalus", "compose", "docker-compose.yml"),
+    path.join(bundleDir(), "docker-compose.yml"),
+  ];
+  for (const c of candidates) {
+    if (await exists(c)) return c;
+  }
   return null;
 }
 
