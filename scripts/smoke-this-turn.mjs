@@ -1,5 +1,4 @@
-// Combined smoke for the three areas added this turn:
-//   A. service install/uninstall 'all'
+// Combined smoke for:
 //   B. identity command + composer injection
 //   C. ask_user / subagent state-machine wiring (no live LLM — exercise the kernel directly)
 
@@ -13,33 +12,6 @@ const expect = (label, ok, detail = "") => {
   console.log(`${ok ? "✓" : "✗"} ${label}${detail ? " — " + detail : ""}`);
   if (!ok) pass = false;
 };
-
-// ────────────────────────────────────────────────────────────────────────────────
-// A. service install all (dry-run renders both units and lists them)
-// ────────────────────────────────────────────────────────────────────────────────
-console.log("\n── A: service install all ──");
-{
-  // service is unsupported on Windows; we just verify the CLI accepts 'all' and
-  // surfaces the friendly error rather than a stack trace.
-  const r = spawnSync("node", ["dist/index.js", "service", "install", "all", "--dry-run"], {
-    encoding: "utf8",
-  });
-  if (process.platform === "win32") {
-    expect("'all' on win32 → friendly WSL error", r.status !== 0 && /WSL|Windows/.test(r.stderr));
-  } else {
-    expect("'all' renders both unit names", /daedalus/.test(r.stdout) && /whisper/.test(r.stdout));
-  }
-}
-
-// service uninstall all on win32 should also surface the friendly error
-{
-  const r = spawnSync("node", ["dist/index.js", "service", "uninstall", "all"], { encoding: "utf8" });
-  if (process.platform === "win32") {
-    expect("uninstall all → friendly error", r.status !== 0 && /WSL|Windows/.test(r.stderr));
-  } else {
-    expect("uninstall all → exit 0", r.status === 0);
-  }
-}
 
 // ────────────────────────────────────────────────────────────────────────────────
 // B. identity show / set

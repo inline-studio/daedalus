@@ -1,19 +1,23 @@
 # Reference docker-compose for running daedalus in "docker mode".
 #
 # Architecture:
-#   - daedalus     — supervisor (long-lived `dae serve`); spawns one agent container
-#                    per inbound message via the mounted docker socket.
-#   - onecli       — credential gateway (already deployed standalone on most installs;
-#                    referenced here for reference, comment out if it's external).
+#   - daedalus     — supervisor + scheduler (long-lived `dae serve`); spawns one agent
+#                    container per inbound message via the mounted docker socket.
 #   - mempalace    — shared HTTP-MCP memory store every agent connects to.
+#   - whisper      — local speech-to-text (optional; `whisper` profile only).
+#   - onecli       — credential gateway (+ onecli-db postgres). Comment both out if you
+#                    run OneCLI externally instead.
 #
 # All services join the `daedalus` network so they reach each other by container name
 # (e.g. http://onecli:10254, http://mempalace:11364). Agent containers spawned by the
 # supervisor join the same network — their HTTPS_PROXY ends up pointing at the OneCLI
 # service name rather than `host.docker.internal`.
 #
-# Bring up: `docker compose up -d`
+# Bring up: `docker compose up -d`                       (core: daedalus + mempalace)
+#           `docker compose --profile whisper up -d`     (also local whisper STT)
 # Logs:     `docker compose logs -f daedalus`
+#
+# Easiest path is `dae install`, which writes the .env below and runs compose for you.
 
 name: daedalus
 
@@ -45,15 +49,29 @@ services:
     init: true
     environment:
       DAE_CONFIG: /etc/daedalus/config.yaml
-      # OneCLI bootstrap — supervisor needs the daemon API key to fetch the gateway
-      # bundle at startup. The same key is forwarded into each agent container via
-      # ContainerAgentDispatcher.
-      ONECLI_API_KEY: ${ONECLI_API_KEY:?set ONECLI_API_KEY in .env}
+      # OneCLI bootstrap — the gateway runs as the `onecli` service. When you supply a
+      # daemon API key (dae install asks for it), the supervisor uses it to fetch the
+      # gateway bundle at startup and forwards it into each agent container via
+      # ContainerAgentDispatcher. Optional: leave unset to run with OneCLI disabled.
+      ONECLI_API_KEY: ${ONECLI_API_KEY:-}
+      # Bearer token for the mempalace MCP. When set, the supervisor adds it to the
+      # auto-injected `memory` server and forwards it into every agent container.
+      MEMPALACE_TOKEN: ${MEMPALACE_TOKEN:-}
       # Tells the supervisor we're in docker mode and lets it pass the right network
       # name + supervisor image into the agent containers it spawns.
       DAE_DISPATCHER: docker
       DAE_AGENT_IMAGE_DEFAULT: ${DAEDALUS_IMAGE:-ghcr.io/inline-studio/daedalus:latest}
       DAE_AGENT_NETWORK: daedalus
+      # Host-side paths/volumes the dispatcher bind-mounts into each spawned agent
+      # container. Bind mounts via docker.sock are resolved by the host daemon, not
+      # this container — so the supervisor must know the real host paths (brain,
+      # config dir) and the named volumes (shared, data, prefixed with the compose
+      # project name `daedalus_`). Without these, nested agent dispatch would try to
+      # mount the supervisor's own /brain etc. and fail.
+      DAE_AGENT_HOST_BRAIN: ${BRAIN_PATH:?set BRAIN_PATH in .env}
+      DAE_AGENT_HOST_CONFIG: ${DAEDALUS_CONFIG_DIR:?set DAEDALUS_CONFIG_DIR in .env}
+      DAE_AGENT_HOST_SHARED: daedalus_daedalus-shared
+      DAE_AGENT_HOST_DATA: daedalus_daedalus-data
       # Name of the docker volume the agent runtime lives in. The dispatcher
       # mounts this into each spawned agent container at /dae-runtime so user
       # images can be free of Node/daedalus installs.
@@ -73,6 +91,8 @@ services:
       - daedalus
     depends_on:
       mempalace:
+        condition: service_started
+      onecli:
         condition: service_started
       dae-runtime-init:
         condition: service_completed_successfully
@@ -101,31 +121,50 @@ services:
     networks:
       - daedalus
 
-  # OneCLI is typically already deployed standalone (e.g. via ~/.onecli/docker-compose.yml).
-  # Uncomment if you want it inside this same stack instead. If you DO uncomment, point
-  # `onecli.baseUrl` in your daedalus config at `http://onecli:10254`.
-  #
-  # onecli:
-  #   image: ghcr.io/onecli/onecli:latest
-  #   restart: unless-stopped
-  #   ports:
-  #     - "127.0.0.1:10254:10254"
-  #     - "127.0.0.1:10255:10255"
-  #   environment:
-  #     DATABASE_URL: postgresql://onecli:onecli@onecli-db:5432/onecli
-  #   depends_on: [onecli-db]
-  #   networks: [daedalus]
-  #
-  # onecli-db:
-  #   image: postgres:18-alpine
-  #   restart: unless-stopped
-  #   environment:
-  #     POSTGRES_USER: onecli
-  #     POSTGRES_PASSWORD: onecli
-  #     POSTGRES_DB: onecli
-  #   volumes:
-  #     - onecli-pgdata:/var/lib/postgresql
-  #   networks: [daedalus]
+  # Local speech-to-text (Whisper), for transcribing voice notes. Optional — only
+  # started with the `whisper` compose profile, which `dae install` enables when you
+  # opt into local transcription (otherwise this service is skipped entirely).
+  # The supervisor + agents reach it by container name (http://whisper:8000/v1); the
+  # loopback publish lets the host (`dae run`) reach it too.
+  whisper:
+    image: ${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:latest-cpu}
+    restart: unless-stopped
+    profiles: ["whisper"]
+    ports:
+      - "127.0.0.1:${WHISPER_PORT:-8000}:8000"
+    networks:
+      - daedalus
+
+  # OneCLI credential gateway — part of the stack. daedalus reaches it by service
+  # name (http://onecli:10254). Set `onecli.baseUrl: http://onecli:10254` +
+  # onecli.enabled in your config (dae install does this when you supply a key) and
+  # put the daemon API key in ONECLI_API_KEY in .env. The loopback publish lets the
+  # host (`dae setup onecli`) reach it too.
+  onecli:
+    image: ${ONECLI_IMAGE:-ghcr.io/onecli/onecli:latest}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:10254:10254"
+      - "127.0.0.1:10255:10255"
+    environment:
+      DATABASE_URL: postgresql://onecli:onecli@onecli-db:5432/onecli
+    depends_on:
+      onecli-db:
+        condition: service_started
+    networks:
+      - daedalus
+
+  onecli-db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: onecli
+      POSTGRES_PASSWORD: onecli
+      POSTGRES_DB: onecli
+    volumes:
+      - onecli-pgdata:/var/lib/postgresql
+    networks:
+      - daedalus
 
 volumes:
   daedalus-data:
@@ -135,7 +174,7 @@ volumes:
   # Populated by dae-runtime-init at startup; mounted ro into every per-agent
   # container so they don't need Node/daedalus pre-installed.
   dae-runtime:
-  # onecli-pgdata:
+  onecli-pgdata:
 
 networks:
   daedalus:

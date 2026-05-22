@@ -80,22 +80,39 @@ Then re-run the install command and `dae --version` should work.
 ### Prerequisites
 
 - **Node.js 24+** (LTS). Daedalus uses `node:sqlite` and other 24-era APIs.
-- **Docker** — required. The supervisor and every agent run as containers (see `docs/docker-mode.md`).
-- **uv or pipx** — only for local whisper, or `dae run` quick local testing.
+- **Docker + the compose plugin** — required. The whole stack (supervisor + scheduler,
+  memory, and optional whisper STT) runs as containers (see `docs/docker-mode.md`).
 
 ## Quickstart
 
 ```bash
-dae init                    # creates ~/.daedalus/config.yaml + a starter brain
-dae setup                   # interactive wizard for integrations (yes/skip/stop per item)
-dae service install         # multi-select wizard to run things as systemd/launchd services
-dae run orchestrator --prompt "hello"
+dae install                 # the turnkey command: see below
 ```
 
-For first-time setup of everything in one flow:
+`dae install` is a thin wrapper around `docker compose`. It makes sure a config
+exists, asks the few things it can't infer, writes the config + the compose `.env`,
+then runs `docker compose up -d` to bring up the whole stack:
+
+```
+daedalus    supervisor + scheduler
+mempalace   shared memory (always)
+onecli      credential gateway + its postgres (always)
+whisper     local speech-to-text (only if you opt in)
+```
+
+The questions: **local whisper?** (yes/no), **Telegram bot token?** (optional),
+**memory auth token?** (optional), **OneCLI API key?** (optional — blank runs OneCLI
+disabled for now). Everything else is read from your config; re-running picks up the
+previous answers ("leave blank to keep").
+
+(Per-tool API keys like Brave Search live in OneCLI, not in daedalus — register them
+with OneCLI's tooling so the gateway injects them at the proxy edge.)
+
+For a quick local one-shot without the stack:
 
 ```bash
-dae install                 # init (if needed) → setup wizard → service install wizard
+dae init                    # creates ~/.daedalus/config.yaml + a starter brain
+dae run orchestrator --prompt "hello"   # runs one agent turn in-process on the host
 ```
 
 ## Concepts
@@ -169,9 +186,11 @@ way to provide the missing key.
 
 ```
 dae init                            Bootstrap ~/.daedalus/ from the shipped example
-dae install                         One-shot: init + setup wizard + service install wizard
-dae run <agent> --prompt "..."      Run an agent once
-dae serve                           Long-running: channels + scheduler
+dae install                         Turnkey: ensure config, then `docker compose up -d` the stack
+dae uninstall [--purge]             Stop the stack (--purge also deletes config; data preserved)
+dae update                          Update the CLI, then rebuild + restart the containers
+dae run <agent> --prompt "..."      Run an agent once, in-process on the host
+dae serve                           Long-running: channels + scheduler (what the container runs)
 dae agents | skills | mcp           Browse what's in the brain
 dae config                          Print resolved config as JSON
 dae identity [name] [--nickname]    Show or change the orchestrator's persona name
@@ -202,23 +221,25 @@ dae secret delete <NAME>
 dae secret backend                          Which backend, what capabilities
 ```
 
-### Services (Linux/WSL → systemd, macOS → launchd)
+### Running as a service (docker compose)
+
+The stack runs as containers — there is no host systemd/launchd unit to install.
+`dae install` writes a `.env` next to `docker-compose.yml` and brings everything up;
+manage it afterwards with plain compose:
 
 ```
-dae service install                         Interactive multi-select wizard (default)
-dae service install <name>                  Just one
-dae service install --all                   Non-interactive: every spec
-dae service install --dry-run               Preview the unit, no writes
-dae service uninstall [name|--all]
-dae service start | stop | restart | status [name]
-dae service logs [name]                     Prints the platform tail-logs command
-dae service install --list                  Available specs (daedalus, whisper, mempalace)
+dae install                                 Write config + .env, then `docker compose up -d`
+dae uninstall                               `docker compose down` (--purge also: -v + delete config)
+
+docker compose up -d                        Start the stack (daedalus + mempalace)
+docker compose --profile whisper up -d      Also start local whisper STT
+docker compose logs -f daedalus             Tail the supervisor
+docker compose restart daedalus             Restart after a config change
+docker compose up -d --build                Rebuild + restart after `dae update`
 ```
 
-User services stop on logout. To survive logout / start at boot, run once:
-
-- systemd: `sudo loginctl enable-linger $USER`
-- launchd: move the plist into `/Library/LaunchDaemons/` (needs sudo)
+`restart: unless-stopped` on each service means the stack comes back on boot once the
+Docker daemon starts — no linger/loginctl dance.
 
 ## Configuration reference (annotated)
 
@@ -302,18 +323,20 @@ web:
 ### Set up Telegram
 
 ```bash
-dae setup telegram
-# paste the BotFather token, pick which agent handles incoming messages
-dae serve            # the runner long-polls Telegram and routes to the orchestrator
+dae setup telegram           # paste the BotFather token, pick which agent handles inbounds
+docker compose up -d         # (or `dae install`) — the supervisor long-polls Telegram
 ```
 
-### Set up shared MemPalace on a server, accessible from your laptop
+`dae install` also asks for a Telegram token directly, so this is only needed when
+adding/changing the bot after the initial install.
+
+### Shared MemPalace memory, accessible from your laptop
+
+MemPalace runs as the `mempalace` compose service (loopback-published on `:11364`).
+Other devices can point their MCP client at it:
 
 ```bash
-# On the server:
-dae setup mempalace          # pick "local-http", bind to 0.0.0.0, choose a port
-dae service install mempalace    # systemd unit; survives logout with enable-linger
-dae export mempalace             # prints the paste-ready MCP snippet + token
+dae export mempalace             # prints the paste-ready MCP snippet (+ token if auth is on)
 
 # Copy the snippet into every device that needs the same memory:
 #   - Claude Desktop:  ~/Library/Application Support/Claude/claude_desktop_config.json
@@ -333,8 +356,11 @@ user-facing persona and route their questions accordingly.
 
 ### Wire OneCLI for credential injection
 
+OneCLI runs in the stack (the `onecli` + `onecli-db` services). `dae install` asks for
+its daemon API key and enables it; supply the key there, or wire it afterwards:
+
 ```bash
-dae setup onecli             # probes localhost:10254 + 10255, validates, persists config
+dae setup onecli             # probes the loopback-published onecli, validates, persists config
 dae secret save BRAVE_API_KEY \
     -u "api.search.brave.com/*" \
     -H "X-Subscription-Token" -F "{value}"
@@ -369,7 +395,7 @@ dae secret save BRAVE_API_KEY \
                                   │ ToolContext
                           ┌───────▼──────┐
                           │   Runtime    │
-                          │  host/docker │
+                          │ in-container │
                           │  + shared FS │
                           └──────────────┘
 
@@ -380,8 +406,7 @@ dae secret save BRAVE_API_KEY \
 ## Testing
 
 ```bash
-npm test                                  # CI-safe smokes (default outside CI: also tries
-                                          # systemd/launchd integration tests)
+npm test                                  # CI-safe smokes (default outside CI)
 DAE_TEST_SCOPE=ci npm test                # CI-only subset; what GitHub Actions runs
 DAE_TEST_SCOPE=local npm test             # default outside CI
 DAE_TEST_SCOPE=all npm test               # everything including Docker-needed tests
@@ -389,8 +414,8 @@ DAE_TEST_SCOPE=all npm test               # everything including Docker-needed t
 
 Test scopes are defined in [scripts/test.mjs](scripts/test.mjs):
 
-- **ci** — pure unit/wiring; no Docker daemon, no systemd-user, no live LLM
-- **local** — also runs service-install end-to-end (degrades gracefully on Windows)
+- **ci** — pure unit/wiring; no Docker daemon, no live LLM
+- **local** — also runs the CLI-spawning smokes
 - **all** — also runs Docker-dependent tests (`smoke-shared`, `smoke-agent-container`)
 
 ## Releases

@@ -34,10 +34,7 @@ import { listDisables, listSetups, runDisable, runSetup, runSetupAll } from "./s
 import { buildSecretsBackend } from "./secrets/store/factory.js";
 import { SecretsOpUnsupported } from "./secrets/store/base.js";
 import { initUserConfig } from "./init.js";
-import { buildServiceManager } from "./service/factory.js";
-import { ServiceUnsupported } from "./service/base.js";
-import { SERVICE_SPECS } from "./service/specs.js";
-import { runServiceInstallWizard } from "./service/wizard.js";
+import { runInstall, findComposeFile } from "./install.js";
 import { exportMempalace } from "./cli/export-mempalace.js";
 import { runUpdate } from "./cli/update.js";
 import prompts from "prompts";
@@ -285,258 +282,96 @@ program
 
 program
   .command("install")
-  .description("one-shot install: create the config (if missing), run the setup wizard, then install services")
+  .description("turnkey install: create the config (if missing), then bring the docker stack up with `docker compose`")
   .action(async () => {
-    // 1. Ensure config exists. If not, offer to bootstrap one at ~/.daedalus/config.yaml.
-    const fsMod = await import("node:fs/promises");
-    const osMod = await import("node:os");
-    const candidates = [
-      program.opts().config,
-      process.env.DAE_CONFIG,
-      path.join(process.cwd(), "daedalus.config.yaml"),
-      path.join(osMod.homedir(), ".daedalus", "config.yaml"),
-    ].filter((p): p is string => Boolean(p));
-    let found = false;
-    for (const c of candidates) {
-      try {
-        await fsMod.access(c);
-        found = true;
-        break;
-      } catch {
-        /* not present */
-      }
-    }
-    if (!found) {
-      console.log("No daedalus config found.");
-      const { confirm } = await import("./setup/base.js");
-      const ok = await confirm("Create one at ~/.daedalus/config.yaml from the example?", true);
-      if (!ok) {
-        console.log("Cancelled. Run `dae init` later when you're ready.");
-        return;
-      }
-      await initUserConfig({});
-    }
-
-    // 2. Walk the setup wizard for integrations (telegram-yes / whatsapp-skip / etc).
-    console.log("\n══ 1/2: integrations ══");
-    await runSetupAll(program.opts().config);
-
-    // 3. Run the service-install wizard so the runner survives logout.
-    console.log("\n══ 2/2: services ══");
-    try {
-      const manager = await buildServiceManager();
-      await runServiceInstallWizard(manager, program.opts().config);
-    } catch (err) {
-      // Friendly path on Windows / non-systemd Linux: just surface the message and exit
-      // 0 — the user has a working config + integrations even if services aren't wired.
-      if (err instanceof ServiceUnsupported) {
-        console.log(`\n(skipping service install: ${err.message.split("\n")[0]})`);
-        console.log("Use a process manager you already have, or come back via WSL2 / Linux / macOS.");
-      } else {
-        throw err;
-      }
-    }
-    // If the supervisor service is already running, restart it so a live
-    // `dae serve` picks up any new files we just wrote / replaced (avoids the
-    // "attempt to write a readonly database" trap from a stale sqlite fd).
-    {
-      const { restartSupervisorIfActive } = await import("./service/restart-supervisor.js");
-      const r = await restartSupervisorIfActive(program.opts().config);
-      if (r.restarted) console.log(`\n↻ ${r.reason}`);
-    }
-
-    console.log("\nDone. Try `dae run orchestrator --prompt \"hi\"` to confirm everything's wired.");
+    await runInstall(program.opts().config);
   });
 
-// Reverse of `dae install`. Three groups, in this order so we tear down in the
-// opposite direction we built up:
-//   1. Services (stop + remove unit files)
-//   2. Setups   (disable each enabled integration; --purge wipes saved secrets + config blocks)
-//   3. Config   (only when --purge: offer to delete the YAML + .env.local — most destructive)
-//
-// Does NOT remove the daedalus npm package itself (that's `npm uninstall -g
-// daedalus`) and does NOT touch the brain repo (that's the user's content).
+// Reverse of `dae install`: stop the docker stack. With --purge it also deletes the
+// config + .env files. Data (docker volumes + host bind-mounts) is ALWAYS preserved —
+// uninstall never passes `-v`. Does NOT remove the daedalus npm package (that's
+// `npm uninstall -g daedalus`) and does NOT touch the brain repo (the user's content).
 program
   .command("uninstall")
-  .description("reverse `dae install`: stop services, disable integrations, optionally wipe config")
-  .option("--all", "uninstall everything non-interactively (still confirms destructive --purge)")
+  .description("stop the docker stack (with --purge: also delete the config + .env files)")
   .option(
     "--purge",
-    "also delete saved secrets, remove config blocks, and offer to delete the YAML + .env.local (clean slate)",
+    "also delete the config + .env files (clean slate). Data volumes are always preserved.",
   )
-  .option("-y, --yes", "skip confirmation prompts (use carefully with --purge — bypasses the safety check)")
-  .action(async (opts: { all?: boolean; purge?: boolean; yes?: boolean }) => {
+  .option("-y, --yes", "skip confirmation prompts")
+  .action(async (opts: { purge?: boolean; yes?: boolean }) => {
     const { confirm } = await import("./setup/base.js");
-    const { WizardShell } = await import("./setup/wizard-shell.js");
     const fsMod = await import("node:fs/promises");
+    const osMod = await import("node:os");
+    const { execa } = await import("execa");
 
-    // Confirm intent before doing anything irreversible. Without --yes we always
-    // ask — even for non-purge runs, since uninstalling services is something a
-    // user can fat-finger into.
     if (!opts.yes) {
       const warn = opts.purge
-        ? "This will stop services, disable every integration, DELETE saved secrets and config blocks, and offer to delete your YAML + .env.local."
-        : "This will stop services and disable every enabled integration (your config + secrets are preserved unless you re-run with --purge).";
+        ? "This stops the daedalus stack and deletes your config + .env files. Your data (docker\nvolumes: sessions, shared workspace, memory; and bind-mounts) is preserved."
+        : "This stops the daedalus stack (containers). Config and all data are preserved.";
       console.log(warn);
-      const proceed = await confirm("Continue?", false);
-      if (!proceed) {
+      if (!(await confirm("Continue?", false))) {
         console.log("Cancelled.");
         return;
       }
     }
 
-    // Build the step list based on what's installable + disable-able. If a
-    // step has nothing to do (no installed services / not-enabled setup), it
-    // still appears in the summary as a "✓ nothing to do" entry — clearer than
-    // silently skipping.
-    const disables = listDisables();
-    const plannedSteps: Array<{ id: string; title: string }> = [
-      { id: "services", title: "Services" },
-      ...disables.map((s) => ({ id: s.id, title: s.title })),
-    ];
-    if (opts.purge) plannedSteps.push({ id: "config", title: "Config & local files" });
-
-    const wizard = new WizardShell("Daedalus uninstall", plannedSteps);
-
-    // 1. Services
-    try {
-      await wizard.step("services", "Services", async (record) => {
-        let manager;
-        try {
-          manager = await buildServiceManager();
-        } catch (err) {
-          if (err instanceof ServiceUnsupported) {
-            record(`platform has no service manager (${err.message.split("\n")[0]}) — nothing to do`);
-            return;
-          }
-          throw err;
-        }
-        for (const specId of Object.keys(SERVICE_SPECS)) {
-          try {
-            const unitName = await unitNameFor(specId, program.opts().config);
-            const status = await manager.status(unitName).catch(() => null);
-            if (!status || !status.exists) {
-              record(`${unitName}: not installed`);
-              continue;
-            }
-            await manager.uninstall(unitName);
-            record(`${unitName}: stopped + removed`);
-          } catch (err) {
-            record(`${specId}: failed (${(err as Error).message})`);
-          }
-        }
+    // 1. Tear down containers via docker compose. We never pass -v: volumes (and the
+    // host bind-mounts) hold the user's data and must survive an uninstall. To wipe
+    // data deliberately, the user can run `docker compose down -v` themselves.
+    const composeFile = await findComposeFile();
+    if (composeFile) {
+      const composeDir = path.dirname(composeFile);
+      const args = ["compose", "-f", composeFile, "down"];
+      console.log(`\n$ docker ${args.join(" ")}\n`);
+      await execa("docker", args, { stdio: "inherit", cwd: composeDir }).catch((err) => {
+        console.error(`compose down failed: ${(err as Error).message}`);
       });
-    } catch {
-      /* errors are recorded; keep going to the next step */
+    } else {
+      console.log("(no docker-compose.yml found — skipping container teardown)");
     }
 
-    // 2. Setups (one step each — they may or may not be currently enabled,
-    // but disable is idempotent so calling it always is safe).
-    for (const s of disables) {
-      try {
-        await wizard.step(s.id, s.title, async (record) => {
-          try {
-            await runDisable(s.id, program.opts().config, {
-              ...(opts.purge ? { purge: true } : {}),
-              yes: true, // we've already taken the top-level confirmation
-            });
-            record(opts.purge ? "disabled + purged secrets/config" : "disabled (config + secrets preserved)");
-          } catch (err) {
-            const msg = (err as Error).message;
-            if (/cancelled|not enabled|not found/i.test(msg)) {
-              record(`nothing to do (${msg.slice(0, 80)})`);
-              return;
-            }
-            throw err;
-          }
-        });
-      } catch {
-        /* recorded; continue */
-      }
-    }
-
-    // 3. Config purge — only on --purge, and with one more confirm step (we
-    // already asked once at the top; for actually deleting the YAML we ask
-    // again so a stray --yes doesn't wipe a config the user wanted to keep).
+    // 2. Config + local files — only on --purge.
     if (opts.purge) {
-      try {
-        await wizard.step("config", "Config & local files", async (record) => {
-          // Find the config the user is currently pointing at.
-          let configPath: string | undefined;
-          try {
-            const c = loadConfig(program.opts().config);
-            // loadConfig doesn't return the path; re-derive via the same
-            // discovery logic the install command uses.
-            const osMod = await import("node:os");
-            const candidates = [
-              program.opts().config,
-              process.env.DAE_CONFIG,
-              path.join(process.cwd(), "daedalus.config.yaml"),
-              path.join(osMod.homedir(), ".daedalus", "config.yaml"),
-            ].filter((p): p is string => Boolean(p));
-            for (const cand of candidates) {
-              try {
-                await fsMod.access(cand);
-                configPath = cand;
-                break;
-              } catch {
-                /* keep trying */
-              }
-            }
-            void c;
-          } catch {
-            record("no config found — nothing to delete");
-            return;
-          }
-          if (!configPath) {
-            record("no config file located — nothing to delete");
-            return;
-          }
-          const configDir = path.dirname(configPath);
-          const envLocal = path.join(configDir, ".env.local");
-          const sessionsDb = path.join(configDir, "data", "sessions.sqlite");
-
-          // Ask one more time — this is the most destructive step.
-          let okToDelete = Boolean(opts.yes);
-          if (!okToDelete) {
-            okToDelete = await confirm(
-              `Delete ${configPath} + ${envLocal}${"" /* sessions DB stays unless asked */ }?`,
-              false,
-            );
-          }
-          if (!okToDelete) {
-            record(`kept ${configPath} + .env.local (purge step declined)`);
-            return;
-          }
+      const candidates = [
+        program.opts().config,
+        process.env.DAE_CONFIG,
+        path.join(process.cwd(), "daedalus.config.yaml"),
+        path.join(osMod.homedir(), ".daedalus", "config.yaml"),
+      ].filter((p): p is string => Boolean(p));
+      let configPath: string | undefined;
+      for (const cand of candidates) {
+        try {
+          await fsMod.access(cand);
+          configPath = cand;
+          break;
+        } catch {
+          /* keep trying */
+        }
+      }
+      if (configPath) {
+        const configDir = path.dirname(configPath);
+        const envLocal = path.join(configDir, ".env.local");
+        const composeEnv = composeFile ? path.join(path.dirname(composeFile), ".env") : undefined;
+        let okToDelete = Boolean(opts.yes);
+        if (!okToDelete) {
+          okToDelete = await confirm(`Delete ${configPath} + ${envLocal}?`, false);
+        }
+        if (okToDelete) {
           await fsMod.rm(configPath, { force: true });
-          record(`deleted ${configPath}`);
+          console.log(`deleted ${configPath}`);
           await fsMod.rm(envLocal, { force: true }).catch(() => undefined);
-          record(`deleted ${envLocal}`);
-          // Sessions DB is user content too — leave it unless they really want it gone.
-          record(`kept ${sessionsDb} (your session history); delete manually if you want it gone`);
-        });
-      } catch {
-        /* recorded; continue */
+          console.log(`deleted ${envLocal}`);
+          if (composeEnv) await fsMod.rm(composeEnv, { force: true }).catch(() => undefined);
+        } else {
+          console.log(`kept ${configPath} + .env.local (purge declined)`);
+        }
+      } else {
+        console.log("(no config file located — nothing to delete)");
       }
     }
 
-    // If we DIDN'T uninstall the supervisor service (it was already gone, or
-    // the user picked a partial path), and it happens to still be running,
-    // restart it so it picks up the disabled-channels config rather than
-    // bleeding errors. After a full purge this is a no-op (status check below
-    // confirms the unit doesn't exist).
-    {
-      const { restartSupervisorIfActive } = await import("./service/restart-supervisor.js");
-      const r = await restartSupervisorIfActive(program.opts().config);
-      if (r.restarted) console.log(`\n↻ ${r.reason}`);
-    }
-
-    wizard.finish([
-      "`npm uninstall -g daedalus` — remove the binary itself",
-      ...(opts.purge
-        ? []
-        : ["Re-install later with `dae install`. Saved secrets + config are still here."]),
-    ]);
+    console.log("\nDone. `npm uninstall -g daedalus` removes the CLI itself.");
   });
 
 program
@@ -710,157 +545,6 @@ secretCmd
 function resolveConfigDir(configPath: string | undefined): string {
   if (!configPath) return process.cwd();
   return path.dirname(path.resolve(configPath));
-}
-
-// `service` command group — install/manage daedalus (and helpers) as a long-running service.
-const serviceCmd = program
-  .command("service")
-  .description("manage daedalus as a long-running service (systemd on Linux/WSL, launchd on macOS)");
-
-serviceCmd
-  .command("install [name]")
-  .description("install service units. With no args: interactive wizard. With <name>: just that one. With --all: every spec, non-interactively.")
-  .option("--dry-run", "print the unit content without writing or starting anything")
-  .option("--all", "install every spec without prompting")
-  .option("--list", "list available service specs instead of installing")
-  .action(async (name: string | undefined, opts: { dryRun?: boolean; all?: boolean; list?: boolean }) => {
-    if (opts.list) {
-      for (const id of Object.keys(SERVICE_SPECS)) console.log(id);
-      return;
-    }
-    try {
-      const manager = await buildServiceManager();
-
-      // Wizard mode: no name, no --all → interactive multi-select.
-      if (!name && !opts.all) {
-        await runServiceInstallWizard(manager, program.opts().config, opts.dryRun ? { dryRun: true } : {});
-        return;
-      }
-
-      console.log(`Platform: ${manager.platformLabel}`);
-      const targets = opts.all ? Object.keys(SERVICE_SPECS) : [name!];
-      for (const t of targets) {
-        const builder = SERVICE_SPECS[t];
-        if (!builder) {
-          console.error(`Unknown service '${t}'. Known: ${Object.keys(SERVICE_SPECS).join(", ")}`);
-          process.exit(2);
-        }
-        console.log(`\n── ${t} ──`);
-        const spec = await builder(program.opts().config);
-        const result = await manager.install(spec, opts.dryRun ? { dryRun: true } : {});
-        if (opts.dryRun) {
-          console.log(`\n--- ${result.unitPath} ---`);
-          console.log(result.unitContent);
-        }
-        for (const note of result.notes) console.log(note);
-      }
-      // If the supervisor is already running, restart it after any service
-      // install — the user asked for the runner to pick up new state /
-      // sibling units immediately. Skipped in dry-run.
-      if (!opts.dryRun) {
-        const { restartSupervisorIfActive } = await import("./service/restart-supervisor.js");
-        const r = await restartSupervisorIfActive(program.opts().config);
-        if (r.restarted) console.log(`\n↻ ${r.reason}`);
-      }
-    } catch (err) {
-      handleServiceError(err);
-    }
-  });
-
-serviceCmd
-  .command("uninstall [name]")
-  .description("stop, disable, and remove service units. <name> for one; --all for every installed spec.")
-  .option("--all", "uninstall every spec without prompting")
-  .action(async (name: string | undefined, opts: { all?: boolean }) => {
-    try {
-      const manager = await buildServiceManager();
-      let targets: string[];
-      if (opts.all) {
-        targets = Object.keys(SERVICE_SPECS);
-      } else if (name) {
-        targets = [name];
-      } else {
-        // Default to daedalus (the runner). It's the most-asked uninstall and "interactive
-        // multi-uninstall" is rare enough that we don't surface a wizard here.
-        targets = ["daedalus"];
-      }
-      for (const t of targets) {
-        const unitName = await unitNameFor(t, program.opts().config);
-        await manager.uninstall(unitName);
-        console.log(`✓ ${unitName} uninstalled`);
-      }
-    } catch (err) {
-      handleServiceError(err);
-    }
-  });
-
-for (const op of ["start", "stop", "restart"] as const) {
-  serviceCmd
-    .command(`${op} [name]`)
-    .description(`${op} a service (default: 'daedalus')`)
-    .action(async (name: string | undefined) => {
-      const target = name ?? "daedalus";
-      try {
-        const manager = await buildServiceManager();
-        const unitName = await unitNameFor(target, program.opts().config);
-        await manager[op](unitName);
-        console.log(`✓ ${unitName} ${op}ed`);
-      } catch (err) {
-        handleServiceError(err);
-      }
-    });
-}
-
-serviceCmd
-  .command("status [name]")
-  .description("show service status (default: 'daedalus')")
-  .action(async (name: string | undefined) => {
-    const target = name ?? "daedalus";
-    try {
-      const manager = await buildServiceManager();
-      const unitName = await unitNameFor(target, program.opts().config);
-      const s = await manager.status(unitName);
-      console.log(`${unitName}: ${s.active ? "active" : s.exists ? "inactive" : "(not installed)"}`);
-      if (s.detail) console.log(s.detail);
-    } catch (err) {
-      handleServiceError(err);
-    }
-  });
-
-serviceCmd
-  .command("logs [name]")
-  .description("print the command for tailing logs (default: 'daedalus')")
-  .action(async (name: string | undefined) => {
-    const target = name ?? "daedalus";
-    try {
-      const manager = await buildServiceManager();
-      const unitName = await unitNameFor(target, program.opts().config);
-      console.log(manager.logsCommand(unitName));
-    } catch (err) {
-      handleServiceError(err);
-    }
-  });
-
-serviceCmd
-  .command("list")
-  .description("list service specs available to install")
-  .action(() => {
-    for (const id of Object.keys(SERVICE_SPECS)) console.log(id);
-  });
-
-async function unitNameFor(target: string, configPath: string | undefined): Promise<string> {
-  const builder = SERVICE_SPECS[target];
-  if (!builder) return target; // allow operating on arbitrary unit names too
-  const spec = await builder(configPath);
-  return spec.name;
-}
-
-function handleServiceError(err: unknown): never {
-  if (err instanceof ServiceUnsupported) {
-    console.error(err.message);
-    process.exit(2);
-  }
-  throw err;
 }
 
 program
