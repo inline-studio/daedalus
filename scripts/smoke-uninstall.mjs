@@ -10,16 +10,11 @@ const expect = (label, ok, detail = "") => {
   if (!ok) pass = false;
 };
 
-// 1. `dae uninstall --help` lists the three opt flags.
+// 1. `dae uninstall --help` lists the key opt flags.
 {
   const r = spawnSync("node", ["dist/index.js", "uninstall", "--help"], { encoding: "utf8" });
   const out = (r.stdout ?? "") + (r.stderr ?? "");
   expect("uninstall --help exits 0", r.status === 0, `status=${r.status}`);
-  expect(
-    "uninstall --help mentions --all",
-    /--all\b/.test(out),
-    `out: ${out.slice(0, 200)}`,
-  );
   expect(
     "uninstall --help mentions --purge",
     /--purge\b/.test(out),
@@ -31,8 +26,8 @@ const expect = (label, ok, detail = "") => {
     `out: ${out.slice(0, 200)}`,
   );
   expect(
-    "uninstall --help is upfront about being destructive",
-    /reverse|stop|uninstall|disable/i.test(out),
+    "uninstall --help is upfront about stopping the stack",
+    /stop|down|purge|delete/i.test(out),
     `out: ${out.slice(0, 200)}`,
   );
 }
@@ -57,7 +52,7 @@ const expect = (label, ok, detail = "") => {
   const combined = (r.stdout ?? "") + (r.stderr ?? "");
   expect(
     "uninstall (no --yes) surfaces the warning + prompts; exits without crash",
-    r.status === 0 && /This will stop services/i.test(combined),
+    r.status === 0 && /stops the daedalus stack/i.test(combined),
     `status=${r.status}, out first 400B: ${combined.slice(0, 400)}`,
   );
 }

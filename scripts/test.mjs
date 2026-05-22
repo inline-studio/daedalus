@@ -2,15 +2,15 @@
 // Used by `npm test` and the CI workflow.
 //
 // We split the smokes into three buckets:
-//   1. CI-safe       — pure unit/wiring; no Docker daemon, no systemd, no live LLM
-//   2. Needs Docker  — the runtime + agent-in-container tests
-//   3. Needs systemd — service-install end-to-end tests (renderers themselves are CI-safe)
+//   1. CI-safe       — pure unit/wiring; no Docker daemon, no live LLM
+//   2. CLI-spawning  — slower smokes that fork the `dae` CLI but need no daemon
+//   3. Needs Docker  — the runtime + agent-in-container tests
 //
-// The default `npm test` runs CI-safe + (optionally) Docker if available + (optionally)
-// systemd if available. Set DAE_TEST_SCOPE to control:
+// The default `npm test` runs CI-safe + the CLI-spawning bucket + (optionally) Docker
+// if available. Set DAE_TEST_SCOPE to control:
 //   ci      → CI-safe only (default in CI; set by the workflow)
-//   local   → CI-safe + Docker + systemd if detected (default outside CI)
-//   all     → run everything; failures from missing-prerequisite tests are surfaced
+//   local   → CI-safe + CLI-spawning (default outside CI)
+//   all     → run everything, including Docker-dependent tests
 
 import { spawnSync } from "node:child_process";
 
@@ -19,12 +19,10 @@ const CI_SAFE = [
   "smoke-disable",
   "smoke-dispatcher",
   "smoke-export-mempalace",
+  "smoke-install",
   "smoke-mempalace",
-  "smoke-mempalace-localhttp",
   "smoke-mempalace-remote",
-  "smoke-linger",
   "smoke-onecli-setup",
-  "smoke-restart-services",
   "smoke-runtime-scheduling",
   "smoke-skill-bootstrap",
   "smoke-store-reopen",
@@ -34,20 +32,16 @@ const CI_SAFE = [
   "smoke-terminal-modes",
   "smoke-uninstall",
   "smoke-wildcard",
+  "smoke-wizard-defaults",
   "smoke-wizard-shell",
-  "smoke-service",        // directly drives renderers; no live systemctl call
   "smoke-time-awareness",
   "smoke-whisper",
-  "smoke-export-mempalace",
 ];
 
-// Tests that go through buildServiceManager → systemctl/launchctl. On Linux without
-// systemd-user available, they bail with the friendly "use WSL" path; on Windows they
-// always do. Run them only when systemd-user is detected, OR on macOS, OR on Windows.
+// Tests that don't need a service manager anymore (host services are retired), but
+// still spawn the CLI and may be slower. Run them outside CI by default.
 const NEEDS_PROCESS_MANAGER = [
   "smoke-this-turn",
-  "smoke-wizard-defaults",
-  "smoke-install",
 ];
 
 // Tests that need a running Docker daemon.
@@ -58,7 +52,7 @@ const scope = process.env.DAE_TEST_SCOPE ?? (process.env.CI ? "ci" : "local");
 const tests = [...new Set(CI_SAFE)];
 
 if (scope !== "ci") {
-  // local & all — try the process-manager tests too. They self-degrade on Windows / no-systemd.
+  // local & all — also run the slower CLI-spawning smokes.
   tests.push(...NEEDS_PROCESS_MANAGER);
 }
 if (scope === "all") {

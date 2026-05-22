@@ -177,7 +177,6 @@ export type ChannelsConfig = z.infer<typeof ChannelsConfigSchema>;
 
 export const TranscribeConfigSchema = z.object({
   backend: z.enum(["none", "openai-whisper", "whisper-local"]).default("none"),
-  runMode: z.enum(["host", "docker"]).default("host"),
   apiKey: z.string().optional(),
   baseUrl: z.string().url().optional(),
   model: z.string().optional(),

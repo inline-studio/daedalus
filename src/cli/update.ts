@@ -1,5 +1,7 @@
+import path from "node:path";
 import { createRequire } from "node:module";
 import { execa } from "execa";
+import { findComposeFile } from "../install.js";
 
 const REPO = "inline-studio/daedalus";
 
@@ -71,34 +73,26 @@ export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`\n✓ Updated to v${latest}.`);
+  console.log(`\n✓ Updated the dae CLI to v${latest}.`);
 
-  // Restart every daedalus-managed service that's currently installed + active
-  // so the live `dae serve` (and any sidecars like dae-whisper / dae-mempalace)
-  // actually load the new code instead of running yesterday's binary.
-  // Non-fatal — a missing service manager just surfaces a friendly note.
+  // The live stack runs as containers built from the daedalus image — the npm
+  // update above only refreshed the host CLI. Rebuild + restart the containers so
+  // they pick up the new code, reusing the existing compose .env (no re-prompting).
+  const composeFile = await findComposeFile();
+  if (!composeFile) {
+    console.log(
+      "\n(no docker-compose.yml found — rebuild the stack manually with `docker compose up -d --build`)",
+    );
+    return;
+  }
+  const composeDir = path.dirname(composeFile);
+  const args = ["compose", "-f", composeFile, "up", "-d", "--build"];
+  console.log(`\nRebuilding the stack:\n$ docker ${args.join(" ")}\n`);
   try {
-    const { restartAllActiveServices } = await import("../service/restart-supervisor.js");
-    const results = await restartAllActiveServices(undefined);
-    const restarted = results.filter((r) => r.restarted);
-    const skipped = results.filter((r) => !r.attempted);
-    const failed = results.filter((r) => r.attempted && !r.restarted);
-    if (restarted.length > 0) {
-      console.log(`\nRestarted ${restarted.length} service(s):`);
-      for (const r of restarted) console.log(`  ↻ ${r.reason}`);
-    }
-    if (failed.length > 0) {
-      console.log(`\nFailed to restart:`);
-      for (const r of failed) console.log(`  ✗ ${r.reason}`);
-    }
-    if (restarted.length === 0 && failed.length === 0) {
-      // Either nothing's installed/active, or no service manager at all.
-      // Surface the first non-attempted reason so the user knows.
-      const sample = skipped[0];
-      if (sample) console.log(`\n(no daedalus services restarted: ${sample.reason})`);
-    }
+    await execa("docker", args, { stdio: "inherit", cwd: composeDir });
+    console.log("\n✓ Stack rebuilt and restarted.");
   } catch (err) {
-    console.error(`\nCould not restart services automatically: ${(err as Error).message}`);
-    console.error(`Restart manually with: systemctl --user restart dae`);
+    console.error(`\nStack rebuild failed: ${(err as Error).message}`);
+    console.error("Rebuild manually with: docker compose up -d --build");
   }
 }

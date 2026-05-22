@@ -103,8 +103,8 @@ export async function runSetupAll(configPathArg: string | undefined): Promise<vo
     }
   }
   wizard.finish([
-    "`dae service install --all` — run daedalus + helpers as services that survive logout",
-    "`dae serve`                — start the runner in the foreground (Ctrl-C to stop)",
+    "`dae install`        — bring the docker stack up (supervisor + scheduler + memory)",
+    "`docker compose up -d` — same, if you've already written the compose .env",
   ]);
 }
 

@@ -304,26 +304,40 @@ onecli agents set-secrets --id <research-uuid> --secret-ids <brave-uuid>,<github
 
 ## Quick start
 
+The easy path is **`dae install`** — it ensures a config exists, asks the three
+questions it can't infer (local whisper? Telegram token? memory auth token?), writes
+the compose `.env` for you, and runs `docker compose up -d`:
+
 ```bash
-# 1. Copy / set your daedalus config + .env into the directory you'll bind-mount.
-mkdir -p /opt/daedalus/etc
-cp daedalus.config.yaml /opt/daedalus/etc/config.yaml
-
-# 2. Set environment for compose
-cat > .env <<'EOF'
-BRAIN_PATH=/opt/daedalus/brain
-DAEDALUS_CONFIG_DIR=/opt/daedalus/etc
-ONECLI_API_KEY=oc_…
-UID=1000
-DOCKER_GID=998
-EOF
-
-# 3. Bring it up
-docker compose up -d
-
-# 4. Watch the supervisor
+dae install
 docker compose logs -f daedalus
 ```
+
+### Manual equivalent
+
+If you'd rather wire it by hand:
+
+```bash
+# 1. Point the bind-mounts at your config dir + brain.
+cat > .env <<'EOF'
+BRAIN_PATH=/home/you/.daedalus/brain
+DAEDALUS_CONFIG_DIR=/home/you/.daedalus
+MEMPALACE_PALACE_PATH=/home/you/.daedalus/mempalace
+UID=1000
+DOCKER_GID=998
+# Optional — only if you use OneCLI / memory auth:
+# ONECLI_API_KEY=oc_…
+# MEMPALACE_TOKEN=…
+EOF
+
+# 2. Bring it up (add --profile whisper for local STT)
+docker compose up -d
+docker compose logs -f daedalus
+```
+
+One config file works on the host (`dae run`) and inside the container: the image
+sets `BRAIN_PATH=/brain`, `DAE_DATA_DIR=/data`, `DAE_SHARED_DIR=/shared`, so the
+config's host-relative paths are remapped to the container mount points automatically.
 
 Inbound messages on the configured channels (Telegram, etc) will spawn
 per-message agent containers automatically.

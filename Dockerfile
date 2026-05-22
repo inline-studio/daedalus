@@ -73,7 +73,13 @@ RUN mkdir -p /dae-runtime \
     && chmod -R a+rX /dae-runtime
 
 # Sensible defaults — overridden by docker-compose / `docker run -e`.
+# BRAIN_PATH / DAE_DATA_DIR / DAE_SHARED_DIR point the (otherwise host-relative)
+# config at the conventional in-container mount points, so one config file works
+# unchanged on the host (`dae run`) and inside this container (`dae serve`).
 ENV DAE_CONFIG=/etc/daedalus/config.yaml \
+    BRAIN_PATH=/brain \
+    DAE_DATA_DIR=/data \
+    DAE_SHARED_DIR=/shared \
     NODE_ENV=production
 
 VOLUME ["/brain", "/shared", "/data"]
