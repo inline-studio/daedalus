@@ -89,6 +89,9 @@ await fs.writeFile(
   expect("systemd unit ExecStart references mempalace-mcp", /mempalace-mcp/.test(result.unitContent));
   expect("systemd unit name = dae-mempalace", result.unitPath.endsWith("dae-mempalace.service"));
   expect("systemd Restart=on-failure", /Restart=on-failure/.test(result.unitContent));
+  // Crash-loop guard: a bad ExecStart must fail loudly (StartLimit), not spin forever.
+  expect("systemd unit has StartLimitBurst rate-limit", /StartLimitBurst=\d+/.test(result.unitContent));
+  expect("systemd unit has StartLimitIntervalSec", /StartLimitIntervalSec=\d+/.test(result.unitContent));
 }
 
 // 3. service-install --list still includes mempalace

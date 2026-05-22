@@ -22,7 +22,6 @@ export class SystemdManager implements ServiceManager {
   }
 
   async install(spec: ServiceSpec, opts: { dryRun?: boolean } = {}): Promise<InstallResult & { unitContent: string }> {
-    const content = renderUnit(spec);
     const unitPath = this.unitPath(spec.name);
 
     const postInstallNotes = [
@@ -34,9 +33,11 @@ export class SystemdManager implements ServiceManager {
     ];
 
     if (opts.dryRun) {
+      // Preview only — render with the command as configured (don't require it to
+      // be installed on the previewing machine).
       return {
         unitPath,
-        unitContent: content,
+        unitContent: renderUnit(spec),
         notes: [
           `(dry-run) would write ${unitPath} and run: daemon-reload → enable → start`,
           `(dry-run) would also offer to: sudo loginctl enable-linger $USER (if currently disabled)`,
@@ -45,6 +46,12 @@ export class SystemdManager implements ServiceManager {
         ],
       };
     }
+
+    // Real install: resolve the exec to an absolute path. systemd user units don't
+    // inherit your shell PATH, so a bare command in ExecStart fails at launch with
+    // status=203/EXEC — resolving now fails fast with a clear message instead.
+    const exec = await resolveExecAbsolute(spec.exec);
+    const content = renderUnit(exec === spec.exec ? spec : { ...spec, exec });
 
     await fs.mkdir(this.unitDir, { recursive: true });
     await fs.writeFile(unitPath, content, "utf8");
@@ -108,6 +115,20 @@ export class SystemdManager implements ServiceManager {
   }
 }
 
+async function resolveExecAbsolute(exec: string): Promise<string> {
+  if (path.isAbsolute(exec)) return exec;
+  // Resolve a bare command name via the installer's PATH — systemd user units
+  // have no inherited PATH, so a bare name in ExecStart fails with 203/EXEC.
+  const r = await execa("which", [exec], { reject: false });
+  const abs = (r.stdout ?? "").trim().split("\n")[0]?.trim();
+  if (r.exitCode === 0 && abs) return abs;
+  throw new Error(
+    `Service command '${exec}' isn't an absolute path and wasn't found on PATH. ` +
+      `systemd user units can't exec a bare command (status=203/EXEC) — set an ` +
+      `absolute path for the command (e.g. the output of \`which ${exec}\`).`,
+  );
+}
+
 function renderUnit(spec: ServiceSpec): string {
   // Quote arguments that contain spaces; systemd's ExecStart parses with shell-like rules.
   const argv = [shellQuote(spec.exec), ...spec.args.map(shellQuote)].join(" ");
@@ -119,6 +140,12 @@ function renderUnit(spec: ServiceSpec): string {
     `Description=${spec.description}`,
     `After=network-online.target`,
     `Wants=network-online.target`,
+    // Fail loudly instead of crash-looping forever: if it dies more than 5 times
+    // in 60s, systemd stops trying and marks the unit failed (`systemctl --user
+    // status <name>` shows it). A misconfigured ExecStart should surface fast,
+    // not spin tens of thousands of restarts.
+    `StartLimitIntervalSec=60`,
+    `StartLimitBurst=5`,
     ``,
     `[Service]`,
     `Type=simple`,
