@@ -1,7 +1,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import { execa } from "execa";
-import { findComposeFile } from "../install.js";
+import { findComposeFile, refreshComposeAssets } from "../install.js";
 
 const REPO = "inline-studio/daedalus";
 
@@ -86,6 +86,9 @@ export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
     return;
   }
   const composeDir = path.dirname(composeFile);
+  // Re-pack the just-updated CLI into the build context so --build actually
+  // rebuilds the image from the new version (not the stale tarball from install).
+  await refreshComposeAssets(composeDir);
   const args = ["compose", "-f", composeFile, "up", "-d", "--build"];
   console.log(`\nRebuilding the stack:\n$ docker ${args.join(" ")}\n`);
   try {

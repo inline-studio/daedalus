@@ -14,7 +14,10 @@
   "files": [
     "dist/",
     "examples/",
-    "README.md"
+    "README.md",
+    "docker-compose.yml",
+    "Dockerfile",
+    "Dockerfile.mempalace"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
