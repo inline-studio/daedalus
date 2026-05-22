@@ -80,8 +80,8 @@ Then re-run the install command and `dae --version` should work.
 ### Prerequisites
 
 - **Node.js 24+** (LTS). Daedalus uses `node:sqlite` and other 24-era APIs.
-- **Docker** — only if you want per-agent containers; not required for stdio/host mode.
-- **uv or pipx** — only if you set up local-stdio mempalace or local whisper.
+- **Docker** — required. The supervisor and every agent run as containers (see `docs/docker-mode.md`).
+- **uv or pipx** — only for local whisper, or `dae run` quick local testing.
 
 ## Quickstart
 
@@ -240,7 +240,7 @@ providers:
   #   baseUrl: http://localhost:11434
 
 runtime:
-  default: host # 'host' or 'docker'
+  dispatcher: container # agents run as docker containers (the supported deployment)
   shared:
     enabled: true
     hostPath: ./data/shared # writable cross-agent persistent storage

@@ -31,7 +31,7 @@ const expect = (label, ok, detail = "") => {
 function fakeConfig(brainPath) {
   return {
     brain: { path: brainPath, writable: false },
-    runtime: { default: "host", dispatcher: "process", shared: { enabled: false, hostPath: "", containerPath: "" } },
+    runtime: { dispatcher: "process", shared: { enabled: false, hostPath: "", containerPath: "" } },
     sessions: { dbPath: "/tmp/test.sqlite", attachmentsPath: "/tmp/atts", historyLimit: 80 },
     identity: { name: "Test" },
     web: { search: { provider: "none" }, fetch: { maxBytes: 1024, timeoutMs: 5000 } },

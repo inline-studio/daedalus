@@ -1,21 +1,21 @@
 # Docker mode
 
-Daedalus has two operational modes, picked per-install:
+Daedalus runs as docker containers. `dae serve` runs in a long-lived
+*supervisor* container; each inbound message → the supervisor spawns a fresh
+per-message *agent container* (the agent's declared image). Subagents inside
+those containers do the same recursively — every agent at every depth has its
+own filesystem, environment, and OneCLI credential scope. Shared services
+(memory, OneCLI) are their own containers on the `daedalus` network. No agent
+code runs on the host; that's the isolation model.
 
-- **Host mode** (default — `runtime.dispatcher: process`). `dae serve` runs as
-  one Node process on the host; agents and subagents run inside that same
-  process; bash tools shell out on the host. Fast iteration, simple to debug;
-  zero isolation between agents.
+> **Host mode is retired.** Earlier versions could run `dae serve` in-process on
+> the host (`runtime.dispatcher: process`). That's no longer a supported
+> deployment: the dispatcher defaults to `container`, and the supervisor runs as
+> the compose `daedalus` service. The only in-process path that remains is
+> **`dae run`** — the local dev one-shot — which forces it for quick iteration.
 
-- **Docker mode** (`runtime.dispatcher: container`). `dae serve` runs in a
-  *supervisor* container. Each inbound message → supervisor spawns a fresh
-  per-message *agent container* (the agent's declared image). Subagents inside
-  those containers do the same recursively — every agent at every depth has its
-  own filesystem, environment, and OneCLI credential scope. This is the model
-  you want in production.
-
-Both modes share the same code paths; the dispatcher abstraction
-(`src/dispatch/base.ts`) hides the difference from the kernel.
+The dispatcher abstraction (`src/dispatch/base.ts`) hides the spawn mechanics
+from the kernel.
 
 ## The picture
 

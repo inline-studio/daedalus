@@ -25,15 +25,17 @@ export const ProvidersConfigSchema = z.object({
 export type ProvidersConfig = z.infer<typeof ProvidersConfigSchema>;
 
 export const RuntimeConfigSchema = z.object({
-  default: z.enum(["host", "docker"]).default("host"),
-  // Where the AGENT itself runs (not the tools an agent uses).
-  //   "process"   — agents run in the same Node process as the supervisor (host mode;
-  //                 simplest; what you want for local dev). Subagents are in-process too.
-  //   "container" — supervisor spawns a fresh docker container per agent turn via the
-  //                 mounted docker.sock. Subagents inside those containers do the same
-  //                 thing recursively. This is what docker-compose.yml sets up.
+  // Where the bash tool runs is inferred per-agent: an agent with a container.image
+  // gets a docker runtime (bash in that image); otherwise bash runs in the current
+  // process — which, inside a dispatched agent container, IS that container.
+  // How the supervisor runs each agent turn:
+  //   "container" — (default) spawns a fresh docker container per agent turn via the
+  //                 mounted docker.sock; subagents recurse the same way. The supported
+  //                 deployment — docker-compose sets DAE_DISPATCHER=docker.
+  //   "process"   — in-process, no container. Retained ONLY for `dae run` (the local
+  //                 dev one-shot, which forces it); the long-running service is docker.
   // Overridable at runtime via the DAE_DISPATCHER env var (set by docker-compose).
-  dispatcher: z.enum(["process", "container"]).default("process"),
+  dispatcher: z.enum(["process", "container"]).default("container"),
   docker: z
     .object({
       // Path to the docker binary. If unset, the runtime tries `docker` on PATH and
@@ -221,7 +223,7 @@ export const ArtemisConfigSchema = z.object({
   brain: BrainConfigSchema,
   identity: IdentityConfigSchema.default({ name: "Artemis" }),
   providers: ProvidersConfigSchema.default({}),
-  runtime: RuntimeConfigSchema.default({ default: "host" }),
+  runtime: RuntimeConfigSchema.default({}),
   onecli: OneCliConfigSchema.default({
     enabled: false,
     baseUrl: "http://localhost:10254",

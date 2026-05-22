@@ -23,7 +23,7 @@ providers:
   #   baseUrl: http://localhost:11434
 
 runtime:
-  default: host             # 'host' or 'docker'
+  dispatcher: container     # agents run as docker containers (the supported deployment)
   # docker:
   #   bin: C:\docker\docker.exe   # explicit path; falls back to PATH or env DOCKER_BIN
   #   socket: npipe:////./pipe/docker_engine
