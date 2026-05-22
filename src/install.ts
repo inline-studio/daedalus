@@ -288,14 +288,14 @@ export async function refreshComposeAssets(composeDir: string): Promise<boolean>
   return ok;
 }
 
-// Locate the active docker-compose.yml for uninstall/update: the cwd (running
-// from a checkout), then the compose dir where `dae install` materialised it,
-// then the package bundle.
+// Locate the active *deployment* docker-compose.yml for uninstall/update: the cwd
+// (running from a checkout, where the user's .env lives) or the compose dir where
+// `dae install` materialised it. NOT the package bundle — that's a template with
+// no .env beside it, so returning it just yields a confusing interpolation error.
 export async function findComposeFile(): Promise<string | null> {
   const candidates = [
     path.join(process.cwd(), "docker-compose.yml"),
     path.join(os.homedir(), ".daedalus", "compose", "docker-compose.yml"),
-    path.join(bundleDir(), "docker-compose.yml"),
   ];
   for (const c of candidates) {
     if (await exists(c)) return c;
