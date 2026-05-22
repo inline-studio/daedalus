@@ -81,7 +81,7 @@ export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
   const composeFile = await findComposeFile();
   if (!composeFile) {
     console.log(
-      "\n(no docker-compose.yml found — rebuild the stack manually with `docker compose up -d --build`)",
+      "\n(no installed stack found — run `dae install` to set up and start the containers)",
     );
     return;
   }
