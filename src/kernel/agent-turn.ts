@@ -250,12 +250,16 @@ async function connectAgentMcp(
   // Merge in the implicit MemPalace MCP if the config has it enabled.
   const lh = config.mempalace?.localHttp;
   if (lh?.enabled && !allDefs["memory"] && !allDefs["mempalace"]) {
+    // If mempalace requires a bearer token, it's stored as MEMPALACE_TOKEN
+    // (by `dae setup mempalace`). Carry it on the auto-injected def so an
+    // authenticated server works without writing an explicit MCP entry.
+    const token = process.env.MEMPALACE_TOKEN;
     allDefs["memory"] = {
       url: `http://${lh.host}:${lh.port}${lh.urlPath}`,
       transport: "http",
       args: [],
       env: {},
-      headers: {},
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     };
   }
 

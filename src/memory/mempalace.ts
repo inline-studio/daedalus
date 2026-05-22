@@ -13,7 +13,7 @@ export class MempalaceMcpBackend implements MemoryBackend {
   isReady(): boolean {
     const s = this.getServer();
     if (!s) {
-      log.warn("memory.backend=mempalace but no MCP server named 'mempalace' is connected");
+      log.warn("memory.backend=mempalace but no MCP server named 'memory' is connected");
       return false;
     }
     return true;

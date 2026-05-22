@@ -210,5 +210,31 @@ function fakeConfig() {
   expect("no dae-runtime mount", !args.some((s) => s.includes("/dae-runtime")));
 }
 
+// 10. forwardEnv: local-service secrets (e.g. MEMPALACE_TOKEN) get passed as -e
+// into the agent container so MCP defs using ${VAR} resolve inside it.
+{
+  const opts = {
+    defaultImage: "ghcr.io/test/daedalus:test",
+    network: "daedalus",
+    hostBrainPath: "/host/brain",
+    hostSharedPath: "/host/shared",
+    hostDataPath: "/host/data",
+    hostConfigDir: "/host/etc",
+    forwardEnv: { MEMPALACE_TOKEN: "tok-123" },
+  };
+  const args = buildContainerArgs({
+    containerName: "dae-test-fe",
+    image: "ghcr.io/test/daedalus:test",
+    dispatchArgs: { agentName: "artemis", sessionId: "s", userId: "u", isSubagent: false },
+    opts,
+    brainWritable: false,
+  });
+  expect(
+    "forwardEnv MEMPALACE_TOKEN passed as -e to the container",
+    args.some((v, i) => args[i - 1] === "-e" && v === "MEMPALACE_TOKEN=tok-123"),
+    `args: ${args.join(" ").slice(0, 300)}`,
+  );
+}
+
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);

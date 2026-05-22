@@ -67,12 +67,15 @@ export async function runAgent(input: RunAgentInput): Promise<{ finalText: strin
     // the live service — every agent gets memory by default.
     const lh = config.mempalace?.localHttp;
     if (lh?.enabled && !allDefs["memory"] && !allDefs["mempalace"]) {
+      // Carry MEMPALACE_TOKEN (set by `dae setup mempalace`) so an authenticated
+      // server works without an explicit MCP entry.
+      const token = process.env.MEMPALACE_TOKEN;
       allDefs["memory"] = {
         url: `http://${lh.host}:${lh.port}${lh.urlPath}`,
         transport: "http",
         args: [],
         env: {},
-        headers: {},
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       };
     }
     // `mcpServers: ['*']` expands to every server in the mcp config.

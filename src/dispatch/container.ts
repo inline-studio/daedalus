@@ -59,6 +59,11 @@ export interface ContainerDispatcherOptions {
   // When unset, the dispatcher assumes the agent image has `dae` on PATH
   // (the original behaviour).
   runtimeVolume?: string;
+  // Extra env vars to forward into every agent container. Used for secrets that
+  // local MCP servers need but that DON'T go through OneCLI (e.g. MEMPALACE_TOKEN
+  // for the local mempalace memory server). MCP defs reference these via ${VAR};
+  // expansion runs inside the container, so the var must be present there.
+  forwardEnv?: Record<string, string>;
 }
 
 export class ContainerAgentDispatcher implements AgentDispatcher {
@@ -171,6 +176,12 @@ export function buildContainerArgs(input: {
   // granted — not what the supervisor agent has been granted.
   a.push("-e", `DAE_ONECLI_AGENT=${dispatchArgs.agentName}`);
 
+  // Local-service secrets (e.g. MEMPALACE_TOKEN) that aren't injected via OneCLI,
+  // so MCP defs using ${VAR} expansion resolve inside the container.
+  for (const [k, v] of Object.entries(opts.forwardEnv ?? {})) {
+    a.push("-e", `${k}=${v}`);
+  }
+
   // Entrypoint override. With the injected runtime, we ignore the image's
   // own ENTRYPOINT and run daedalus through the mounted shim — agents work
   // regardless of what the image was designed to do at startup. Without the
@@ -247,6 +258,11 @@ export function dispatcherOptionsFromEnv(config: ArtemisConfig): ContainerDispat
   };
   if (env.ONECLI_API_KEY) opts.onecliApiKey = env.ONECLI_API_KEY;
   if (env.DOCKER_HOST) opts.socket = env.DOCKER_HOST;
+  // Forward local-service secrets that bypass OneCLI (so MCP defs using ${VAR}
+  // resolve inside the container). MEMPALACE_TOKEN is the memory server's bearer.
+  const forwardEnv: Record<string, string> = {};
+  if (env.MEMPALACE_TOKEN) forwardEnv.MEMPALACE_TOKEN = env.MEMPALACE_TOKEN;
+  if (Object.keys(forwardEnv).length > 0) opts.forwardEnv = forwardEnv;
   // Inject the runtime by default if a volume is named. Opt out with
   // DAE_AGENT_RUNTIME_INJECT=false (useful when the agent image already has
   // daedalus baked in and the operator wants to skip the mount).
