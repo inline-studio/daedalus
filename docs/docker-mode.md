@@ -206,6 +206,39 @@ Two enforcement points:
    > `mempalace.localHttp.enabled` looks correct. To use the built-in mempalace,
    > leave `memory`/`mempalace` out of the mcp config entirely.
 
+### The `mempalace` container
+
+MemPalace's own MCP server is **stdio-only** (no HTTP transport). For docker mode
+it runs as its own service (`Dockerfile.mempalace` + the `mempalace` service in
+`docker-compose.yml`): the image fronts the stdio server with
+[`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy), exposing it over the
+network at **`http://mempalace:11364/sse`**. Every agent container reaches it by
+that name on the `daedalus` network — no `host.docker.internal`, no per-turn
+spawn, one shared instance.
+
+- **Palace persistence.** The on-disk store (chroma + knowledge graph) lives at
+  `/palace` in the container. Set `MEMPALACE_PALACE_PATH` in your compose `.env` to
+  a host dir (e.g. `/home/you/.daedalus/mempalace`) to bind-mount it; unset falls
+  back to the `mempalace-data` named volume.
+- **Wiring the connection.** mcp-proxy serves both streamable-HTTP at `/mcp` and
+  SSE at `/sse`. The `/mcp` endpoint matches daedalus's built-in auto-inject, so
+  the simplest setup needs **no explicit def** — just point the auto-inject at the
+  container:
+  ```yaml
+  mempalace:
+    localHttp:
+      enabled: true
+      host: mempalace      # the container name on the daedalus network
+      port: 11364
+      urlPath: /mcp
+  ```
+  That makes every agent get `memory → http://mempalace:11364/mcp` automatically.
+  (Prefer SSE, or have a non-daedalus client connect? Use an explicit def instead:
+  `{ "mcpServers": { "memory": { "url": "http://mempalace:11364/sse", "transport": "sse" } } }`.)
+- **Auth.** The service publishes only to `127.0.0.1` and the internal `daedalus`
+  network, so isolation is the boundary. mcp-proxy doesn't enforce a bearer token
+  itself — front it with a TLS reverse proxy if you expose it beyond the host.
+
 ## Scheduled tasks
 
 Two flavours, both go through the same dispatcher and both spawn per-agent

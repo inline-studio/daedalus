@@ -80,18 +80,26 @@ services:
     # Adjust if your host UID isn't 1000.
     user: "${UID:-1000}:${DOCKER_GID:-998}"
 
-  # Reference MemPalace MCP — every agent gets this wired automatically when
-  # daedalus is in docker mode (see src/mcp/loader.ts).
+  # Shared memory MCP every agent connects to (http://mempalace:11364/sse).
+  # MemPalace's own MCP server is stdio-only, so the image fronts it with mcp-proxy
+  # (see Dockerfile.mempalace). The palace (on-disk store) is bind-mounted so it
+  # persists and the container stays stateless: set MEMPALACE_PALACE_PATH in .env to
+  # your host palace dir (e.g. /home/you/.daedalus/mempalace). If unset, a named
+  # volume (mempalace-data) is used instead.
   mempalace:
-    image: ghcr.io/inline-studio/mempalace-mcp:latest
+    image: ${MEMPALACE_IMAGE:-ghcr.io/inline-studio/mempalace-mcp:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile.mempalace
     restart: unless-stopped
+    # Loopback publish so the host (`dae run`) can also reach it; agents reach it by
+    # container name (`mempalace`) on the daedalus network regardless of this.
     ports:
       - "127.0.0.1:11364:11364"
     volumes:
-      - mempalace-data:/data
+      - ${MEMPALACE_PALACE_PATH:-mempalace-data}:/palace
     networks:
       - daedalus
-    command: ["--transport", "http", "--host", "0.0.0.0", "--port", "11364"]
 
   # OneCLI is typically already deployed standalone (e.g. via ~/.onecli/docker-compose.yml).
   # Uncomment if you want it inside this same stack instead. If you DO uncomment, point
