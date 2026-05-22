@@ -21,7 +21,10 @@ import { upsertEnvFile } from "./env-file.js";
 import fs from "node:fs/promises";
 
 const DEFAULT_COMMAND = "uvx";
-const DEFAULT_ARGS = ["mempalace-mcp"];
+// MemPalace ships NO `mempalace-mcp` console entry point (see mempalace#1093) — its
+// MCP server runs as a module over stdio. `uvx --from mempalace` installs the
+// `mempalace` package into an ephemeral env and runs the module from it.
+const DEFAULT_ARGS = ["--from", "mempalace", "python", "-m", "mempalace.mcp_server"];
 
 async function isOnPath(cmd: string): Promise<boolean> {
   try {
@@ -99,8 +102,8 @@ export const mempalaceSetup: ChannelSetup = {
       process.stdout.write(haveUvx ? "found\n\n" : "not found\n");
       if (!haveUvx) {
         console.log(
-          "Install uv from https://docs.astral.sh/uv/, or use `pipx install mempalace-mcp`\n" +
-            "and point this setup at the resulting binary.\n",
+          "Install uv from https://docs.astral.sh/uv/ (or `pipx install mempalace`),\n" +
+            "then point this setup at the resulting command.\n",
         );
       }
       const cmdRes = await prompts({
@@ -175,14 +178,17 @@ export const mempalaceSetup: ChannelSetup = {
       if (!token) token = crypto.randomBytes(32).toString("hex");
 
       console.log(
-        "\nMemPalace's HTTP launch flags can vary by version. The default below is a guess —\n" +
-          "edit if your installed version uses different ones. The runner doesn't validate the\n" +
-          "command works; the service-install step does that when it actually starts the daemon.\n",
+        "\n⚠️  MemPalace's MCP server is STDIO-ONLY — it cannot serve HTTP itself.\n" +
+          "This mode therefore needs a stdio→HTTP BRIDGE (e.g. `mcp-proxy`) wrapping\n" +
+          "mempalace. If you only need memory on THIS machine, cancel (Ctrl-C) and pick\n" +
+          "local-stdio instead — it's simpler and needs no bridge.\n\n" +
+          "The default below wraps mempalace with mcp-proxy; adjust the proxy flags if your\n" +
+          "installed mcp-proxy version differs. The service-install step validates it starts.\n",
       );
       const cmdRes = await prompts({
         type: "text",
         name: "command",
-        message: "MemPalace launch command:",
+        message: "Bridge launch command:",
         initial: "uvx",
       });
       const command = (cmdRes.command as string | undefined)?.trim() ?? "uvx";
@@ -190,7 +196,7 @@ export const mempalaceSetup: ChannelSetup = {
         type: "text",
         name: "args",
         message: "Arguments:",
-        initial: `mempalace-mcp --transport http --host ${host} --port ${port}`,
+        initial: `mcp-proxy --host ${host} --port ${port} -- uvx --from mempalace python -m mempalace.mcp_server`,
       });
       const argsText = (argsRes.args as string | undefined)?.trim() ?? "";
       const launchArgs = argsText ? argsText.split(/\s+/) : [];
