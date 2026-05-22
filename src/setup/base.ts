@@ -142,13 +142,14 @@ export async function confirm(message: string, initial = true): Promise<boolean>
   return Boolean(res.ok);
 }
 
-// Returns the hostname to use for local service URLs based on the configured runtime.
-// When runtime.default is "docker", agents run as containers and need host.docker.internal
-// to reach services on the host machine; on host runtimes plain localhost works.
+// Returns the hostname to use for local service URLs. Agents dispatched as containers
+// reach services on the host machine via host.docker.internal; the in-process dispatcher
+// (`dae run`) talks to plain localhost.
 export function runtimeHost(configPath: string): string {
   try {
     const config = loadConfig(configPath);
-    return config.runtime.default === "docker" ? "host.docker.internal" : "localhost";
+    const mode = process.env.DAE_DISPATCHER ?? config.runtime.dispatcher;
+    return mode === "container" ? "host.docker.internal" : "localhost";
   } catch {
     return "localhost";
   }

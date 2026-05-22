@@ -27,7 +27,6 @@ function fakeConfig() {
   return {
     brain: { path: "/tmp/no-brain", writable: false },
     runtime: {
-      default: "host",
       dispatcher: "process",
       shared: { enabled: true, hostPath: "/tmp/shared", containerPath: "/shared" },
     },

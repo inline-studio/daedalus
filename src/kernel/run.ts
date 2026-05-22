@@ -12,7 +12,7 @@ import { buildSpawnSubagentTool } from "./orchestrator.js";
 import { buildSecretsBackend } from "../secrets/store/factory.js";
 import { resolveProviderKey } from "../providers/resolve.js";
 import { SessionStore } from "../sessions/store.js";
-import { buildDispatcher } from "../dispatch/factory.js";
+import { InProcessAgentDispatcher } from "../dispatch/in-process.js";
 import { log } from "../log.js";
 
 export interface RunAgentInput {
@@ -123,7 +123,10 @@ export async function runAgent(input: RunAgentInput): Promise<{ finalText: strin
   // path, with a fixed local user_id matching the cli channel.
   const sessions = new SessionStore(config.sessions.dbPath);
   const userId = sessions.resolveUser("cli", "local");
-  const dispatcher = buildDispatcher(config);
+  // `dae run` is the local dev one-shot — it always dispatches subagents in-process,
+  // independent of `runtime.dispatcher` (which defaults to `container` for the service).
+  // This is the one place host execution survives the host-mode retirement.
+  const dispatcher = new InProcessAgentDispatcher(config);
   const orchestratorTool = await buildSpawnSubagentTool({
     config,
     parent: agent,

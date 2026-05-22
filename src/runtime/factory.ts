@@ -53,12 +53,8 @@ export function buildRuntime(agent: AgentManifest, config: ArtemisConfig): Runti
     });
   }
 
-  if (config.runtime.default === "docker") {
-    // Generic docker runtime with no image — agent must set one or tools must override.
-    throw new Error(
-      `Runtime default is 'docker' but agent '${agent.name}' has no container.image. Set one in the agent manifest.`,
-    );
-  }
-
+  // No per-agent image: bash runs in the current process. Under the container
+  // dispatcher that process is itself a per-turn agent container, so bash is
+  // already isolated; on `dae run` it's the local dev shell.
   return new HostRuntime();
 }
