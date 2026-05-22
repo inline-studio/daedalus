@@ -288,7 +288,13 @@ export const mempalaceSetup: ChannelSetup = {
     if (Object.keys(envUpdates).length > 0) {
       await upsertEnvFile(ctx.envPath, envUpdates);
     }
-    await upsertMcpServer(mcpConfigPath, "mempalace", entry);
+    // Register the server as `memory` (not `mempalace`): that's the name daedalus's
+    // auto-inject uses and the name agents call (`mcp__memory__*`). Naming it
+    // `mempalace` here was the reason a fresh `dae setup mempalace` didn't "just
+    // work" — agents looked up `memory` and found nothing. Clean up any legacy
+    // `mempalace`-named entry from older setups so there's exactly one.
+    await removeMcpServer(mcpConfigPath, "mempalace").catch(() => undefined);
+    await upsertMcpServer(mcpConfigPath, "memory", entry);
 
     // 2. YAML edits — memory.backend + optional brain-sync + local-http daemon settings
     await fs.access(ctx.configPath);
@@ -317,11 +323,12 @@ export const mempalaceSetup: ChannelSetup = {
     });
 
     console.log(
-      `\n✓ Added 'mempalace' to ${path.relative(process.cwd(), mcpConfigPath)} (${mode})\n` +
+      `\n✓ Added the 'memory' MCP server to ${path.relative(process.cwd(), mcpConfigPath)} (${mode})\n` +
         `✓ Set memory.backend = mempalace\n` +
         (enableBrainSync ? `✓ Enabled brain-sync (schedule: ${schedule})\n` : "") +
         (envUpdates.MEMPALACE_TOKEN ? `✓ Saved MEMPALACE_TOKEN via secrets backend\n` : "") +
-        `\nAny agent that lists 'mempalace' in its mcpServers will now reach the ${mode} instance.\n`,
+        `\nEvery agent gets the 'memory' server automatically — its tools appear as ` +
+        `mcp__memory__* — so no per-agent config is needed.\n`,
     );
 
     record(`memory backend set to mempalace (${mode})`);
@@ -393,9 +400,12 @@ export const mempalaceSetup: ChannelSetup = {
 
     // Always remove the MCP entry (no point leaving a disabled MCP server in the config —
     // the runner doesn't have a per-server enable flag, only the memory.backend toggle).
-    if (await hasMcpServer(mcpConfigPath, "mempalace")) {
-      await removeMcpServer(mcpConfigPath, "mempalace");
-      console.log(`✓ Removed mempalace from ${path.relative(process.cwd(), mcpConfigPath)}`);
+    // Handle both the current `memory` name and the legacy `mempalace` name.
+    for (const serverName of ["memory", "mempalace"]) {
+      if (await hasMcpServer(mcpConfigPath, serverName)) {
+        await removeMcpServer(mcpConfigPath, serverName);
+        console.log(`✓ Removed '${serverName}' from ${path.relative(process.cwd(), mcpConfigPath)}`);
+      }
     }
 
     // YAML toggles via the shared helper so output messages stay consistent.

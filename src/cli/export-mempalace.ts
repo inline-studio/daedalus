@@ -23,10 +23,11 @@ const SUB = "─".repeat(72);
 export async function exportMempalace(opts: ExportOptions = {}): Promise<void> {
   const config = loadConfig(opts.configPath);
   const mcpServers = await loadMcpConfig(config.mcp.configPath);
-  const entry = mcpServers.mempalace;
+  // Current setups register the server as `memory`; older ones used `mempalace`.
+  const entry = mcpServers.memory ?? mcpServers.mempalace;
   if (!entry) {
     throw new Error(
-      "No 'mempalace' entry found in your MCP config. Run `dae setup mempalace` first.",
+      "No 'memory' entry found in your MCP config. Run `dae setup mempalace` first.",
     );
   }
 
@@ -108,7 +109,7 @@ export async function exportMempalace(opts: ExportOptions = {}): Promise<void> {
   console.log("");
   const snippet = {
     mcpServers: {
-      mempalace: {
+      memory: {
         url: suggestedRemoteUrl,
         transport: entry.transport ?? "http",
         ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
