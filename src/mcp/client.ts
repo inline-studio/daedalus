@@ -3,9 +3,25 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { Agent } from "undici";
 import type { McpServerDef } from "./loader.js";
 import type { ToolDefinition } from "../types.js";
 import { log } from "../log.js";
+
+// MCP HTTP/SSE transports must bypass the global undici dispatcher. When OneCLI
+// installs its MITM ProxyAgent via setGlobalDispatcher, routing the MCP streaming
+// transport through it corrupts the response — undici throws
+// "Response does not match the HTTP/1.1 protocol (Expected HTTP/, RTSP/ or ICE/)".
+// MCP servers are local and/or authenticate with their own explicit headers; they
+// never need OneCLI's per-request credential injection (unlike the LLM call). So
+// give them a direct dispatcher. A custom `fetch` is the reliable injection point —
+// the SDK routes every request (POST, GET stream, reconnect) through `opts.fetch`.
+const mcpDirectDispatcher = new Agent();
+const mcpDirectFetch = ((input: unknown, init?: unknown) =>
+  fetch(input as Parameters<typeof fetch>[0], {
+    ...((init as Record<string, unknown>) ?? {}),
+    dispatcher: mcpDirectDispatcher,
+  } as unknown as RequestInit)) as typeof fetch;
 
 export interface ConnectedServer {
   name: string;
@@ -60,19 +76,19 @@ async function buildTransport(def: McpServerDef) {
       if (!def.url) throw new Error("http MCP server requires 'url'");
       const requestInit: RequestInit | undefined =
         Object.keys(def.headers).length > 0 ? { headers: def.headers } : undefined;
-      return new StreamableHTTPClientTransport(
-        new URL(def.url),
-        requestInit ? { requestInit } : undefined,
-      );
+      return new StreamableHTTPClientTransport(new URL(def.url), {
+        ...(requestInit ? { requestInit } : {}),
+        fetch: mcpDirectFetch,
+      });
     }
     case "sse": {
       if (!def.url) throw new Error("sse MCP server requires 'url'");
       const requestInit: RequestInit | undefined =
         Object.keys(def.headers).length > 0 ? { headers: def.headers } : undefined;
-      return new SSEClientTransport(
-        new URL(def.url),
-        requestInit ? { requestInit } : undefined,
-      );
+      return new SSEClientTransport(new URL(def.url), {
+        ...(requestInit ? { requestInit } : {}),
+        fetch: mcpDirectFetch,
+      });
     }
   }
 }
