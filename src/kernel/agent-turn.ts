@@ -18,9 +18,10 @@ import { SessionStore, type PersistedMessage } from "../sessions/store.js";
 import { ScheduleStore } from "../sessions/schedule-store.js";
 import { AttachmentStore } from "../attachments/store.js";
 import { readAttachmentTool } from "../tools/attachment.js";
+import { buildAttachReplyTool } from "../tools/attach-reply.js";
 import { buildSpawnSubagentTool } from "./orchestrator.js";
 import { buildDispatcher } from "../dispatch/factory.js";
-import type { AgentDispatcher, DispatchResult } from "../dispatch/base.js";
+import type { AgentDispatcher, DispatchResult, OutboundAttachment } from "../dispatch/base.js";
 import { log } from "../log.js";
 
 // Single-turn agent runner. Invoked in two contexts:
@@ -124,6 +125,13 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     // store; pass it through deps.
     const builtinTools = selectBuiltins(agent.tools, config, { scheduleStore });
     builtinTools.push(readAttachmentTool(attachments));
+    // Outbound reply attachments. Only the top-level turn's reply reaches the user, so
+    // only it gets `attach_to_reply`; the tool records refs into this sink which we
+    // return in the DispatchResult below.
+    const outboundAttachments: OutboundAttachment[] = [];
+    if (!isSubagent) {
+      builtinTools.push(buildAttachReplyTool(attachments, outboundAttachments));
+    }
     if (isSubagent) {
       // Subagents get ask_user so they can bubble questions up to the orchestrator.
       builtinTools.push(askUserTool);
@@ -200,7 +208,12 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
         turns: result.turns,
       };
     }
-    return { status: "complete", finalText: result.finalText, turns: result.turns };
+    return {
+      status: "complete",
+      finalText: result.finalText,
+      turns: result.turns,
+      ...(outboundAttachments.length ? { attachments: outboundAttachments } : {}),
+    };
   } finally {
     sessions.close();
     scheduleStore.close();

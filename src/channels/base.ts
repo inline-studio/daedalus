@@ -27,9 +27,20 @@ export interface IncomingAttachment {
   url?: string;
 }
 
+// A file to send alongside an outbound reply (e.g. a screenshot the agent took).
+// Carries resolved bytes — the supervisor reads these from the AttachmentStore before
+// calling send(), so channels just upload them.
+export interface OutgoingAttachment {
+  data: Buffer;
+  mediaType: string;
+  filename?: string;
+  caption?: string;
+}
+
 export interface OutgoingMessage {
   text?: string;
   parts?: ContentPart[];
+  attachments?: OutgoingAttachment[];
   // If unset, the channel will route to the user's last inbound channel.
   toExternalUserId?: string;
 }

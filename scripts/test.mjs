@@ -25,6 +25,7 @@ const CI_SAFE = [
   "smoke-mempalace-remote",
   "smoke-onecli-setup",
   "smoke-onecli-proxy-env",
+  "smoke-outbound-attachment",
   "smoke-persistent-dispatcher",
   "smoke-runtime-scheduling",
   "smoke-skill-bootstrap",

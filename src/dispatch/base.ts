@@ -36,8 +36,20 @@ export interface DispatchArgs {
   timeoutMs?: number;
 }
 
+// A file the agent attached to its reply (via the `attach_to_reply` tool). Carried as a
+// content-addressable ref into the AttachmentStore (which lives on the shared /data
+// volume), so it survives the worker→supervisor hop without shipping bytes over the
+// dispatcher's HTTP/stdout. The supervisor resolves the ref and hands the bytes to the
+// channel for upload.
+export interface OutboundAttachment {
+  ref: string; // "sha256:<hex>" into the AttachmentStore
+  mediaType: string;
+  filename?: string;
+  caption?: string;
+}
+
 export type DispatchResult =
-  | { status: "complete"; finalText: string; turns: number }
+  | { status: "complete"; finalText: string; turns: number; attachments?: OutboundAttachment[] }
   | { status: "pending_question"; question: string; turns: number };
 
 export interface AgentDispatcher {

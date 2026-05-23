@@ -6,6 +6,7 @@ import { AttachmentStore } from "./attachments/store.js";
 import { NoopTranscriber, OpenAITranscriber, type Transcriber } from "./attachments/transcribe.js";
 import { MessageBus } from "./channels/bus.js";
 import { buildChannels } from "./channels/registry.js";
+import type { OutgoingMessage, OutgoingAttachment } from "./channels/base.js";
 import { ingestIncomingMessage } from "./kernel/ingest.js";
 import { buildDispatcher } from "./dispatch/factory.js";
 import { PersistentContainerDispatcher } from "./dispatch/persistent.js";
@@ -73,7 +74,27 @@ export async function serve(config: ArtemisConfig): Promise<void> {
       });
       const reply =
         result.status === "pending_question" ? result.question : result.finalText;
-      await ch.send(msg.externalUserId, { text: reply });
+      const outgoing: OutgoingMessage = { text: reply };
+      // Resolve any reply attachments (refs into the shared AttachmentStore) to bytes so
+      // the channel can upload them. The agent stored them on the same /data volume.
+      if (result.status === "complete" && result.attachments?.length) {
+        const resolved: OutgoingAttachment[] = [];
+        for (const a of result.attachments) {
+          const data = await attachments.readBuffer(a.ref);
+          if (!data) {
+            log.warn({ ref: a.ref }, "reply attachment ref not found — skipping");
+            continue;
+          }
+          resolved.push({
+            data,
+            mediaType: a.mediaType,
+            ...(a.filename ? { filename: a.filename } : {}),
+            ...(a.caption ? { caption: a.caption } : {}),
+          });
+        }
+        if (resolved.length) outgoing.attachments = resolved;
+      }
+      await ch.send(msg.externalUserId, outgoing);
       log.info(
         { agent: agentName, channel: msg.channel, turns: result.turns, status: result.status },
         "turn complete",
