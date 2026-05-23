@@ -32,8 +32,8 @@ export const RuntimeConfigSchema = z.object({
   //   "container" — (default) spawns a fresh docker container per agent turn via the
   //                 mounted docker.sock; subagents recurse the same way. The supported
   //                 deployment — docker-compose sets DAE_DISPATCHER=docker.
-  //   "process"   — in-process, no container. Retained ONLY for `dae run` (the local
-  //                 dev one-shot, which forces it); the long-running service is docker.
+  //   "process"   — in-process, no container. A non-docker fallback for `dae serve`
+  //                 (and in-process subagent delegation); the supported deployment is docker.
   // Overridable at runtime via the DAE_DISPATCHER env var (set by docker-compose).
   dispatcher: z.enum(["process", "container"]).default("container"),
   docker: z

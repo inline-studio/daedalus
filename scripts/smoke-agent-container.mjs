@@ -11,9 +11,9 @@
 //
 // Run with:  node scripts/smoke-agent-container.mjs
 //
-// Bypasses the LLM entirely. To verify the full LLM → tool_use → container loop, set
-// ANTHROPIC_API_KEY and run:  node dist/index.js -c examples/daedalus.config.yaml run coder
-//   --prompt "Run 'cat /etc/os-release && uname -a' and report exactly what you see"
+// Bypasses the LLM entirely. To verify the full LLM → tool_use → container loop,
+// bring up the stack (`dae install`) and message an agent through a channel
+// (e.g. "Run 'cat /etc/os-release && uname -a' and report exactly what you see").
 
 import { loadConfig } from "../dist/config/load.js";
 import { loadAgent } from "../dist/brain/agents.js";

@@ -143,8 +143,8 @@ export async function confirm(message: string, initial = true): Promise<boolean>
 }
 
 // Returns the hostname to use for local service URLs. Agents dispatched as containers
-// reach services on the host machine via host.docker.internal; the in-process dispatcher
-// (`dae run`) talks to plain localhost.
+// reach services on the host machine via host.docker.internal; the in-process
+// dispatcher (`dae serve` in process mode) talks to plain localhost.
 export function runtimeHost(configPath: string): string {
   try {
     const config = loadConfig(configPath);

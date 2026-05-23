@@ -24,10 +24,9 @@ installCliTerminalModes();
 import { Command } from "commander";
 import { loadConfig } from "./config/load.js";
 import { applyOneCli } from "./secrets/onecli.js";
-import { listAgents, loadAgent } from "./brain/agents.js";
+import { listAgents } from "./brain/agents.js";
 import { listSkills } from "./brain/skills.js";
 import { loadMcpConfig } from "./mcp/loader.js";
-import { runAgent } from "./kernel/run.js";
 import { loadSchedules, startScheduler } from "./scheduler/cron.js";
 import { serve } from "./serve.js";
 import { listDisables, listSetups, runDisable, runSetup, runSetupAll } from "./setup/index.js";
@@ -56,35 +55,6 @@ program
     "--verbose",
     "show all logs (debug level) AND surface warnings normally filtered out (node:sqlite experimental notice, etc.)",
   );
-
-program
-  .command("run <agent>")
-  .description("run an agent once with a prompt")
-  .option("-p, --prompt <text>", "user prompt", "")
-  .option("--stdin", "read prompt from stdin")
-  .action(async (agentName: string, opts: { prompt: string; stdin?: boolean }) => {
-    const config = loadConfig(program.opts().config);
-    await applyOneCli(config.onecli);
-
-    let prompt = opts.prompt;
-    if (opts.stdin) {
-      prompt = await readStdin();
-    }
-    if (!prompt) {
-      console.error("Error: --prompt or --stdin required");
-      process.exit(2);
-    }
-
-    const a = await loadAgent(config.brain.path, agentName);
-    const result = await runAgent({
-      config,
-      agent: a.manifest,
-      agentBody: a.body,
-      prompt,
-    });
-    process.stdout.write(result.finalText + "\n");
-    log.info({ turns: result.turns }, "run complete");
-  });
 
 // In-container single-turn entrypoint. Called by ContainerAgentDispatcher to
 // run one turn of one agent inside a fresh container. The session's inbound
@@ -580,13 +550,6 @@ program
     const config = loadConfig(program.opts().config);
     console.log(JSON.stringify(config, null, 2));
   });
-
-async function readStdin(): Promise<string> {
-  let data = "";
-  process.stdin.setEncoding("utf8");
-  for await (const chunk of process.stdin) data += chunk;
-  return data.trim();
-}
 
 program.parseAsync().catch((err) => {
   log.error({ err }, "command failed");
