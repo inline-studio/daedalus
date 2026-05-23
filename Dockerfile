@@ -8,16 +8,25 @@
 FROM node:24-slim
 
 # Base tooling agents will reach for in `bash` and for reaching out via the network.
-# Anything heavier (python, php, chromium, …) belongs in a per-agent image — keep this
-# one small.
+# This image is ALSO the warm agent-bash runtime: with runtime.persistentAgent, the
+# top-level agent's bash runs in the dae-worker (this image) via HostRuntime, and
+# per-message subagents run their bash in this image too — so it needs a usable
+# foundation, not just the supervisor minimum. (Per-language toolchains like python/php
+# still live in per-agent images.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
-    curl \
+    curl wget \
     git \
     jq \
+    less procps iproute2 iputils-ping \
+    unzip zip xz-utils bzip2 \
     tini \
     && rm -rf /var/lib/apt/lists/*
+
+# Built-in UTF-8 locale (glibc ships C.UTF-8 — no `locales` package needed). Avoids the
+# POSIX/C default that trips up Python/Node/CLIs on non-ASCII input.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
 
 # Docker CLI (client only — NOT the daemon). The supervisor (`dae serve`) spawns one
 # container per agent turn by shelling out to `docker run` over the bind-mounted
@@ -38,6 +47,18 @@ RUN set -eux; \
     install -m 0755 /tmp/docker/docker /usr/local/bin/docker; \
     rm -rf /tmp/docker /tmp/docker.tgz; \
     docker --version
+
+# Chromium runtime libraries, so browser-automation skills (agent-browser via
+# Playwright/Puppeteer) can LAUNCH the Chromium they install at runtime. Stateful
+# browser CLIs must run in a PERSISTENT shell — i.e. the agent's bash via HostRuntime,
+# which executes in THIS image (the dae-worker for top-level agents; the per-message
+# container for subagents). A per-call `container.image` would spawn a throwaway
+# container per command and kill the browser between `open` and `snapshot`, so the libs
+# belong here, not only in the per-toolchain leaves. Node is already present, so we use
+# Playwright's own installer for the exact, version-correct package set.
+ARG PLAYWRIGHT_VERSION=1.49.1
+RUN npx --yes "playwright@${PLAYWRIGHT_VERSION}" install-deps chromium \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
 
 # Use tini as PID 1 so signals propagate cleanly and zombies get reaped.
 ENTRYPOINT ["/usr/bin/tini", "--"]
