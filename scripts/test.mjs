@@ -23,6 +23,7 @@ const CI_SAFE = [
   "smoke-mempalace",
   "smoke-mempalace-remote",
   "smoke-onecli-setup",
+  "smoke-persistent-dispatcher",
   "smoke-runtime-scheduling",
   "smoke-skill-bootstrap",
   "smoke-store-reopen",
