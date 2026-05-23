@@ -43,15 +43,38 @@ export class TelegramChannel implements Channel {
   }
 
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {
-    if (!msg.text) return;
-    const res = await fetch(`${this.apiBase}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: externalUserId, text: msg.text }),
-    });
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      log.error({ status: res.status, body }, "telegram sendMessage failed");
+    // Text first (sendMessage handles long replies; captions are capped at 1024 chars,
+    // so we don't fold the reply into an attachment caption).
+    if (msg.text) {
+      const res = await fetch(`${this.apiBase}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: externalUserId, text: msg.text }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        log.error({ status: res.status, body }, "telegram sendMessage failed");
+      }
+    }
+
+    // Then each attachment: images via sendPhoto (inline preview), everything else via
+    // sendDocument. Both are multipart uploads of the raw bytes.
+    for (const a of msg.attachments ?? []) {
+      const isImage = a.mediaType.startsWith("image/");
+      const method = isImage ? "sendPhoto" : "sendDocument";
+      const field = isImage ? "photo" : "document";
+      const form = new FormData();
+      form.set("chat_id", externalUserId);
+      if (a.caption) form.set("caption", a.caption);
+      form.set(field, new Blob([a.data], { type: a.mediaType }), a.filename ?? "attachment");
+      const res = await fetch(`${this.apiBase}/${method}`, { method: "POST", body: form });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        log.error(
+          { status: res.status, body, method, filename: a.filename },
+          "telegram attachment send failed",
+        );
+      }
     }
   }
 

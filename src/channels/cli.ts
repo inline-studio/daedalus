@@ -37,6 +37,11 @@ export class CliChannel implements Channel {
   }
 
   async send(_externalUserId: string, msg: OutgoingMessage): Promise<void> {
-    if (msg.text) process.stdout.write(`\n${msg.text}\n> `);
+    if (msg.text) process.stdout.write(`\n${msg.text}\n`);
+    for (const a of msg.attachments ?? []) {
+      // A terminal can't render the bytes — note them so the user knows they'd be sent.
+      process.stdout.write(`[attachment: ${a.filename ?? "file"} (${a.mediaType}, ${a.data.length} bytes)]\n`);
+    }
+    process.stdout.write("> ");
   }
 }

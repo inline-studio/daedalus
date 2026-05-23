@@ -67,7 +67,16 @@ export class WebChannel implements Channel {
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {
     const stream = this.streams.get(externalUserId);
     if (!stream) return; // user not connected; drop silently
-    const data = JSON.stringify({ text: msg.text ?? "", parts: msg.parts ?? [] });
+    const data = JSON.stringify({
+      text: msg.text ?? "",
+      parts: msg.parts ?? [],
+      attachments: (msg.attachments ?? []).map((a) => ({
+        mediaType: a.mediaType,
+        ...(a.filename ? { filename: a.filename } : {}),
+        ...(a.caption ? { caption: a.caption } : {}),
+        base64: a.data.toString("base64"),
+      })),
+    });
     stream.write(`event: message\ndata: ${data}\n\n`);
   }
 
