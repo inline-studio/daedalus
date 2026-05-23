@@ -85,21 +85,48 @@ export async function applyOneCli(config: OneCliConfig): Promise<void> {
   });
   setGlobalDispatcher(proxyAgent);
 
-  // Mirror the gateway's env to process.env so any subprocesses inherit it. Rewrite
-  // proxy URLs the same way — a `dae`-spawned container would also fail to resolve
-  // `host.docker.internal` unless it's actually joined to the Docker network, and we
-  // can't tell from here which case applies. If the caller knows otherwise they can
-  // override via their own env.
-  for (const [k, v] of Object.entries(bundle.env)) {
-    process.env[k] =
-      k === "HTTPS_PROXY" || k === "HTTP_PROXY" ? rewriteProxyHostForCaller(v, config.baseUrl) : v;
-  }
+  // Mirror the gateway's env to process.env so any subprocesses inherit it, rewriting
+  // the proxy host the same way (host.docker.internal → the host we actually reached).
+  Object.assign(process.env, rewriteBundleEnv(bundle.env, config.baseUrl));
+
+  // Trust the MITM CA in every runtime an agent reaches for. Node uses
+  // NODE_EXTRA_CA_CERTS (appended to its built-ins); the subprocess tooling agents
+  // shell out to needs the file-based vars: curl/git/openssl read CURL_CA_BUNDLE +
+  // SSL_CERT_FILE, and Go CLIs (gh, doctl) read SSL_CERT_FILE. Without these, npm
+  // worked (it's node) but every curl/gh/doctl call failed TLS through the proxy.
+  // (All external traffic goes through the proxy, which presents this CA, so trusting
+  // it alone is sufficient.)
   process.env.NODE_EXTRA_CA_CERTS = caPath;
+  process.env.CURL_CA_BUNDLE = caPath;
+  process.env.SSL_CERT_FILE = caPath;
 
   log.info(
     { proxy: redactProxyUrl(proxyUrl), agent: agentIdentifier, caPath },
     "OneCLI proxy enabled (MITM CA trusted via undici requestTls)",
   );
+}
+
+// Copy the gateway bundle's env, rewriting the proxy host on EVERY proxy variable.
+// OneCLI ships both upper- and lower-case (HTTPS_PROXY *and* https_proxy, etc.), and
+// npm + curl read the LOWERCASE ones — so rewriting only the uppercase keys (the old
+// bug) left npm/curl pointed at `host.docker.internal`, which doesn't resolve inside
+// the agent container. That stalled every skill bootstrap (~70s of npm retries) and
+// broke curl-based ones outright. NO_PROXY is a bypass list, not a host to reach, so
+// it's left untouched.
+export function rewriteBundleEnv(
+  bundleEnv: Record<string, string>,
+  baseUrl: string,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(bundleEnv)) {
+    out[k] = isProxyEnvVar(k) ? rewriteProxyHostForCaller(v, baseUrl) : v;
+  }
+  return out;
+}
+
+// http_proxy / https_proxy / all_proxy, in any case.
+function isProxyEnvVar(key: string): boolean {
+  return /^(https?|all)_proxy$/i.test(key);
 }
 
 // Swap the proxy URL's host for the host we already reached successfully (baseUrl).
