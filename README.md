@@ -39,6 +39,18 @@ services, identity, and the orchestrator/subagent ask-user bubble-up are wired a
 smoke-tested across **14 smoke suites** covering ~150 assertions. See
 [scripts/test.mjs](scripts/test.mjs) and the GitHub Actions workflow.
 
+## Documentation
+
+Full guides live in [`docs/`](docs/README.md):
+
+- [Installation & integrations](docs/install.md) — `dae install`, providers, Brave,
+  memory, OneCLI, the Docker choice
+- [Agents & the brain](docs/agents.md) — creating/customising agents, frontmatter reference
+- [Skills](docs/skills.md) — building skills, the install script, the daedalus image
+- [Channels](docs/channels.md) — Telegram, inbound/outbound attachments
+- [MCP servers](docs/mcp.md) — one file per server, auto-merge
+- [Docker mode](docs/docker-mode.md) — the dispatch architecture
+
 ## Install
 
 ```bash
