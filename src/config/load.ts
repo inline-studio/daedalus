@@ -90,9 +90,9 @@ export function loadConfig(configPath?: string): ArtemisConfig {
   if (process.env.BRAIN_WRITABLE === "1") parsed.brain.writable = true;
   // Container-path overrides. The docker image sets these (DAE_DATA_DIR=/data,
   // DAE_SHARED_DIR=/shared) so a SINGLE config — with host-friendly paths for
-  // `dae run` — also works unchanged inside the supervisor container, where
-  // persistent state lives at the conventional volume mount points. Unset on the
-  // host, so host runs keep using the config's own (relative) paths.
+  // host-side commands (`dae install`, `dae export`) — also works unchanged inside
+  // the supervisor container, where persistent state lives at the conventional volume
+  // mount points. Unset on the host, so host runs keep using the config's own paths.
   if (process.env.DAE_DATA_DIR) {
     parsed.sessions.dbPath = path.join(process.env.DAE_DATA_DIR, "sessions.sqlite");
     parsed.sessions.attachmentsPath = path.join(process.env.DAE_DATA_DIR, "attachments");

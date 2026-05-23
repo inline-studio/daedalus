@@ -105,15 +105,11 @@ The questions: **local whisper?** (yes/no), **Telegram bot token?** (optional),
 disabled for now). Everything else is read from your config; re-running picks up the
 previous answers ("leave blank to keep").
 
-(Per-tool API keys like Brave Search live in OneCLI, not in daedalus — register them
-with OneCLI's tooling so the gateway injects them at the proxy edge.)
+(Per-tool API keys like Brave Search and your LLM provider key live in OneCLI, not in
+daedalus — `dae install` registers them so the gateway injects them at the proxy edge.)
 
-For a quick local one-shot without the stack:
-
-```bash
-dae init                    # creates ~/.daedalus/config.yaml + a starter brain
-dae run orchestrator --prompt "hello"   # runs one agent turn in-process on the host
-```
+Once the stack is up, talk to your agent through a channel (Telegram/Web), or follow the
+supervisor with `docker compose logs -f daedalus`.
 
 ## Concepts
 
@@ -189,7 +185,6 @@ dae init                            Bootstrap ~/.daedalus/ from the shipped exam
 dae install                         Turnkey: ensure config, then `docker compose up -d` the stack
 dae uninstall [--purge]             Stop the stack (--purge also deletes config; data preserved)
 dae update                          Update the CLI, then rebuild + restart the containers
-dae run <agent> --prompt "..."      Run an agent once, in-process on the host
 dae serve                           Long-running: channels + scheduler (what the container runs)
 dae agents | skills | mcp           Browse what's in the brain
 dae config                          Print resolved config as JSON

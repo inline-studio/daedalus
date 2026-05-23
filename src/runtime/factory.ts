@@ -55,6 +55,6 @@ export function buildRuntime(agent: AgentManifest, config: ArtemisConfig): Runti
 
   // No per-agent image: bash runs in the current process. Under the container
   // dispatcher that process is itself a per-turn agent container, so bash is
-  // already isolated; on `dae run` it's the local dev shell.
+  // already isolated; under in-process `dae serve` it's the local shell.
   return new HostRuntime();
 }

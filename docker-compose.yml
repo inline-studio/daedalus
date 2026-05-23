@@ -126,8 +126,8 @@ services:
       context: .
       dockerfile: Dockerfile.mempalace
     restart: unless-stopped
-    # Loopback publish so the host (`dae run`) can also reach it; agents reach it by
-    # container name (`mempalace`) on the daedalus network regardless of this.
+    # Loopback publish so host-side tooling / debugging can reach it; agents reach it
+    # by container name (`mempalace`) on the daedalus network regardless of this.
     ports:
       - "127.0.0.1:11364:11364"
     volumes:

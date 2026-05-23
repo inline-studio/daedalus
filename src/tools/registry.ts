@@ -76,9 +76,9 @@ export function selectBuiltins(
         // Two cases:
         //  - Explicit named selection ("tools: ['schedule_message']") with no
         //    store → wrong call site; throw so the caller knows to plumb it.
-        //  - Wildcard ("tools: ['*']") with no store (e.g. `dae run` which is
-        //    one-shot and doesn't open a ScheduleStore) → skip the tool
-        //    silently; wildcard semantics are "give me what's available."
+        //  - Wildcard ("tools: ['*']") with no store (e.g. a one-shot caller that
+        //    doesn't open a ScheduleStore) → skip the tool silently; wildcard
+        //    semantics are "give me what's available."
         if (isWildcard) continue;
         throw new Error(
           `Tool '${n}' requires a ScheduleStore — the caller didn't pass one. ` +

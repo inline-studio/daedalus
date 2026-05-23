@@ -139,7 +139,7 @@ export const onecliSetup: ChannelSetup = {
       "\nOneCLI is wired up. From here:\n" +
         "  • Register credentials in OneCLI with `onecli secrets create --name ... --type anthropic --value ... --host-pattern api.anthropic.com`.\n" +
         `  • Assign them to the '${identifier}' agent (or set the agent's secret-mode to 'all').\n` +
-        "  • Run `dae run <agent> --prompt ...` — outbound HTTPS goes through OneCLI, credentials are injected on the wire.\n",
+        "  • Message your agent through a channel (Telegram/Web) — outbound HTTPS goes through OneCLI, credentials are injected on the wire.\n",
     );
     record(`daemon key saved to .env.local as ONECLI_API_KEY`);
     record(`outbound HTTPS now routes through ${baseUrl}`);

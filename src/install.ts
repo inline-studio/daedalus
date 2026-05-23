@@ -5,11 +5,12 @@ import { statSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { execa } from "execa";
+import prompts from "prompts";
 import { loadConfig } from "./config/load.js";
 import { initUserConfig } from "./init.js";
 import { confirm } from "./setup/base.js";
 import { secretPrompt } from "./setup/secret-prompt.js";
-import { editYamlFile, setIn } from "./setup/yaml-edit.js";
+import { editYamlFile, setIn, ensureMap } from "./setup/yaml-edit.js";
 import { upsertEnvFile } from "./setup/env-file.js";
 import { OneCliSecretsBackend } from "./secrets/store/onecli-backend.js";
 
@@ -19,8 +20,8 @@ import { OneCliSecretsBackend } from "./secrets/store/onecli-backend.js";
 // `docker compose up -d` to bring up the whole stack (supervisor + scheduler,
 // mempalace memory, and — if asked — a local whisper STT container).
 //
-// Everything runs in containers; there is no host service to install. `dae run`
-// remains the host-side one-shot for local testing.
+// Everything runs in containers; there is no host service to install. You interact
+// with your agents through a channel (Telegram/Web), not a host-side CLI command.
 
 const TELEGRAM_TOKEN_RE = /^\d{5,}:[A-Za-z0-9_-]{30,}$/;
 
@@ -48,6 +49,47 @@ export async function runInstall(configFlag?: string): Promise<void> {
 
   // 2. The questions. Everything else is inferred; memory + onecli always run.
   console.log("\nDaedalus runs entirely in docker containers. A few questions:\n");
+
+  // 2a. LLM provider credentials — the one thing nothing works without. Each agent
+  // picks its provider in its own frontmatter (provider: anthropic | openai), and a
+  // brain can mix both, so we offer each independently. Keys are stored in OneCLI
+  // (never on disk): the agent sends the `onecli-managed` placeholder and the gateway
+  // swaps in the real key for the matching host at the proxy edge. Here we only enable
+  // the provider block (+ record the openai base URL); the OneCLI registration runs
+  // once the stack is up (step 6).
+  const useAnthropic = await confirm(
+    "Will any agent use Anthropic (Claude) directly at api.anthropic.com?",
+    false,
+  );
+  const anthropicKey = useAnthropic
+    ? ((await secretPrompt({ message: "Anthropic API key (sk-ant-…):" })) ?? "").trim()
+    : "";
+  if (useAnthropic && !anthropicKey) {
+    console.log(
+      "  ⚠ no Anthropic key entered — skipping. Add it later with:\n" +
+        "    dae secret save ANTHROPIC_API_KEY -u api.anthropic.com -H x-api-key",
+    );
+  }
+
+  const useOpenai = await confirm(
+    "Will any agent use an OpenAI-compatible endpoint (OpenAI, LiteLLM, vLLM, Ollama …)?",
+    false,
+  );
+  let openaiKey = "";
+  let openaiBaseUrl = "";
+  if (useOpenai) {
+    const defaultBase = config.providers?.openai?.baseUrl ?? "https://api.openai.com/v1";
+    openaiBaseUrl =
+      (await textPrompt(`Base URL for that endpoint (must include /v1) [${defaultBase}]:`)) ||
+      defaultBase;
+    openaiKey = ((await secretPrompt({ message: "API key / token for that endpoint:" })) ?? "").trim();
+    if (!openaiKey) {
+      console.log(
+        `  ⚠ no key entered — skipping. Add it later with:\n` +
+          `    dae secret save OPENAI_API_KEY -u ${hostnameOf(openaiBaseUrl)} -H Authorization`,
+      );
+    }
+  }
 
   const wantWhisper = await confirm(
     "Run a local Whisper container for voice-note transcription?",
@@ -133,6 +175,13 @@ export async function runInstall(configFlag?: string): Promise<void> {
       { keyPath: ["web", "search", "apiKey"], value: "onecli-managed" },
     );
   }
+  // OpenAI-compatible provider: record the base URL so the config reflects the
+  // endpoint we wired up. The key itself is NOT written here — it lives in OneCLI;
+  // leaving providers.openai.apiKey unset makes resolveProviderKey fall through to
+  // the OneCLI placeholder, which the gateway swaps for the real Bearer token.
+  if (useOpenai && openaiKey) {
+    yamlEdits.push({ keyPath: ["providers", "openai", "baseUrl"], value: openaiBaseUrl });
+  }
   // OneCLI is always part of the stack — enable it + point at the in-stack gateway.
   yamlEdits.push(
     { keyPath: ["onecli", "enabled"], value: true },
@@ -141,6 +190,9 @@ export async function runInstall(configFlag?: string): Promise<void> {
 
   await editYamlFile(configPath, (doc) => {
     for (const e of yamlEdits) setIn(doc, e.keyPath, e.value);
+    // Materialise the anthropic provider block (no leaf value — the key lives in
+    // OneCLI) so it's visible/enabled, without clobbering an existing one.
+    if (useAnthropic && anthropicKey) ensureMap(doc, ["providers", "anthropic"]);
   });
   console.log(`\n✓ updated ${rel(configPath)}`);
   if (Object.keys(runnerEnv).length) {
@@ -195,21 +247,63 @@ export async function runInstall(configFlag?: string): Promise<void> {
     return;
   }
 
-  // 6. Register the Brave key in OneCLI now the gateway is up (daedalus depends on
-  //    onecli being healthy, so by here it's ready). Stored in OneCLI, never on disk.
+  // 6. Register secrets in OneCLI now the gateway is up (daedalus depends on onecli
+  //    being healthy, so by here it's ready). Stored in OneCLI, never on disk — the
+  //    agent sends the `onecli-managed` placeholder and the gateway swaps in the real
+  //    value for the matching host. LLM keys: anthropic via the x-api-key header,
+  //    openai-compatible via Authorization: Bearer.
+  const onecliSecrets: Array<{
+    name: string;
+    value: string;
+    urlPattern: string;
+    headerName: string;
+    valueFormat: string;
+    note: string;
+  }> = [];
   if (braveKey) {
-    try {
-      const onecli = new OneCliSecretsBackend({ baseUrl: "http://localhost:10254", token: onecliKey });
-      await onecli.save("BRAVE_API_KEY", braveKey, {
-        urlPattern: "api.search.brave.com",
-        injectionConfig: { headerName: "X-Subscription-Token", valueFormat: "{value}" },
-      });
-      console.log("✓ registered Brave key in OneCLI (injected into api.search.brave.com requests)");
-    } catch (err) {
-      console.error(`\n⚠ Couldn't register the Brave key in OneCLI: ${(err as Error).message}`);
-      console.error(
-        "  Once onecli is up, run: dae secret save BRAVE_API_KEY -u api.search.brave.com -H X-Subscription-Token",
-      );
+    onecliSecrets.push({
+      name: "BRAVE_API_KEY",
+      value: braveKey,
+      urlPattern: "api.search.brave.com",
+      headerName: "X-Subscription-Token",
+      valueFormat: "{value}",
+      note: "injected into api.search.brave.com requests",
+    });
+  }
+  if (useAnthropic && anthropicKey) {
+    onecliSecrets.push({
+      name: "ANTHROPIC_API_KEY",
+      value: anthropicKey,
+      urlPattern: "api.anthropic.com",
+      headerName: "x-api-key",
+      valueFormat: "{value}",
+      note: "injected into api.anthropic.com requests (x-api-key)",
+    });
+  }
+  if (useOpenai && openaiKey) {
+    const host = hostnameOf(openaiBaseUrl);
+    onecliSecrets.push({
+      name: "OPENAI_API_KEY",
+      value: openaiKey,
+      urlPattern: host,
+      headerName: "Authorization",
+      valueFormat: "Bearer {value}",
+      note: `injected into ${host} requests (Authorization: Bearer)`,
+    });
+  }
+  if (onecliSecrets.length) {
+    const onecli = new OneCliSecretsBackend({ baseUrl: "http://localhost:10254", token: onecliKey });
+    for (const s of onecliSecrets) {
+      try {
+        await onecli.save(s.name, s.value, {
+          urlPattern: s.urlPattern,
+          injectionConfig: { headerName: s.headerName, valueFormat: s.valueFormat },
+        });
+        console.log(`✓ registered ${s.name} in OneCLI (${s.note})`);
+      } catch (err) {
+        console.error(`\n⚠ Couldn't register ${s.name} in OneCLI: ${(err as Error).message}`);
+        console.error(`  Once onecli is up, run: dae secret save ${s.name} -u ${s.urlPattern} -H ${s.headerName}`);
+      }
     }
   }
 
@@ -218,7 +312,38 @@ export async function runInstall(configFlag?: string): Promise<void> {
   console.log("    mempalace  — shared memory");
   console.log("    onecli     — credential gateway (+ postgres)");
   if (wantWhisper) console.log("    whisper    — local speech-to-text");
+
+  // Provider selection is per-agent, not global: the agent's frontmatter `provider:`
+  // decides which credential it uses. Remind the user so the keys they just stored
+  // actually get picked up.
+  if (useAnthropic || useOpenai) {
+    const enabled = [useAnthropic ? "anthropic" : null, useOpenai ? "openai" : null]
+      .filter(Boolean)
+      .join(" + ");
+    console.log(`\nReminder: you enabled the ${enabled} provider${useAnthropic && useOpenai ? "s" : ""}.`);
+    console.log("  Each agent chooses its provider in its own frontmatter — set");
+    console.log("  `provider: <name>` (and a matching `model:`) in each brain/agents/<name>.md");
+    console.log("  so it uses the key you just configured.");
+  }
+
   console.log("\nFollow the supervisor:  docker compose logs -f daedalus");
+}
+
+// Free-text prompt (non-masked) — for non-secret answers like a base URL. Returns
+// the trimmed value, or "" if the user cancelled / left it blank.
+async function textPrompt(message: string): Promise<string> {
+  const res = await prompts({ type: "text", name: "v", message });
+  return ((res.v as string | undefined) ?? "").trim();
+}
+
+// Extract the host for a OneCLI host pattern from a base URL. Falls back to the raw
+// string (sans scheme/path) if it doesn't parse as a URL.
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url.replace(/^[a-z]+:\/\//i, "").replace(/[/:].*$/, "");
+  }
 }
 
 // Ensure a config file exists, bootstrapping one at ~/.daedalus/config.yaml if

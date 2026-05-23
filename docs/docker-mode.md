@@ -11,8 +11,8 @@ code runs on the host; that's the isolation model.
 > **Host mode is retired.** Earlier versions could run `dae serve` in-process on
 > the host (`runtime.dispatcher: process`). That's no longer a supported
 > deployment: the dispatcher defaults to `container`, and the supervisor runs as
-> the compose `daedalus` service. The only in-process path that remains is
-> **`dae run`** — the local dev one-shot — which forces it for quick iteration.
+> the compose `daedalus` service. (The `process` dispatcher branch survives only as
+> a non-docker fallback / for in-process subagent delegation.)
 
 The dispatcher abstraction (`src/dispatch/base.ts`) hides the spawn mechanics
 from the kernel.
@@ -335,8 +335,8 @@ docker compose up -d
 docker compose logs -f daedalus
 ```
 
-One config file works on the host (`dae run`) and inside the container: the image
-sets `BRAIN_PATH=/brain`, `DAE_DATA_DIR=/data`, `DAE_SHARED_DIR=/shared`, so the
+One config file works for host-side commands (`dae install`) and inside the container:
+the image sets `BRAIN_PATH=/brain`, `DAE_DATA_DIR=/data`, `DAE_SHARED_DIR=/shared`, so the
 config's host-relative paths are remapped to the container mount points automatically.
 
 Inbound messages on the configured channels (Telegram, etc) will spawn
