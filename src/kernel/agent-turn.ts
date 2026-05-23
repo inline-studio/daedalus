@@ -13,8 +13,7 @@ import { loadAgentCommands } from "../brain/commands.js";
 import { loadAgent } from "../brain/agents.js";
 import { resolveProviderKey } from "../providers/resolve.js";
 import { buildSecretsBackend } from "../secrets/store/factory.js";
-import { connectMcpServer, type ConnectedServer } from "../mcp/client.js";
-import { loadMcpConfig } from "../mcp/loader.js";
+import { connectAgentMcp, McpPool } from "../mcp/agent-mcp.js";
 import { SessionStore, type PersistedMessage } from "../sessions/store.js";
 import { ScheduleStore } from "../sessions/schedule-store.js";
 import { AttachmentStore } from "../attachments/store.js";
@@ -42,6 +41,10 @@ export interface RunAgentTurnInput {
   sessionId: string;
   userId: string;
   isSubagent: boolean;
+  // When set (the long-lived agent-worker), MCP connections are taken from this
+  // persistent pool and kept open across turns. When omitted (the one-shot
+  // `dae agent-turn` container), we connect fresh and close at the end of the turn.
+  mcpPool?: McpPool;
 }
 
 export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchResult> {
@@ -108,8 +111,12 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
 
     // 6. MCP — connect everything this agent declares + auto-injected memory MCP.
     // In docker mode these are typically HTTP endpoints reachable on the shared
-    // docker network (e.g. http://mempalace:11364/mcp).
-    const mcpServers = await connectAgentMcp(config, agent.mcpServers);
+    // docker network (e.g. http://mempalace:11364/mcp). The warm worker reuses a
+    // persistent pool; the one-shot container connects fresh and owns teardown.
+    const ownsMcp = !input.mcpPool;
+    const mcpServers = input.mcpPool
+      ? await input.mcpPool.getForAgent(config, agent.mcpServers)
+      : await connectAgentMcp(config, agent.mcpServers);
 
     // 7. Build built-in tools strictly per the manifest. Empty list = no tools
     // (was previously "all" — that was a security footgun for subagents).
@@ -178,11 +185,12 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       sessions.appendMessage({ sessionId, role: m.role, content: m.content });
     }
 
-    // Tear down MCP connections we opened (HTTP transport is per-connection cheap;
-    // in process mode the caller may have shared servers we don't own — we did open
-    // our own here, so close them).
-    for (const s of mcpServers.values()) {
-      await s.close().catch(() => undefined);
+    // Tear down MCP connections we opened. When running under the warm worker the
+    // connections come from a persistent pool the worker owns — leave them open.
+    if (ownsMcp) {
+      for (const s of mcpServers.values()) {
+        await s.close().catch(() => undefined);
+      }
     }
 
     if (result.pendingQuestion) {
@@ -236,53 +244,6 @@ export function buildResumeMessage(toolUseId: string, answer: string): Message {
     content: answer,
   };
   return { role: "user", content: [part] };
-}
-
-// Connect each MCP server this agent declares. Auto-injects the MemPalace HTTP
-// MCP when localHttp.enabled is true so every agent gets memory by default.
-async function connectAgentMcp(
-  config: ArtemisConfig,
-  declared: string[],
-): Promise<Map<string, ConnectedServer>> {
-  const out = new Map<string, ConnectedServer>();
-  const allDefs = await loadMcpConfig(config.mcp.configPath);
-
-  // Merge in the implicit MemPalace MCP if the config has it enabled.
-  const lh = config.mempalace?.localHttp;
-  if (lh?.enabled && !allDefs["memory"] && !allDefs["mempalace"]) {
-    // If mempalace requires a bearer token, it's stored as MEMPALACE_TOKEN
-    // (by `dae setup mempalace`). Carry it on the auto-injected def so an
-    // authenticated server works without writing an explicit MCP entry.
-    const token = process.env.MEMPALACE_TOKEN;
-    allDefs["memory"] = {
-      url: `http://${lh.host}:${lh.port}${lh.urlPath}`,
-      transport: "http",
-      args: [],
-      env: {},
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    };
-  }
-
-  // `mcpServers: ['*']` expands to every server in the mcp config. Subagents
-  // typically declare a specific subset; the orchestrator can take everything.
-  const expanded = declared.includes("*") ? Object.keys(allDefs) : declared;
-  // Union: agent's declared + implicit "memory" (every agent gets memory by default).
-  const wanted = new Set<string>(expanded);
-  if (allDefs["memory"]) wanted.add("memory");
-
-  for (const name of wanted) {
-    const def = allDefs[name];
-    if (!def) {
-      log.warn({ name }, "MCP server requested but not found in mcp config");
-      continue;
-    }
-    try {
-      out.set(name, await connectMcpServer(name, def));
-    } catch (err) {
-      log.error({ name, err }, "MCP connection failed");
-    }
-  }
-  return out;
 }
 
 async function hydrateSkillSecrets(

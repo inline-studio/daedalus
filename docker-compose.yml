@@ -1,8 +1,13 @@
 # Reference docker-compose for running daedalus in "docker mode".
 #
 # Architecture:
-#   - daedalus     — supervisor + scheduler (long-lived `dae serve`); spawns one agent
-#                    container per inbound message via the mounted docker socket.
+#   - daedalus     — supervisor + scheduler (long-lived `dae serve`). With
+#                    runtime.persistentAgent it routes each top-level turn to dae-worker;
+#                    otherwise it spawns one agent container per message via the socket.
+#   - dae-worker   — long-lived "warm" agent worker (`dae agent-worker`). Keeps OneCLI +
+#                    MCP connections warm and serves top-level turns over HTTP, so each
+#                    message skips the container cold-start. Spawns its subagents as
+#                    ephemeral containers. Isolated from the supervisor's channel tokens.
 #   - mempalace    — shared HTTP-MCP memory store every agent connects to.
 #   - whisper      — local speech-to-text (optional; `whisper` profile only).
 #   - onecli       — credential gateway (+ onecli-db postgres). Comment both out if you
@@ -87,6 +92,10 @@ services:
       # mounts this into each spawned agent container at /dae-runtime so user
       # images can be free of Node/daedalus installs.
       DAE_AGENT_RUNTIME_VOLUME: daedalus_dae-runtime
+      # Where the long-lived warm agent worker listens. When the config has
+      # runtime.persistentAgent: true (dae install sets this), the supervisor sends
+      # each top-level turn here instead of spawning a container per message.
+      DAE_WORKER_URL: http://dae-worker:10260
     volumes:
       # Brain (the agent personas + skills + souls + mcp config). Mount RO by default.
       - ${BRAIN_PATH:?set BRAIN_PATH in .env}:/brain:ro
@@ -110,8 +119,65 @@ services:
         condition: service_healthy
       dae-runtime-init:
         condition: service_completed_successfully
+      # The warm agent worker handles every top-level turn — wait until it's serving
+      # so the first inbound message doesn't race its startup.
+      dae-worker:
+        condition: service_healthy
     # Run as the host UID/GID so bind-mounted brain files stay owned by the host user.
     # Adjust if your host UID isn't 1000.
+    user: "${UID:-1000}:${DOCKER_GID:-998}"
+
+  # Long-lived "warm" agent worker. Same image as the supervisor but runs
+  # `dae agent-worker`: it applies OneCLI once and keeps MCP connections in a
+  # persistent pool, then serves each top-level turn over HTTP (http://dae-worker:10260)
+  # for the supervisor's persistent dispatcher. Subagents it spawns still get their own
+  # ephemeral containers (DAE_DISPATCHER=container + the docker socket below). Isolated
+  # from the supervisor: it never sees the channel tokens, and a crash here doesn't take
+  # the supervisor (and your channels) down — compose just restarts it.
+  dae-worker:
+    image: ${DAEDALUS_IMAGE:-ghcr.io/inline-studio/daedalus:latest}
+    build:
+      context: .
+      args:
+        DAEDALUS_VERSION: ${DAEDALUS_VERSION:-latest}
+    command: ["dae", "agent-worker"]
+    restart: unless-stopped
+    init: true
+    environment:
+      DAE_CONFIG: /etc/daedalus/config.yaml
+      ONECLI_API_KEY: ${ONECLI_API_KEY:-}
+      MEMPALACE_TOKEN: ${MEMPALACE_TOKEN:-}
+      # Subagents the worker spawns run as their own ephemeral containers.
+      DAE_DISPATCHER: container
+      DAE_AGENT_IMAGE_DEFAULT: ${DAEDALUS_IMAGE:-ghcr.io/inline-studio/daedalus:latest}
+      DAE_AGENT_NETWORK: daedalus
+      DAE_AGENT_HOST_BRAIN: ${BRAIN_PATH:?set BRAIN_PATH in .env}
+      DAE_AGENT_HOST_CONFIG: ${DAEDALUS_CONFIG_DIR:?set DAEDALUS_CONFIG_DIR in .env}
+      DAE_AGENT_HOST_SHARED: daedalus_daedalus-shared
+      DAE_AGENT_HOST_DATA: daedalus_daedalus-data
+      DAE_AGENT_RUNTIME_VOLUME: daedalus_dae-runtime
+    volumes:
+      - ${BRAIN_PATH:?set BRAIN_PATH in .env}:/brain:ro
+      - ${DAEDALUS_CONFIG_DIR:?set DAEDALUS_CONFIG_DIR in .env}:/etc/daedalus:ro
+      - daedalus-data:/data
+      - daedalus-shared:/shared
+      # Docker socket so the worker can `docker run` per-subagent containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:10260/health || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    networks:
+      - daedalus
+    depends_on:
+      mempalace:
+        condition: service_started
+      onecli:
+        condition: service_healthy
+      dae-runtime-init:
+        condition: service_completed_successfully
     user: "${UID:-1000}:${DOCKER_GID:-998}"
 
   # Shared memory MCP every agent connects to (http://mempalace:11364/sse).

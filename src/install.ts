@@ -187,6 +187,9 @@ export async function runInstall(configFlag?: string): Promise<void> {
     { keyPath: ["onecli", "enabled"], value: true },
     { keyPath: ["onecli", "baseUrl"], value: "http://onecli:10254" },
   );
+  // Route top-level turns to the long-lived warm worker (dae-worker service) so each
+  // message skips the per-turn container cold-start. Subagents still spawn containers.
+  yamlEdits.push({ keyPath: ["runtime", "persistentAgent"], value: true });
 
   await editYamlFile(configPath, (doc) => {
     for (const e of yamlEdits) setIn(doc, e.keyPath, e.value);
@@ -309,6 +312,7 @@ export async function runInstall(configFlag?: string): Promise<void> {
 
   console.log("\n✓ Stack is up. Containers:");
   console.log("    daedalus   — supervisor + scheduler");
+  console.log("    dae-worker — warm agent worker (handles top-level turns)");
   console.log("    mempalace  — shared memory");
   console.log("    onecli     — credential gateway (+ postgres)");
   if (wantWhisper) console.log("    whisper    — local speech-to-text");

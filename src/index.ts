@@ -94,6 +94,17 @@ program
   );
 
 program
+  .command("agent-worker")
+  .description(
+    "(internal) long-lived warm agent worker — serves top-level turns over HTTP for the persistent dispatcher",
+  )
+  .action(async () => {
+    const config = loadConfig(program.opts().config);
+    const { runAgentWorker } = await import("./kernel/agent-worker.js");
+    await runAgentWorker(config);
+  });
+
+program
   .command("agents")
   .description("list agents in the brain repo")
   .action(async () => {

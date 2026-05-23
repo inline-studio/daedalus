@@ -8,6 +8,8 @@ import { MessageBus } from "./channels/bus.js";
 import { buildChannels } from "./channels/registry.js";
 import { ingestIncomingMessage } from "./kernel/ingest.js";
 import { buildDispatcher } from "./dispatch/factory.js";
+import { PersistentContainerDispatcher } from "./dispatch/persistent.js";
+import type { AgentDispatcher } from "./dispatch/base.js";
 import { loadSchedules, startScheduler } from "./scheduler/cron.js";
 import { startSchedulePoller } from "./scheduler/poller.js";
 import { log } from "./log.js";
@@ -39,7 +41,12 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     return;
   }
 
-  const dispatcher = buildDispatcher(config);
+  // With persistentAgent, top-level turns go to the long-lived warm worker over HTTP
+  // (subagents inside it still spawn ephemeral containers). Otherwise the supervisor
+  // dispatches each turn itself per the configured dispatcher.
+  const dispatcher: AgentDispatcher = config.runtime.persistentAgent
+    ? new PersistentContainerDispatcher(config)
+    : buildDispatcher(config);
   log.info({ dispatcher: dispatcher.id }, "supervisor dispatcher selected");
 
   const bus = new MessageBus(sessions);

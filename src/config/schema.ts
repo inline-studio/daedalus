@@ -36,6 +36,13 @@ export const RuntimeConfigSchema = z.object({
   //                 (and in-process subagent delegation); the supported deployment is docker.
   // Overridable at runtime via the DAE_DISPATCHER env var (set by docker-compose).
   dispatcher: z.enum(["process", "container"]).default("container"),
+  // When true, the supervisor routes each top-level turn to a long-lived "warm" agent
+  // worker container (`dae agent-worker`) over HTTP instead of spawning a fresh
+  // container per message. The worker keeps OneCLI + MCP connections warm, so turns
+  // skip the container cold-start; subagents still spawn ephemeral containers. Set by
+  // `dae install` (the docker stack provides the dae-worker service); the worker URL
+  // comes from DAE_WORKER_URL. Leave false for non-docker `dae serve`.
+  persistentAgent: z.boolean().default(false),
   docker: z
     .object({
       // Path to the docker binary. If unset, the runtime tries `docker` on PATH and
