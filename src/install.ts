@@ -11,6 +11,7 @@ import { confirm } from "./setup/base.js";
 import { secretPrompt } from "./setup/secret-prompt.js";
 import { editYamlFile, setIn } from "./setup/yaml-edit.js";
 import { upsertEnvFile } from "./setup/env-file.js";
+import { OneCliSecretsBackend } from "./secrets/store/onecli-backend.js";
 
 // `dae install` — the one turnkey command. It is a thin orchestrator around
 // docker compose: it makes sure a config exists, asks the *only* three questions
@@ -62,6 +63,13 @@ export async function runInstall(configFlag?: string): Promise<void> {
     console.log("  ⚠ that doesn't look like a Telegram bot token — skipping Telegram setup.");
   }
   const enableTelegram = Boolean(tgToken) && TELEGRAM_TOKEN_RE.test(tgToken);
+
+  // Brave web-search key. Stored in OneCLI (not on disk) and injected into
+  // api.search.brave.com requests at the proxy edge — registered after the stack is up.
+  const braveKey =
+    ((await secretPrompt({
+      message: "Brave Search API key for web_search (leave blank to skip / keep DuckDuckGo):",
+    })) ?? "").trim();
 
   const authMsg = prevMempalaceToken
     ? "Require an auth token for the memory (mempalace) server? (a token is already set)"
@@ -117,6 +125,14 @@ export async function runInstall(configFlag?: string): Promise<void> {
     );
   }
   if (mempalaceToken) runnerEnv.MEMPALACE_TOKEN = mempalaceToken;
+  if (braveKey) {
+    // The real key lives in OneCLI; the agent sends a placeholder that the gateway
+    // swaps for the real X-Subscription-Token. The provider just needs a non-empty value.
+    yamlEdits.push(
+      { keyPath: ["web", "search", "provider"], value: "brave" },
+      { keyPath: ["web", "search", "apiKey"], value: "onecli-managed" },
+    );
+  }
   // OneCLI is always part of the stack — enable it + point at the in-stack gateway.
   yamlEdits.push(
     { keyPath: ["onecli", "enabled"], value: true },
@@ -177,6 +193,24 @@ export async function runInstall(configFlag?: string): Promise<void> {
     console.error("Fix the issue above, then re-run `dae install` (it's idempotent).");
     process.exitCode = 1;
     return;
+  }
+
+  // 6. Register the Brave key in OneCLI now the gateway is up (daedalus depends on
+  //    onecli being healthy, so by here it's ready). Stored in OneCLI, never on disk.
+  if (braveKey) {
+    try {
+      const onecli = new OneCliSecretsBackend({ baseUrl: "http://localhost:10254", token: onecliKey });
+      await onecli.save("BRAVE_API_KEY", braveKey, {
+        urlPattern: "api.search.brave.com",
+        injectionConfig: { headerName: "X-Subscription-Token", valueFormat: "{value}" },
+      });
+      console.log("✓ registered Brave key in OneCLI (injected into api.search.brave.com requests)");
+    } catch (err) {
+      console.error(`\n⚠ Couldn't register the Brave key in OneCLI: ${(err as Error).message}`);
+      console.error(
+        "  Once onecli is up, run: dae secret save BRAVE_API_KEY -u api.search.brave.com -H X-Subscription-Token",
+      );
+    }
   }
 
   console.log("\n✓ Stack is up. Containers:");
