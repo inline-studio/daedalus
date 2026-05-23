@@ -5,6 +5,7 @@ import { callMcpTool } from "../mcp/client.js";
 import { AskUserSignal } from "../tools/ask-user.js";
 import type {
   CompletionRequest,
+  CompletionResult,
   ContentPart,
   Message,
   ToolDefinition,
@@ -75,7 +76,7 @@ export class Kernel {
         ...(this.opts.temperature !== undefined ? { temperature: this.opts.temperature } : {}),
       };
 
-      const result = await this.opts.provider.complete(req, signal);
+      const result = await this.completeWithRetry(req, signal);
       messages.push(result.message);
       stopReason = result.stopReason;
 
@@ -120,6 +121,36 @@ export class Kernel {
     return { messages, finalText, turns, stopReason };
   }
 
+  // The LLM call is the one step in the turn loop that fails *transiently* — rate
+  // limits (429), provider overload (529), gateway/5xx, and network/proxy blips. Tool
+  // and MCP errors are already caught and handed back to the model as tool_results; an
+  // un-retried provider error here, by contrast, propagates out of the turn and crashes
+  // the whole agent-turn (exit 1). Retry transient failures with exponential backoff +
+  // jitter; fail fast on permanent ones (auth/bad-request) so real misconfig surfaces.
+  private async completeWithRetry(
+    req: CompletionRequest,
+    signal?: AbortSignal,
+  ): Promise<CompletionResult> {
+    const maxAttempts = 4;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.opts.provider.complete(req, signal);
+      } catch (err) {
+        lastErr = err;
+        if (attempt === maxAttempts || !isTransientLLMError(err)) throw err;
+        const backoff = Math.min(8000, 500 * 2 ** (attempt - 1));
+        const delayMs = backoff + Math.floor(Math.random() * 250);
+        log.warn(
+          { attempt, maxAttempts, delayMs, provider: this.opts.provider.id, err: (err as Error).message },
+          "LLM call failed transiently — retrying",
+        );
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    throw lastErr;
+  }
+
   private async executeTool(tu: ToolUsePart): Promise<{ content: string; isError?: boolean }> {
     // Built-in?
     const builtin = this.builtinByName.get(tu.name);
@@ -144,6 +175,25 @@ export class Kernel {
 
     return { content: `Unknown tool: ${tu.name}`, isError: true };
   }
+}
+
+// Worth retrying: rate limits, overload, gateway/5xx, and network blips (incl. the
+// OneCLI proxy hiccupping). NOT worth retrying: auth (401/403), bad request (400),
+// not found (404) — those won't fix themselves, so we surface them immediately.
+function isTransientLLMError(err: unknown): boolean {
+  const cause = (err as { cause?: unknown }).cause;
+  const status =
+    (err as { status?: number }).status ?? (cause as { status?: number } | undefined)?.status;
+  if (typeof status === "number") {
+    return status === 408 || status === 425 || status === 429 || status >= 500;
+  }
+  // No HTTP status → a transport/network error (DNS, reset, timeout, proxy blip).
+  const text = `${(err as Error).message ?? ""} ${(cause as Error | undefined)?.message ?? ""} ${
+    (cause as { code?: string } | undefined)?.code ?? ""
+  }`.toLowerCase();
+  return /(429|overload|rate.?limit|timeout|timed out|temporarily|unavailable|fetch failed|socket hang up|econnreset|etimedout|econnrefused|eai_again|und_err|\b5\d\d\b)/.test(
+    text,
+  );
 }
 
 function collectText(parts: ContentPart[]): string {

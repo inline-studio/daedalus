@@ -20,6 +20,7 @@ const CI_SAFE = [
   "smoke-dispatcher",
   "smoke-export-mempalace",
   "smoke-install",
+  "smoke-kernel-retry",
   "smoke-mempalace",
   "smoke-mempalace-remote",
   "smoke-onecli-setup",
