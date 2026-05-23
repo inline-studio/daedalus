@@ -19,6 +19,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tini \
     && rm -rf /var/lib/apt/lists/*
 
+# Docker CLI (client only — NOT the daemon). The supervisor (`dae serve`) spawns one
+# container per agent turn by shelling out to `docker run` over the bind-mounted
+# /var/run/docker.sock, so the `docker` binary MUST exist in this image — without it
+# the dispatcher's execa("docker", …) fails to spawn and every turn dies as
+# "agent container … exited undefined". Use the static client binary: it's tiny, arch
+# -aware, and avoids depending on Docker's apt repo carrying this debian release.
+ARG DOCKER_CLI_VERSION=27.5.1
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) darch=x86_64 ;; \
+      arm64) darch=aarch64 ;; \
+      *) echo "unsupported arch for docker cli: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${darch}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz; \
+    tar -xzf /tmp/docker.tgz -C /tmp; \
+    install -m 0755 /tmp/docker/docker /usr/local/bin/docker; \
+    rm -rf /tmp/docker /tmp/docker.tgz; \
+    docker --version
+
 # Use tini as PID 1 so signals propagate cleanly and zombies get reaped.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
