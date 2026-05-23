@@ -316,13 +316,15 @@ program
       }
     }
 
-    // 1. Tear down containers via docker compose. We never pass -v: volumes (and the
-    // host bind-mounts) hold the user's data and must survive an uninstall. To wipe
-    // data deliberately, the user can run `docker compose down -v` themselves.
+    // 1. Tear down containers via docker compose. `--profile whisper` so the
+    // profile-gated whisper container is removed too (a bare `down` only acts on
+    // active profiles and would leave it running). We never pass -v: volumes (and
+    // the host bind-mounts) hold the user's data and must survive an uninstall — to
+    // wipe data deliberately, the user can run `docker compose down -v` themselves.
     const composeFile = await findComposeFile();
     if (composeFile) {
       const composeDir = path.dirname(composeFile);
-      const args = ["compose", "-f", composeFile, "down"];
+      const args = ["compose", "-f", composeFile, "--profile", "whisper", "down"];
       console.log(`\n$ docker ${args.join(" ")}\n`);
       await execa("docker", args, { stdio: "inherit", cwd: composeDir }).catch((err) => {
         console.error(`compose down failed: ${(err as Error).message}`);

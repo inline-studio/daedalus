@@ -103,8 +103,11 @@ services:
     depends_on:
       mempalace:
         condition: service_started
+      # Wait until onecli's gateway is actually accepting requests, not just until
+      # the container exists — the supervisor fetches its OneCLI bundle once at
+      # startup, and onecli isn't ready until postgres is healthy + migrations run.
       onecli:
-        condition: service_started
+        condition: service_healthy
       dae-runtime-init:
         condition: service_completed_successfully
     # Run as the host UID/GID so bind-mounted brain files stay owned by the host user.
@@ -135,14 +138,13 @@ services:
   # Local speech-to-text (Whisper), for transcribing voice notes. Optional — only
   # started with the `whisper` compose profile, which `dae install` enables when you
   # opt into local transcription (otherwise this service is skipped entirely).
-  # The supervisor + agents reach it by container name (http://whisper:8000/v1); the
-  # loopback publish lets the host (`dae run`) reach it too.
+  # Internal-only: the supervisor reaches it by container name (http://whisper:8000/v1)
+  # on the daedalus network. We deliberately DON'T publish a host port — nothing on
+  # the host needs it, and publishing 8000 just collides with whatever else is there.
   whisper:
     image: ${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:latest-cpu}
     restart: unless-stopped
     profiles: ["whisper"]
-    ports:
-      - "127.0.0.1:${WHISPER_PORT:-8000}:8000"
     networks:
       - daedalus
 

@@ -11,6 +11,7 @@ import { confirm } from "./setup/base.js";
 import { secretPrompt } from "./setup/secret-prompt.js";
 import { editYamlFile, setIn } from "./setup/yaml-edit.js";
 import { upsertEnvFile } from "./setup/env-file.js";
+import { OneCliSecretsBackend } from "./secrets/store/onecli-backend.js";
 
 // `dae install` — the one turnkey command. It is a thin orchestrator around
 // docker compose: it makes sure a config exists, asks the *only* three questions
@@ -63,6 +64,13 @@ export async function runInstall(configFlag?: string): Promise<void> {
   }
   const enableTelegram = Boolean(tgToken) && TELEGRAM_TOKEN_RE.test(tgToken);
 
+  // Brave web-search key. Stored in OneCLI (not on disk) and injected into
+  // api.search.brave.com requests at the proxy edge — registered after the stack is up.
+  const braveKey =
+    ((await secretPrompt({
+      message: "Brave Search API key for web_search (leave blank to skip / keep DuckDuckGo):",
+    })) ?? "").trim();
+
   const authMsg = prevMempalaceToken
     ? "Require an auth token for the memory (mempalace) server? (a token is already set)"
     : "Require an auth token for the memory (mempalace) server?";
@@ -82,15 +90,12 @@ export async function runInstall(configFlag?: string): Promise<void> {
     }
   }
 
-  // OneCLI credential gateway runs as part of the stack regardless. Supplying its
-  // daemon API key wires daedalus to use it; leaving it blank runs OneCLI disabled.
-  const typedOnecli =
-    ((await secretPrompt({
-      message: prevOnecliKey
-        ? "OneCLI daemon API key (oc_...) — leave blank to keep the existing one:"
-        : "OneCLI daemon API key (oc_...) — leave blank to run OneCLI disabled for now:",
-    })) ?? "").trim();
-  const onecliKey = typedOnecli || prevOnecliKey;
+  // OneCLI runs in the stack in local auth mode (open API on the daedalus network),
+  // so we DON'T ask for a key — the supervisor creates its own agent and reads the
+  // gateway config headlessly. daedalus still needs a non-empty ONECLI_API_KEY to
+  // attempt the connection (local-mode onecli ignores its value), so generate one
+  // and keep it stable across re-installs.
+  const onecliKey = prevOnecliKey || randomBytes(24).toString("base64url");
 
   // 3. Persist config + runner secrets.
   const yamlEdits: Array<{ keyPath: string[]; value: unknown }> = [
@@ -120,13 +125,19 @@ export async function runInstall(configFlag?: string): Promise<void> {
     );
   }
   if (mempalaceToken) runnerEnv.MEMPALACE_TOKEN = mempalaceToken;
-  // OneCLI: enable in config + point at the in-stack gateway when we have a key.
-  if (onecliKey) {
+  if (braveKey) {
+    // The real key lives in OneCLI; the agent sends a placeholder that the gateway
+    // swaps for the real X-Subscription-Token. The provider just needs a non-empty value.
     yamlEdits.push(
-      { keyPath: ["onecli", "enabled"], value: true },
-      { keyPath: ["onecli", "baseUrl"], value: "http://onecli:10254" },
+      { keyPath: ["web", "search", "provider"], value: "brave" },
+      { keyPath: ["web", "search", "apiKey"], value: "onecli-managed" },
     );
   }
+  // OneCLI is always part of the stack — enable it + point at the in-stack gateway.
+  yamlEdits.push(
+    { keyPath: ["onecli", "enabled"], value: true },
+    { keyPath: ["onecli", "baseUrl"], value: "http://onecli:10254" },
+  );
 
   await editYamlFile(configPath, (doc) => {
     for (const e of yamlEdits) setIn(doc, e.keyPath, e.value);
@@ -164,16 +175,14 @@ export async function runInstall(configFlag?: string): Promise<void> {
     DOCKER_GID: String(dockerGid()),
   };
   if (mempalaceToken) composeEnv.MEMPALACE_TOKEN = mempalaceToken;
-  if (onecliKey) composeEnv.ONECLI_API_KEY = onecliKey;
-  if (wantWhisper) composeEnv.WHISPER_PORT = "8000";
+  composeEnv.ONECLI_API_KEY = onecliKey;
 
   await upsertEnvFile(composeEnvPath, composeEnv);
   console.log(`✓ wrote compose env → ${rel(composeEnvPath)}`);
 
   // 5. Bring the stack up. `--build` builds the daedalus + mempalace images (the
   //    daedalus Dockerfile installs daedalus from the packed local CLI tarball we
-  //    just dropped in the context, falling back to the published release).
-  //    Whisper is only included on request.
+  //    just dropped in the context). Whisper is only included on request.
   const profileArgs = wantWhisper ? ["--profile", "whisper"] : [];
   const composeArgs = ["compose", "-f", composeFile, ...profileArgs, "up", "-d", "--build"];
   console.log(`\n$ docker ${composeArgs.join(" ")}\n`);
@@ -186,10 +195,28 @@ export async function runInstall(configFlag?: string): Promise<void> {
     return;
   }
 
+  // 6. Register the Brave key in OneCLI now the gateway is up (daedalus depends on
+  //    onecli being healthy, so by here it's ready). Stored in OneCLI, never on disk.
+  if (braveKey) {
+    try {
+      const onecli = new OneCliSecretsBackend({ baseUrl: "http://localhost:10254", token: onecliKey });
+      await onecli.save("BRAVE_API_KEY", braveKey, {
+        urlPattern: "api.search.brave.com",
+        injectionConfig: { headerName: "X-Subscription-Token", valueFormat: "{value}" },
+      });
+      console.log("✓ registered Brave key in OneCLI (injected into api.search.brave.com requests)");
+    } catch (err) {
+      console.error(`\n⚠ Couldn't register the Brave key in OneCLI: ${(err as Error).message}`);
+      console.error(
+        "  Once onecli is up, run: dae secret save BRAVE_API_KEY -u api.search.brave.com -H X-Subscription-Token",
+      );
+    }
+  }
+
   console.log("\n✓ Stack is up. Containers:");
   console.log("    daedalus   — supervisor + scheduler");
   console.log("    mempalace  — shared memory");
-  console.log(`    onecli     — credential gateway${onecliKey ? "" : " (running, but disabled in config)"}`);
+  console.log("    onecli     — credential gateway (+ postgres)");
   if (wantWhisper) console.log("    whisper    — local speech-to-text");
   console.log("\nFollow the supervisor:  docker compose logs -f daedalus");
 }
