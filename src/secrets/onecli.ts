@@ -36,6 +36,17 @@ export async function applyOneCli(config: OneCliConfig): Promise<void> {
   const agentIdentifier = process.env.DAE_ONECLI_AGENT ?? config.agent;
 
   const onecli = new OneCLI({ url: config.baseUrl, apiKey });
+
+  // Make sure THIS agent exists in OneCLI before asking for its container config —
+  // a fresh gateway has no agents, so getContainerConfig would 404. ensureAgent is
+  // idempotent (creates if missing, no-op otherwise). Non-fatal: if it fails we
+  // still try getContainerConfig and let that surface the real error.
+  try {
+    await onecli.ensureAgent({ name: agentIdentifier, identifier: agentIdentifier });
+  } catch (err) {
+    log.warn({ err, agent: agentIdentifier }, "OneCLI ensureAgent failed — continuing");
+  }
+
   let bundle: Awaited<ReturnType<typeof onecli.getContainerConfig>>;
   try {
     bundle = await onecli.getContainerConfig(agentIdentifier);

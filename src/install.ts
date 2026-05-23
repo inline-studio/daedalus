@@ -82,15 +82,12 @@ export async function runInstall(configFlag?: string): Promise<void> {
     }
   }
 
-  // OneCLI credential gateway runs as part of the stack regardless. Supplying its
-  // daemon API key wires daedalus to use it; leaving it blank runs OneCLI disabled.
-  const typedOnecli =
-    ((await secretPrompt({
-      message: prevOnecliKey
-        ? "OneCLI daemon API key (oc_...) — leave blank to keep the existing one:"
-        : "OneCLI daemon API key (oc_...) — leave blank to run OneCLI disabled for now:",
-    })) ?? "").trim();
-  const onecliKey = typedOnecli || prevOnecliKey;
+  // OneCLI runs in the stack in local auth mode (open API on the daedalus network),
+  // so we DON'T ask for a key — the supervisor creates its own agent and reads the
+  // gateway config headlessly. daedalus still needs a non-empty ONECLI_API_KEY to
+  // attempt the connection (local-mode onecli ignores its value), so generate one
+  // and keep it stable across re-installs.
+  const onecliKey = prevOnecliKey || randomBytes(24).toString("base64url");
 
   // 3. Persist config + runner secrets.
   const yamlEdits: Array<{ keyPath: string[]; value: unknown }> = [
@@ -120,13 +117,11 @@ export async function runInstall(configFlag?: string): Promise<void> {
     );
   }
   if (mempalaceToken) runnerEnv.MEMPALACE_TOKEN = mempalaceToken;
-  // OneCLI: enable in config + point at the in-stack gateway when we have a key.
-  if (onecliKey) {
-    yamlEdits.push(
-      { keyPath: ["onecli", "enabled"], value: true },
-      { keyPath: ["onecli", "baseUrl"], value: "http://onecli:10254" },
-    );
-  }
+  // OneCLI is always part of the stack — enable it + point at the in-stack gateway.
+  yamlEdits.push(
+    { keyPath: ["onecli", "enabled"], value: true },
+    { keyPath: ["onecli", "baseUrl"], value: "http://onecli:10254" },
+  );
 
   await editYamlFile(configPath, (doc) => {
     for (const e of yamlEdits) setIn(doc, e.keyPath, e.value);
@@ -164,16 +159,14 @@ export async function runInstall(configFlag?: string): Promise<void> {
     DOCKER_GID: String(dockerGid()),
   };
   if (mempalaceToken) composeEnv.MEMPALACE_TOKEN = mempalaceToken;
-  if (onecliKey) composeEnv.ONECLI_API_KEY = onecliKey;
-  if (wantWhisper) composeEnv.WHISPER_PORT = "8000";
+  composeEnv.ONECLI_API_KEY = onecliKey;
 
   await upsertEnvFile(composeEnvPath, composeEnv);
   console.log(`✓ wrote compose env → ${rel(composeEnvPath)}`);
 
   // 5. Bring the stack up. `--build` builds the daedalus + mempalace images (the
   //    daedalus Dockerfile installs daedalus from the packed local CLI tarball we
-  //    just dropped in the context, falling back to the published release).
-  //    Whisper is only included on request.
+  //    just dropped in the context). Whisper is only included on request.
   const profileArgs = wantWhisper ? ["--profile", "whisper"] : [];
   const composeArgs = ["compose", "-f", composeFile, ...profileArgs, "up", "-d", "--build"];
   console.log(`\n$ docker ${composeArgs.join(" ")}\n`);
@@ -189,7 +182,7 @@ export async function runInstall(configFlag?: string): Promise<void> {
   console.log("\n✓ Stack is up. Containers:");
   console.log("    daedalus   — supervisor + scheduler");
   console.log("    mempalace  — shared memory");
-  console.log(`    onecli     — credential gateway${onecliKey ? "" : " (running, but disabled in config)"}`);
+  console.log("    onecli     — credential gateway (+ postgres)");
   if (wantWhisper) console.log("    whisper    — local speech-to-text");
   console.log("\nFollow the supervisor:  docker compose logs -f daedalus");
 }

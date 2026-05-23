@@ -1,3 +1,5 @@
+import { Agent } from "undici";
+
 // Speech-to-text interface. Implementations:
 //   - WhisperLocalTranscriber: shells out to a whisper.cpp / faster-whisper binary
 //   - OpenAITranscriber: POST /v1/audio/transcriptions
@@ -5,6 +7,14 @@
 //
 // Channel adapters call transcribe() before publishing audio messages so the kernel
 // can inject the transcript as text alongside (or instead of) the audio part.
+
+// Transcription must bypass the global undici dispatcher. When OneCLI installs its
+// MITM ProxyAgent via setGlobalDispatcher, routing the whisper request through it
+// corrupts the response — undici throws "Response does not match the HTTP/1.1
+// protocol". The whisper endpoint is the in-stack container (or an explicit URL) and
+// carries its own auth header; it never needs OneCLI's credential injection. Same
+// fix as the MCP client (src/mcp/client.ts).
+const transcriberDirectDispatcher = new Agent();
 
 export interface Transcriber {
   readonly id: string;
@@ -45,7 +55,9 @@ export class OpenAITranscriber implements Transcriber {
       method: "POST",
       headers: { Authorization: `Bearer ${this.opts.apiKey}` },
       body: form,
-    });
+      // bypass the OneCLI MITM proxy (see note above)
+      dispatcher: transcriberDirectDispatcher,
+    } as unknown as RequestInit);
     if (!res.ok) return null;
     const json = (await res.json()) as { text?: string };
     return json.text ?? null;
