@@ -98,8 +98,17 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
       throw new Error(`agent container '${containerName}' timed out`);
     }
     if (result.exitCode !== 0) {
+      // The real failure is the LAST line of the container's output (the agent-turn
+      // error), not the first — early lines are just OneCLI/bootstrap startup noise.
+      // Show the TAIL, and log the larger tail at error level so `docker compose logs`
+      // surfaces it without the supervisor truncating away the actual exception.
+      const out = (result.stderr ?? "").trim() || (result.stdout ?? "").trim();
+      log.error(
+        { container: containerName, exitCode: result.exitCode, output: tailOf(out, 4000) },
+        "agent container exited non-zero",
+      );
       throw new Error(
-        `agent container '${containerName}' exited ${result.exitCode}: ${truncate(result.stderr ?? "", 500)}`,
+        `agent container '${containerName}' exited ${result.exitCode}: ${tailOf(out, 600)}`,
       );
     }
 
@@ -213,6 +222,11 @@ function sanitize(name: string): string {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+// Like truncate, but keeps the END of the string — the part with the actual error.
+function tailOf(s: string, n: number): string {
+  return s.length > n ? "…" + s.slice(-n) : s;
 }
 
 // The agent container is expected to print a single JSON DispatchResult on the
