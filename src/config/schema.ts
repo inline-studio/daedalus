@@ -149,8 +149,14 @@ export type MempalaceConfig = z.infer<typeof MempalaceConfigSchema>;
 export const SessionsConfigSchema = z.object({
   dbPath: z.string().default("./data/sessions.sqlite"),
   attachmentsPath: z.string().default("./data/attachments"),
-  // How many prior messages to load into the kernel context per turn.
-  historyLimit: z.number().int().positive().default(80),
+  // Hard cap on how many prior messages to load per turn (also bounds the DB query).
+  historyLimit: z.number().int().positive().default(40),
+  // Estimated-token budget for the replayed history. The loaded tail is trimmed
+  // (oldest-first) to fit this BEFORE the turn runs, so a handful of large messages
+  // can't fill the context window on their own. Keep it well under the model's context
+  // to leave room for the system prompt, the turn's own tool I/O, and the response.
+  // ~4 chars/token. Raise it if you raise the model's context cap.
+  contextTokenBudget: z.number().int().positive().default(32_000),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfigSchema>;
 
@@ -255,7 +261,8 @@ export const ArtemisConfigSchema = z.object({
   sessions: SessionsConfigSchema.default({
     dbPath: "./data/sessions.sqlite",
     attachmentsPath: "./data/attachments",
-    historyLimit: 80,
+    historyLimit: 40,
+    contextTokenBudget: 32_000,
   }),
   channels: ChannelsConfigSchema.default({}),
   transcribe: TranscribeConfigSchema.default({ backend: "none" }),
