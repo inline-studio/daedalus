@@ -30,6 +30,7 @@ const CI_SAFE = [
   "smoke-persistent-dispatcher",
   "smoke-runtime-scheduling",
   "smoke-skill-bootstrap",
+  "smoke-skill-disclosure",
   "smoke-store-reopen",
   "smoke-secret-prompt",
   "smoke-secrets",

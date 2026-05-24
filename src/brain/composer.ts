@@ -72,7 +72,7 @@ export async function composeSystemPrompt(input: ComposerInput): Promise<string>
   if (operations.length) parts.push(section("Operations", operations));
   if (souls.length) parts.push(section("Soul", souls));
   if (personas.length) parts.push(section("Persona", personas));
-  if (skills.length) parts.push(section("Skills", skills.map((s) => `### ${s.manifest.name}\n${s.body}`)));
+  if (skills.length) parts.push(section("Skills", [skillMenu(skills)]));
   if (input.commands && input.commands.length) {
     const lines = input.commands.map((c) => {
       const aliases = c.manifest.aliases.length ? ` (alias: ${c.manifest.aliases.join(", ")})` : "";
@@ -136,4 +136,23 @@ function identitySection(identity: { name: string; nickname?: string }, isSubage
 
 function section(title: string, items: string[]): string {
   return `# ${title}\n\n${items.join("\n\n")}`;
+}
+
+// Progressive disclosure: list each skill by name + one-line description rather than
+// inlining the full SKILL.md body. The full body is fetched on demand via the
+// `load_skill` tool. This keeps the per-turn system prompt small even for an agent
+// with many or large skills — the bodies are only spent when a skill is actually used.
+function skillMenu(skills: LoadedSkill[]): string {
+  const lines = skills.map((s) => {
+    const desc = s.manifest.description ? ` — ${s.manifest.description}` : "";
+    return `- **${s.manifest.name}**${desc}`;
+  });
+  return [
+    "These skills are available to you. Only the name and a one-line summary are shown here —",
+    "the full instructions are NOT loaded. When a task calls for a skill, call",
+    "`load_skill({ name })` to read its complete instructions BEFORE you use it; the body then",
+    "stays in this conversation for the rest of the session, so you load each skill at most once.",
+    "",
+    lines.join("\n"),
+  ].join("\n");
 }

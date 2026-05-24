@@ -19,6 +19,7 @@ import { ScheduleStore } from "../sessions/schedule-store.js";
 import { AttachmentStore } from "../attachments/store.js";
 import { readAttachmentTool } from "../tools/attachment.js";
 import { buildAttachReplyTool } from "../tools/attach-reply.js";
+import { buildLoadSkillTool } from "../tools/load-skill.js";
 import { buildSpawnSubagentTool } from "./orchestrator.js";
 import { buildDispatcher } from "../dispatch/factory.js";
 import type { AgentDispatcher, DispatchResult, OutboundAttachment } from "../dispatch/base.js";
@@ -132,6 +133,9 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     if (!isSubagent) {
       builtinTools.push(buildAttachReplyTool(attachments, outboundAttachments));
     }
+    // Progressive skill disclosure: the system prompt carries only a skill MENU
+    // (name + summary). Give the agent the means to pull a full body on demand.
+    if (skills.length) builtinTools.push(buildLoadSkillTool(skills));
     if (isSubagent) {
       // Subagents get ask_user so they can bubble questions up to the orchestrator.
       builtinTools.push(askUserTool);
