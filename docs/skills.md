@@ -14,8 +14,26 @@ brain/skills/
 
 ## SKILL.md
 
-Frontmatter + a markdown body. The body is injected into the agent's system prompt under
-a **Skills** section (`### <name>\n<body>`), so write it as instructions to the model.
+Frontmatter + a markdown body. Write the body as instructions to the model.
+
+### Progressive disclosure (skills load on demand)
+
+A skill's full body is **not** injected into the system prompt up front. Instead, every
+skill the agent has appears as a one-line **menu** entry — `**<name>** — <description>` —
+under a `Skills` section. When a task calls for a skill, the agent calls the built-in
+`load_skill({ name })` tool, which returns the complete body as a tool result. That body
+then stays in the conversation for the rest of the session, so each skill is read at most
+once.
+
+This keeps the per-turn prompt small even for an orchestrator with many or large skills:
+the full instructions cost tokens only when the skill is actually used, not on every
+message. (It's the same read-on-demand pattern the brain uses for per-stack coding
+standards under `standards/stacks/`.) `load_skill` is added automatically whenever an
+agent has at least one skill.
+
+**Consequence for authors:** the `description` is all the agent sees until it loads the
+body, so it must clearly signal *when* to reach for the skill — a vague summary means the
+agent won't know to load it.
 
 ```markdown
 ---
@@ -33,7 +51,7 @@ Use `web_search` for fresh information. Prefer Brave results; cite the URL.
 | Field | Type / default | What it does |
 |---|---|---|
 | `name` | string | Skill id (from the directory name). |
-| `description` | string, `""` | Short summary. |
+| `description` | string, `""` | Short summary. **Shown in the skill menu** — this is all the agent sees until it `load_skill`s the body, so make it clearly say *when* to use the skill. |
 | `version` | string, `0.0.0` | Informational. |
 | `toolsRequired` | string[], `[]` | Built-in tools the skill needs. Daedalus checks each is in the agent's `tools:` list before the turn runs, so a missing dependency fails fast instead of mid-task. |
 | `requires.secrets` | string[], `[]` | Secret names that must resolve (env or the secrets backend) when the skill loads. Missing ones surface a clear warning at agent start. |
