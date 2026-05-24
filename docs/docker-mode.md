@@ -153,6 +153,10 @@ aliases: [s, send]                     # alternate names the user can type
 Run `git status`, then stage and commit everything, then push.
 ```
 
+The frontmatter — and every field in it — is **optional**; a bare body works. The
+command's **name** is its filename. `description` (default `""`) shows in the agent's
+command menu; `aliases` (default `[]`) are alternate names the user can type.
+
 **Manifest opt-in.** An agent only sees commands when its manifest declares
 `commands:`. Three shapes:
 

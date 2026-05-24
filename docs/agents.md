@@ -61,28 +61,32 @@ You are a thorough researcher. Cite sources. Prefer primary sources over summari
 
 ## Frontmatter reference
 
-| Field | Type / default | What it does |
-|---|---|---|
-| `name` | string | Agent id. Taken from the filename — the frontmatter value is informational. |
-| `description` | string, `""` | One-liner; shown in the orchestrator's `spawn_subagent` menu. |
-| `provider` | `anthropic` \| `openai` \| `ollama` — **required** | Which LLM API to call. Decides the wire protocol and which key resolves (see [install.md](./install.md)). `openai` covers any OpenAI-compatible endpoint (OpenAI, LiteLLM, vLLM, Ollama `/v1`…). |
-| `model` | string — **required** | Model id passed to the provider (e.g. `claude-sonnet-4-6`, `gpt-4o`, or a LiteLLM alias). |
-| `maxTurns` | int, `50` | Max tool-use iterations in one turn before the loop stops. |
-| `maxTokens` | int, `4096` | Max output tokens per LLM call. |
-| `temperature` | 0–2, optional | Sampling temperature; omit for the provider default. |
-| `vision` | bool \| string, `false` | Image input. `false`/omit = inbound images aren't sent to the model. `true` = the agent's own `model` is multimodal. `"provider/model"` = route image-bearing turns to that vision model. See below. |
-| `tools` | string[], `[]` | Built-in tools the agent may use: `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`, `schedule_message`, … `['*']` = all. **Empty = none** (the safe default for subagents). |
-| `skills` | string[], `[]` | Skills from `brain/skills/`. `['*']` = every skill. See [skills.md](./skills.md). |
-| `mcpServers` | string[], `[]` | MCP servers from `brain/mcp/`. `['*']` = all. The `memory` server is auto-injected. See [mcp.md](./mcp.md). |
-| `commands` | string[], `[]` | Slash-commands from `brain/commands/`. `['*']` = all. |
-| `subagents` | string[], `[]` | Agents this agent may delegate to via `spawn_subagent`. Omit = no delegation. **Not** wildcarded by convention — list them explicitly so the menu stays small. |
-| `souls` | string[], `[]` | Voice/disposition files from `brain/souls/`. **Omit/empty = include ALL souls; name a subset to narrow.** |
-| `personas` | string[], `[]` | Role framing from `brain/personas/`. Same empty=all rule. |
-| `standards` | string[], `[]` | Cross-cutting rules from `brain/standards/`. Empty = all. |
-| `operations` | string[], `[]` | Playbooks from `brain/operations/`. Empty = all. |
-| `container` | object, optional | Run this agent's `bash` in a specific image — see below. Omit to run in the warm agent runtime. |
-| `timeAware` | bool, `true` | Inject the current date/time into the prompt each turn. |
-| `timezone` | string, optional | IANA tz (e.g. `Europe/London`); defaults to the system tz. |
+Only **`provider`** and **`model`** are required. Everything else is optional — the
+**Type — default** column shows what you get when you omit it. (`name` is taken from the
+filename, so any value set in frontmatter is ignored.)
+
+| Field | Required | Type — default | What it does |
+|---|---|---|---|
+| `name` | — | string | Agent id. Taken from the **filename**; a frontmatter value is ignored. |
+| `description` | No | string — `""` | One-liner; shown in the orchestrator's `spawn_subagent` menu. |
+| `provider` | **Yes** | `anthropic` \| `openai` \| `ollama` | Which LLM API to call. Decides the wire protocol and which key resolves (see [install.md](./install.md)). `openai` covers any OpenAI-compatible endpoint (OpenAI, LiteLLM, vLLM, Ollama `/v1`…). |
+| `model` | **Yes** | string | Model id passed to the provider (e.g. `claude-sonnet-4-6`, `gpt-4o`, or a LiteLLM alias). |
+| `maxTurns` | No | int — `50` | Max tool-use iterations in one turn before the loop stops. |
+| `maxTokens` | No | int — `4096` | Max output tokens per LLM call. |
+| `temperature` | No | 0–2 — provider default | Sampling temperature; omit for the provider default. |
+| `vision` | No | bool \| string — `false` | Image input. `false`/omit = inbound images aren't sent to the model. `true` = the agent's own `model` is multimodal. `"provider/model"` = route image-bearing turns to that vision model. See below. |
+| `tools` | No | string[] — `[]` | Built-in tools the agent may use: `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`, `schedule_message`, … `['*']` = all. **Empty = none** (the safe default for subagents). |
+| `skills` | No | string[] — `[]` | Skills from `brain/skills/`. `['*']` = every skill. See [skills.md](./skills.md). |
+| `mcpServers` | No | string[] — `[]` | MCP servers from `brain/mcp/`. `['*']` = all. The `memory` server is auto-injected. See [mcp.md](./mcp.md). |
+| `commands` | No | string[] — `[]` | Slash-commands from `brain/commands/`. `['*']` = all. |
+| `subagents` | No | string[] — `[]` | Agents this agent may delegate to via `spawn_subagent`. Omit = no delegation. **Not** wildcarded by convention — list them explicitly so the menu stays small. |
+| `souls` | No | string[] — `[]` | Voice/disposition files from `brain/souls/`. **Omit/empty = include ALL souls; name a subset to narrow.** |
+| `personas` | No | string[] — `[]` | Role framing from `brain/personas/`. Same empty=all rule. |
+| `standards` | No | string[] — `[]` | Cross-cutting rules from `brain/standards/`. Empty = all. |
+| `operations` | No | string[] — `[]` | Playbooks from `brain/operations/`. Empty = all. |
+| `container` | No | object | Run this agent's `bash` in a specific image — see below. Omit to run in the warm agent runtime. |
+| `timeAware` | No | bool — `true` | Inject the current date/time into the prompt each turn. |
+| `timezone` | No | string — system tz | IANA tz (e.g. `Europe/London`); defaults to the system tz. |
 
 > **Gotcha — `souls`/`personas`/`standards`/`operations` default to "all".** Omitting the
 > field pulls in *every* file in that directory. Name a subset (e.g. `souls: [base]`) to

@@ -48,13 +48,17 @@ requires:
 Use `web_search` for fresh information. Prefer Brave results; cite the URL.
 ```
 
-| Field | Type / default | What it does |
-|---|---|---|
-| `name` | string | Skill id (from the directory name). |
-| `description` | string, `""` | Short summary. **Shown in the skill menu** — this is all the agent sees until it `load_skill`s the body, so make it clearly say *when* to use the skill. |
-| `version` | string, `0.0.0` | Informational. |
-| `toolsRequired` | string[], `[]` | Built-in tools the skill needs. Daedalus checks each is in the agent's `tools:` list before the turn runs, so a missing dependency fails fast instead of mid-task. |
-| `requires.secrets` | string[], `[]` | Secret names that must resolve (env or the secrets backend) when the skill loads. Missing ones surface a clear warning at agent start. |
+No field is required — a SKILL.md needs only frontmatter delimiters and a body. The
+**Type — default** column shows what you get when you omit a field. (`name` comes from
+the directory, so any value set in frontmatter is ignored.)
+
+| Field | Required | Type — default | What it does |
+|---|---|---|---|
+| `name` | — | string | Skill id. Taken from the **directory name**; a frontmatter value is ignored. |
+| `description` | No | string — `""` | Short summary. **Shown in the skill menu** — this is all the agent sees until it `load_skill`s the body, so make it clearly say *when* to use the skill. |
+| `version` | No | string — `0.0.0` | Informational. |
+| `toolsRequired` | No | string[] — `[]` | Built-in tools the skill needs. Daedalus checks each is in the agent's `tools:` list before the turn runs, so a missing dependency fails fast instead of mid-task. |
+| `requires.secrets` | No | string[] — `[]` | Secret names that must resolve (env or the secrets backend) when the skill loads. Missing ones surface a clear warning at agent start. |
 
 ## bootstrap.sh — the install script
 
