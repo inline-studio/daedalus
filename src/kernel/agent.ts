@@ -67,16 +67,7 @@ export class Kernel {
 
     while (turns < this.opts.maxTurns) {
       turns++;
-      const req: CompletionRequest = {
-        system: this.opts.system,
-        messages,
-        tools: this.allToolDefs,
-        model: this.opts.model,
-        maxTokens: this.opts.maxTokens,
-        ...(this.opts.temperature !== undefined ? { temperature: this.opts.temperature } : {}),
-      };
-
-      const result = await this.completeWithRetry(req, signal);
+      const result = await this.completeFittingContext(messages, signal);
       messages.push(result.message);
       stopReason = result.stopReason;
 
@@ -127,6 +118,49 @@ export class Kernel {
   // un-retried provider error here, by contrast, propagates out of the turn and crashes
   // the whole agent-turn (exit 1). Retry transient failures with exponential backoff +
   // jitter; fail fast on permanent ones (auth/bad-request) so real misconfig surfaces.
+  // Wrap the LLM call with context-window management. If the provider rejects the
+  // request for *length*, drop the OLDEST history and retry with a smaller window. The
+  // dropped messages stay in the session DB — we only send the model less — so this
+  // never breaks persistence or the returned message list (we trim a copy, not the
+  // working set). When there's nothing left to trim and it STILL overflows, the agent's
+  // base prompt (system instructions + tool schemas) alone exceeds the model's context;
+  // surface that as an actionable error rather than looping.
+  private async completeFittingContext(
+    messages: Message[],
+    signal?: AbortSignal,
+  ): Promise<CompletionResult> {
+    let view = messages;
+    for (;;) {
+      const req: CompletionRequest = {
+        system: this.opts.system,
+        messages: view,
+        tools: this.allToolDefs,
+        model: this.opts.model,
+        maxTokens: this.opts.maxTokens,
+        ...(this.opts.temperature !== undefined ? { temperature: this.opts.temperature } : {}),
+      };
+      try {
+        return await this.completeWithRetry(req, signal);
+      } catch (err) {
+        if (!isContextOverflowError(err)) throw err;
+        const trimmed = trimOldest(view);
+        if (trimmed.length >= view.length) {
+          throw new Error(
+            "Model context exceeded and history can't be trimmed further — the agent's base " +
+              "prompt (system instructions + tool schemas) alone is too large for the model's " +
+              "context window. Reduce the agent's skills / mcpServers / tools, or raise the " +
+              `model's context cap. Underlying error: ${(err as Error).message}`,
+          );
+        }
+        log.warn(
+          { fromMessages: view.length, toMessages: trimmed.length, err: (err as Error).message },
+          "context window exceeded — dropped oldest history and retrying",
+        );
+        view = trimmed;
+      }
+    }
+  }
+
   private async completeWithRetry(
     req: CompletionRequest,
     signal?: AbortSignal,
@@ -194,6 +228,35 @@ function isTransientLLMError(err: unknown): boolean {
   return /(429|overload|rate.?limit|timeout|timed out|temporarily|unavailable|fetch failed|socket hang up|econnreset|etimedout|econnrefused|eai_again|und_err|\b5\d\d\b)/.test(
     text,
   );
+}
+
+// The provider rejected the request because it's too long for the model's context.
+// Matches the common phrasings across OpenAI / Anthropic / litellm / vLLM.
+function isContextOverflowError(err: unknown): boolean {
+  const msg = `${(err as Error)?.message ?? ""}`.toLowerCase();
+  return /context (?:size|length|window)|context_length_exceeded|exceeds the available context|maximum context|too many tokens|prompt is too long|reduce the (?:length|prompt|number of (?:input )?tokens)/.test(
+    msg,
+  );
+}
+
+// Return a copy of `messages` with the oldest history dropped to make room. Keeps the
+// most recent messages (including the latest user turn that triggered the run) and
+// avoids leaving a dangling tool_result at the new head (providers reject a tool_result
+// without its preceding tool_use). Returns the same array unchanged when nothing more
+// can safely be dropped (only the trigger remains) — the caller treats that as "the base
+// prompt itself is too big".
+function trimOldest(messages: Message[]): Message[] {
+  if (messages.length <= 1) return messages;
+  const drop = Math.max(1, Math.floor(messages.length * 0.25));
+  let out = messages.slice(drop);
+  while (out.length > 1 && startsMidExchange(out[0]!)) out = out.slice(1);
+  return out;
+}
+
+// A conversation window should open with a user message that isn't just a tool_result.
+function startsMidExchange(first: Message): boolean {
+  if (first.role === "assistant") return true;
+  return first.role === "user" && first.content.some((c) => c.type === "tool_result");
 }
 
 function collectText(parts: ContentPart[]): string {
