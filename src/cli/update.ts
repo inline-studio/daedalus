@@ -1,7 +1,9 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import { execa } from "execa";
-import { findComposeFile, refreshComposeAssets } from "../install.js";
+import { findComposeFile, refreshComposeAssets, localWhisperEnabled } from "../install.js";
+import { loadConfig } from "../config/load.js";
+import { upsertEnvFile } from "../setup/env-file.js";
 
 const REPO = "inline-studio/daedalus";
 
@@ -89,7 +91,20 @@ export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
   // Re-pack the just-updated CLI into the build context so --build actually
   // rebuilds the image from the new version (not the stale tarball from install).
   await refreshComposeAssets(composeDir);
-  const args = ["compose", "-f", composeFile, "up", "-d", "--build"];
+  // Keep the whisper container in the active set across the rebuild. compose `up` without
+  // the profile would otherwise leave it out — so transcription silently dies after an
+  // update. Derive it from the config and persist COMPOSE_PROFILES so it stays fixed
+  // (this also self-heals older installs that predate the persisted profile).
+  const profileArgs: string[] = [];
+  try {
+    if (localWhisperEnabled(loadConfig())) {
+      profileArgs.push("--profile", "whisper");
+      await upsertEnvFile(path.join(composeDir, ".env"), { COMPOSE_PROFILES: "whisper" });
+    }
+  } catch {
+    // No/invalid config on the host — skip; default services still come up.
+  }
+  const args = ["compose", "-f", composeFile, ...profileArgs, "up", "-d", "--build"];
   console.log(`\nRebuilding the stack:\n$ docker ${args.join(" ")}\n`);
   try {
     await execa("docker", args, { stdio: "inherit", cwd: composeDir });
