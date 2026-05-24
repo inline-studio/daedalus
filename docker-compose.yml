@@ -215,6 +215,10 @@ services:
     image: ${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:latest-cpu}
     restart: unless-stopped
     profiles: ["whisper"]
+    environment:
+      # CPU can't do float16; without this speaches falls back to float32 (very slow —
+      # minutes per voice note). int8 quantisation is dramatically faster on CPU.
+      WHISPER__COMPUTE_TYPE: int8
     networks:
       - daedalus
 

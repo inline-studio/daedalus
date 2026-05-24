@@ -4,6 +4,7 @@ import { SessionStore } from "./sessions/store.js";
 import { ScheduleStore } from "./sessions/schedule-store.js";
 import { AttachmentStore } from "./attachments/store.js";
 import { NoopTranscriber, OpenAITranscriber, type Transcriber } from "./attachments/transcribe.js";
+import { provisionWhisperModel } from "./attachments/whisper-provision.js";
 import { MessageBus } from "./channels/bus.js";
 import { buildChannels } from "./channels/registry.js";
 import type { OutgoingMessage, OutgoingAttachment } from "./channels/base.js";
@@ -33,6 +34,9 @@ export async function serve(config: ArtemisConfig): Promise<void> {
   const attachments = new AttachmentStore(config.sessions.attachmentsPath);
   await attachments.ensureDir();
   const transcriber = buildTranscriber(config);
+  // Ensure the local Whisper model is downloaded (speaches won't auto-fetch it). Fire and
+  // forget so serving isn't blocked on the download; it's idempotent across restarts.
+  void provisionWhisperModel(config);
 
   const channels = buildChannels(config.channels);
   if (channels.length === 0) {

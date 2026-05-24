@@ -78,7 +78,8 @@ const origFetch = globalThis.fetch;
 let capturedUrl = "";
 globalThis.fetch = async (url) => {
   capturedUrl = String(url);
-  return { ok: false, status: 500, json: async () => ({}) };
+  // Mirror a real Response: a failed transcription is now logged, which reads .text().
+  return { ok: false, status: 500, json: async () => ({}), text: async () => "" };
 };
 await t.transcribe(Buffer.from("x"), "audio/wav");
 globalThis.fetch = origFetch;

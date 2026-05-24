@@ -1,4 +1,5 @@
 import { Agent } from "undici";
+import { log } from "../log.js";
 
 // Speech-to-text interface. Implementations:
 //   - WhisperLocalTranscriber: shells out to a whisper.cpp / faster-whisper binary
@@ -58,8 +59,18 @@ export class OpenAITranscriber implements Transcriber {
       // bypass the OneCLI MITM proxy (see note above)
       dispatcher: transcriberDirectDispatcher,
     } as unknown as RequestInit);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Surface the failure — a silent null here is what made a missing model look like
+      // "audio just doesn't work" (the endpoint 404s when the model isn't downloaded).
+      const body = await res.text().catch(() => "");
+      log.warn(
+        { status: res.status, model: this.opts.model, url, body: body.slice(0, 300) },
+        "transcription request failed",
+      );
+      return null;
+    }
     const json = (await res.json()) as { text?: string };
+    if (json.text == null) log.warn({ model: this.opts.model }, "transcription returned no text");
     return json.text ?? null;
   }
 }
