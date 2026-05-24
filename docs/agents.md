@@ -70,6 +70,7 @@ You are a thorough researcher. Cite sources. Prefer primary sources over summari
 | `maxTurns` | int, `50` | Max tool-use iterations in one turn before the loop stops. |
 | `maxTokens` | int, `4096` | Max output tokens per LLM call. |
 | `temperature` | 0–2, optional | Sampling temperature; omit for the provider default. |
+| `vision` | bool \| string, `false` | Image input. `false`/omit = inbound images aren't sent to the model. `true` = the agent's own `model` is multimodal. `"provider/model"` = route image-bearing turns to that vision model. See below. |
 | `tools` | string[], `[]` | Built-in tools the agent may use: `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`, `schedule_message`, … `['*']` = all. **Empty = none** (the safe default for subagents). |
 | `skills` | string[], `[]` | Skills from `brain/skills/`. `['*']` = every skill. See [skills.md](./skills.md). |
 | `mcpServers` | string[], `[]` | MCP servers from `brain/mcp/`. `['*']` = all. The `memory` server is auto-injected. See [mcp.md](./mcp.md). |
@@ -114,6 +115,30 @@ This controls **where the agent's `bash` runs** — and it's a real tradeoff:
 Rule of thumb: **orchestrator / browser / interactive work → omit `container.image`**
 (runs warm). **Per-language build/test leaves → set `container.image`** to the right
 toolchain image (`dev-node`, `dev-python`, `dev-php-8.3`, …).
+
+### `vision:` (image input)
+
+Inbound images (e.g. a photo sent over Telegram) reach the agent as message content.
+Whether they're sent to the model depends on `vision`:
+
+```yaml
+vision: false              # default — images are NOT sent to the model
+vision: true               # the agent's own `model` is multimodal; send images to it
+vision: "spark/qwen2-vl"   # route image-bearing turns to this vision model
+```
+
+- **`false` / omitted** — images are stripped before the model call. Use this when the
+  model can't see (so it never errors on an image), which is the safe default.
+- **`true`** — the agent's `model` accepts images, so they're passed straight through.
+- **`"provider/model"`** — for setups where the main model is text-only but a separate
+  vision model exists. A turn that *just brought an image* is routed to that model (which
+  sees the image + the user's question); ordinary text turns keep using `model`. This keeps
+  vision decoupled from your main model choice.
+
+In all cases only the **most recent** image is kept in context — older ones are dropped so
+the same picture isn't re-sent (and re-charged) on every following turn. The model picked
+for image turns should speak the same API as the provider (tool-calls included) if the turn
+might use tools.
 
 ## How the system prompt is composed
 

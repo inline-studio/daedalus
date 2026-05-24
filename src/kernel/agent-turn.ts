@@ -199,6 +199,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       maxTurns: agent.maxTurns,
       maxTokens: agent.maxTokens,
       ...(agent.temperature !== undefined ? { temperature: agent.temperature } : {}),
+      ...(agent.vision ? { vision: agent.vision } : {}),
     });
 
     const result = await kernel.runWithMessages(messages);

@@ -291,6 +291,11 @@ export const AgentManifestSchema = z.object({
   maxTurns: z.number().int().positive().default(50),
   maxTokens: z.number().int().positive().default(4096),
   temperature: z.number().min(0).max(2).optional(),
+  // Image input. Omit / false = no vision (inbound images are not sent to the model).
+  // true = the agent's own `model` is multimodal; send images to it. "provider/model" =
+  // route image-bearing turns to that specific vision model while text turns keep using
+  // `model`. Lets vision work regardless of whether the deployment's main model can see.
+  vision: z.union([z.boolean(), z.string()]).default(false),
   container: AgentContainerSchema.optional(),
   mcpServers: z.array(z.string()).default([]), // names from mcp config
   skills: z.array(z.string()).default([]),
