@@ -52,12 +52,14 @@ memory:
 sessions:
   dbPath: ./data/sessions.sqlite
   attachmentsPath: ./data/attachments
-  # Hard cap on prior messages loaded per turn.
+  # Max prior messages loaded per turn (a count bound).
   historyLimit: 40
-  # Estimated-token budget for replayed history; the tail is trimmed (oldest-first) to
-  # fit before each turn so a few large messages can't fill the context window. Raise it
-  # if your model has a larger context. ~4 chars/token.
-  contextTokenBudget: 32000
+  # OPTIONAL proactive trim. When set, replayed history is trimmed (oldest-first) to this
+  # estimated-token budget before each turn. Leave it unset (the default) to let daedalus
+  # adapt to the model's actual context window at runtime — it trims/compacts reactively
+  # when the provider reports the window is full, whatever that window is. Set it only to
+  # avoid the occasional reactive round-trip on a model whose small context you know.
+  # contextTokenBudget: 32000
 
 # Channels are not "groups" — every channel publishes into the same per-user session.
 # A user reaching you via Telegram and via Web shares one conversation history.

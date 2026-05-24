@@ -154,15 +154,17 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     });
     if (orchestratorTool) builtinTools.push(orchestratorTool);
 
-    // 8. Read history tail and run kernel. The count-limited tail is then trimmed to a
-    // token budget so a few large (or old, pre-cap) messages can't fill the context
-    // window before the turn even starts; the kernel's reactive trim still backstops it.
+    // 8. Read history tail and run kernel. If an explicit token budget is configured we
+    // trim the loaded tail to it up front; otherwise we send the full count-limited tail
+    // and let the kernel's reactive on-overflow handling adapt to the model's actual
+    // window (we don't bake a context-size assumption into daedalus).
     const tail = sessions.tail(sessionId, config.sessions.historyLimit);
     const full = await prepareMessagesForTurn(tail);
-    const messages = budgetTail(full, config.sessions.contextTokenBudget);
-    if (messages.length < full.length) {
+    const budget = config.sessions.contextTokenBudget;
+    const messages = budget ? budgetTail(full, budget) : full;
+    if (budget && messages.length < full.length) {
       log.info(
-        { from: full.length, to: messages.length, budget: config.sessions.contextTokenBudget },
+        { from: full.length, to: messages.length, budget },
         "history trimmed to token budget",
       );
     }
