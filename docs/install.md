@@ -24,7 +24,10 @@ It asks only what can't be inferred:
 3. **Local Whisper** — run a Whisper container for voice-note transcription? (optional)
 4. **Telegram** — your `@BotFather` bot token. (optional, but the primary channel)
 5. **Brave** — a Brave Search API key for `web_search`. (optional; otherwise DuckDuckGo)
-6. **Memory auth** — require a bearer token on the memory server?
+6. **Memory token** — set a bearer token for the memory store. (Optional. The memory
+   server itself enforces nothing — internally it's reached over the private docker
+   network — so a token only matters if you expose memory through a reverse proxy that
+   checks it. See [docker-mode.md](./docker-mode.md) → "Exposing memory to other devices".)
 
 Everything else is automatic: OneCLI, the memory store, and the warm agent worker always
 run. Re-running is idempotent ("leave blank to keep" reuses previous answers).
