@@ -204,9 +204,13 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
 
     const result = await kernel.runWithMessages(messages);
 
-    // 9. Persist whatever the kernel produced beyond the existing tail.
+    // 9. Persist whatever the kernel produced beyond the existing tail. Skip a
+    // content-less, tool-less assistant message (e.g. the model returned an empty
+    // completion) — replaying one later makes the provider reject the whole request
+    // ("assistant message must contain content or tool_calls"), poisoning the session.
     const newMessages = result.messages.slice(messages.length);
     for (const m of newMessages) {
+      if (isEmptyAssistantMessage(m)) continue;
       sessions.appendMessage({ sessionId, role: m.role, content: m.content });
     }
 
@@ -269,6 +273,20 @@ export function findPendingAskUser(
 
 // Build a user message wrapping a tool_result for an open ask_user. Used by the
 // subagent-resume path: the parent's response to the question becomes the answer.
+// An assistant message with no tool_use and no non-whitespace text is a no-op the LLM
+// providers reject when it's replayed ("assistant message must contain content or
+// tool_calls"). We never persist one, so a stray empty completion can't poison a session.
+export function isEmptyAssistantMessage(m: Message): boolean {
+  if (m.role !== "assistant") return false;
+  if (m.content.some((c) => c.type === "tool_use")) return false;
+  const text = m.content
+    .filter((c): c is { type: "text"; text: string } => c.type === "text")
+    .map((c) => c.text)
+    .join("")
+    .trim();
+  return text.length === 0;
+}
+
 export function buildResumeMessage(toolUseId: string, answer: string): Message {
   const part: ToolResultPart = {
     type: "tool_result",

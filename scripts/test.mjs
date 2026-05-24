@@ -23,6 +23,7 @@ const CI_SAFE = [
   "smoke-context-trim",
   "smoke-disable",
   "smoke-dispatcher",
+  "smoke-empty-assistant",
   "smoke-export-mempalace",
   "smoke-install",
   "smoke-kernel-retry",
