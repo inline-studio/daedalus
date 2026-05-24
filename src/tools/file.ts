@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ToolImpl } from "./base.js";
+import { READ_DEFAULT_LINES, READ_MAX_LINES, READ_MAX_CHARS } from "./limits.js";
 
 // Path safety: writes/edits are blocked against the brain dir unless brainWritable.
 function assertWritable(target: string, ctx: { brainPath: string; brainWritable: boolean }): void {
@@ -17,10 +18,23 @@ function assertWritable(target: string, ctx: { brainPath: string; brainWritable:
 export const readTool: ToolImpl = {
   definition: {
     name: "read",
-    description: "Read a UTF-8 text file. Returns up to 200kb of content.",
+    description:
+      `Read a UTF-8 text file. Returns up to ${READ_DEFAULT_LINES} lines from the start by ` +
+      "default; pass `offset` (1-based line) and `limit` to page through a larger file. The " +
+      "returned slice is also capped at ~60k chars.",
     inputSchema: {
       type: "object",
-      properties: { path: { type: "string" } },
+      properties: {
+        path: { type: "string" },
+        offset: {
+          type: "number",
+          description: "1-based line number to start from. Default 1.",
+        },
+        limit: {
+          type: "number",
+          description: `Max lines to return (1–${READ_MAX_LINES}). Default ${READ_DEFAULT_LINES}.`,
+        },
+      },
       required: ["path"],
       additionalProperties: false,
     },
@@ -28,10 +42,34 @@ export const readTool: ToolImpl = {
   async invoke(input) {
     const p = String(input.path ?? "");
     const text = await fs.readFile(p, "utf8");
-    const out = text.length > 200_000 ? text.slice(0, 200_000) + "\n[truncated]" : text;
+    const lines = text.split("\n");
+    const total = lines.length;
+    const offset = clampInt(input.offset, 1, Math.max(1, total), 1);
+    const limit = clampInt(input.limit, 1, READ_MAX_LINES, READ_DEFAULT_LINES);
+    if (offset > total) {
+      return { content: `[file has ${total} line(s); offset ${offset} is past the end]` };
+    }
+    const slice = lines.slice(offset - 1, offset - 1 + limit);
+    const endLine = offset - 1 + slice.length;
+    let out = slice.join("\n");
+    if (out.length > READ_MAX_CHARS) {
+      // The line range itself is huge (e.g. minified code). Cut hard and tell the agent
+      // to narrow — a line-based "continue" offset would be misleading here.
+      out =
+        out.slice(0, READ_MAX_CHARS) +
+        `\n[truncated at ${READ_MAX_CHARS.toLocaleString()} chars — this line range is large; re-read with a smaller limit]`;
+    } else if (endLine < total) {
+      out += `\n[lines ${offset}-${endLine} of ${total}; pass offset=${endLine + 1} for more]`;
+    }
     return { content: out };
   },
 };
+
+function clampInt(v: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof v === "number" ? Math.floor(v) : Number.parseInt(String(v ?? ""), 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
 
 export const writeTool: ToolImpl = {
   definition: {

@@ -68,6 +68,21 @@ export class Kernel {
     while (turns < this.opts.maxTurns) {
       turns++;
       const result = await this.completeFittingContext(messages, signal);
+      if (result.usage) {
+        // Per-turn token visibility. inputTokens is the whole replayed transcript
+        // (system + history + this turn's tool I/O), so a climbing number here is the
+        // signal that context — not turn count — is what's growing.
+        log.info(
+          {
+            agent: this.opts.toolContext.agentName,
+            model: this.opts.model,
+            turn: turns,
+            inputTokens: result.usage.inputTokens,
+            outputTokens: result.usage.outputTokens,
+          },
+          "llm usage",
+        );
+      }
       messages.push(result.message);
       stopReason = result.stopReason;
 

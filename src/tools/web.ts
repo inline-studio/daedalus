@@ -2,13 +2,14 @@ import type { ToolImpl } from "./base.js";
 import type { WebConfig } from "../config/schema.js";
 import { fetchUrl } from "../web/fetch.js";
 import { buildSearchProvider } from "../web/search/index.js";
+import { WEB_FETCH_MAX_CHARS, capChars } from "./limits.js";
 
 export function webFetchTool(config: WebConfig): ToolImpl {
   return {
     definition: {
       name: "web_fetch",
       description:
-        "Fetch a URL and return its content. HTML is auto-converted to markdown with chrome (nav/footer/scripts) stripped. JSON, RSS, and plain text are returned as-is. Use this to read documentation, articles, GitHub READMEs, etc.",
+        "Fetch a URL and return its content. HTML is auto-converted to markdown with chrome (nav/footer/scripts) stripped. JSON, RSS, and plain text are returned as-is. Output is capped at ~40k chars; if a page is larger, fetch a more specific URL or use web_search to find the right one. Use this to read documentation, articles, GitHub READMEs, etc.",
       inputSchema: {
         type: "object",
         properties: {
@@ -43,13 +44,12 @@ export function webFetchTool(config: WebConfig): ToolImpl {
             `Status: ${result.status}`,
             `Bytes: ${result.byteLength}${result.page.wasTruncated ? " (truncated)" : ""}`,
             "",
-            result.page.contentMarkdown,
+            capChars(result.page.contentMarkdown, WEB_FETCH_MAX_CHARS),
           ];
           return { content: lines.join("\n") };
         }
 
         const body = result.rawText ?? "";
-        const truncated = body.length > 200_000 ? body.slice(0, 200_000) + "\n[truncated]" : body;
         return {
           content: [
             `URL: ${result.url}`,
@@ -57,7 +57,7 @@ export function webFetchTool(config: WebConfig): ToolImpl {
             `Content-Type: ${result.contentType}`,
             `Bytes: ${result.byteLength}`,
             "",
-            truncated,
+            capChars(body, WEB_FETCH_MAX_CHARS),
           ].join("\n"),
         };
       } catch (err) {
