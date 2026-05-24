@@ -231,6 +231,10 @@ export async function runInstall(configFlag?: string): Promise<void> {
   };
   if (mempalaceToken) composeEnv.MEMPALACE_TOKEN = mempalaceToken;
   composeEnv.ONECLI_API_KEY = onecliKey;
+  // Persist the active compose profile so EVERY compose command (install, `dae update`,
+  // manual `docker compose`) keeps the whisper container up — not just this install run.
+  // Without this, `dae update` (which runs `compose up` with no --profile) drops whisper.
+  composeEnv.COMPOSE_PROFILES = wantWhisper ? "whisper" : "";
 
   await upsertEnvFile(composeEnvPath, composeEnv);
   console.log(`✓ wrote compose env → ${rel(composeEnvPath)}`);
@@ -438,6 +442,17 @@ async function packCliInto(targetDir: string): Promise<void> {
 // `dae update` calls this before `docker compose up -d --build` so the rebuilt
 // image picks up the newly-installed CLI version (rather than the stale tarball
 // from the last install).
+// Whether the config points at the in-stack local Whisper container (the only
+// transcription mode that needs the profile-gated `whisper` compose service activated;
+// an external OpenAI-shaped endpoint has no container to start). Used by `dae update` to
+// keep whisper up across rebuilds.
+export function localWhisperEnabled(config: {
+  transcribe?: { backend?: string | undefined; baseUrl?: string | undefined } | undefined;
+}): boolean {
+  const t = config.transcribe;
+  return t?.backend === "openai-whisper" && (t.baseUrl ?? "").includes("whisper:8000");
+}
+
 export async function refreshComposeAssets(composeDir: string): Promise<boolean> {
   const ok = await materializeComposeFiles(composeDir);
   if (ok) await packCliInto(composeDir);

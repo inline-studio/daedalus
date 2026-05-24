@@ -48,6 +48,7 @@ const CI_SAFE = [
   "smoke-tool-output-limits",
   "smoke-vision",
   "smoke-whisper",
+  "smoke-whisper-profile",
 ];
 
 // Tests that don't need a service manager anymore (host services are retired), but
