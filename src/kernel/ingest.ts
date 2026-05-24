@@ -94,7 +94,27 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
         source: { kind: "base64", data: buf.toString("base64") },
         ...(transcript ? { transcript } : {}),
       });
-      if (transcript) inboundParts.push({ type: "text", text: `[voice transcript] ${transcript}` });
+      if (transcript) {
+        inboundParts.push({ type: "text", text: `[voice transcript] ${transcript}` });
+      } else {
+        // No transcript → the raw audio part is dropped by text providers, so without a
+        // text note the agent receives an effectively empty turn and replies "How can I
+        // help?". Always leave it something actionable to say.
+        const why =
+          transcriber.id === "noop"
+            ? "voice transcription isn't configured for this assistant"
+            : "the transcription attempt failed";
+        log.warn(
+          { backend: transcriber.id, mediaType: a.mediaType, bytes: buf.length },
+          "audio attachment could not be transcribed",
+        );
+        inboundParts.push({
+          type: "text",
+          text:
+            `[The user sent a voice message, but ${why}, so no transcript is available. ` +
+            `Tell the user you can't process voice notes right now and ask them to send it as text.]`,
+        });
+      }
     } else {
       inboundParts.push({
         type: "file",
