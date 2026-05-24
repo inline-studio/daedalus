@@ -49,8 +49,15 @@ export interface OutboundAttachment {
 }
 
 export type DispatchResult =
-  | { status: "complete"; finalText: string; turns: number; attachments?: OutboundAttachment[] }
-  | { status: "pending_question"; question: string; turns: number };
+  | {
+      status: "complete";
+      finalText: string;
+      turns: number;
+      attachments?: OutboundAttachment[];
+      // User-facing notices to deliver alongside the reply (e.g. a compaction notice).
+      notices?: string[];
+    }
+  | { status: "pending_question"; question: string; turns: number; notices?: string[] };
 
 export interface AgentDispatcher {
   readonly id: string;

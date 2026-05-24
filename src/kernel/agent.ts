@@ -35,12 +35,17 @@ export interface KernelResult {
   // surfaces the question to the user; on resume, the user's answer becomes the
   // tool_result for the recorded toolUseId.
   pendingQuestion?: { question: string; toolUseId: string };
+  // User-facing notices produced during the turn (e.g. "compacted earlier history").
+  // The dispatcher forwards these to the channel so the user knows what happened.
+  notices?: string[];
 }
 
 // One agent loop: send -> read tool calls -> execute -> reply -> until end_turn or maxTurns.
 export class Kernel {
   private builtinByName = new Map<string, ToolImpl>();
   private allToolDefs: ToolDefinition[];
+  // User-facing notices accumulated during a run (reset per runWithMessages).
+  private notices: string[] = [];
 
   constructor(private opts: KernelOptions) {
     for (const t of opts.builtinTools) this.builtinByName.set(t.definition.name, t);
@@ -60,6 +65,7 @@ export class Kernel {
 
   async runWithMessages(initialMessages: Message[], signal?: AbortSignal): Promise<KernelResult> {
     const messages: Message[] = [...initialMessages];
+    this.notices = [];
 
     let turns = 0;
     let stopReason = "end_turn";
@@ -116,6 +122,7 @@ export class Kernel {
               turns,
               stopReason: "ask_user",
               pendingQuestion: { question: err.question, toolUseId: tu.id },
+              ...(this.notices.length ? { notices: [...this.notices] } : {}),
             };
           }
           throw err;
@@ -124,7 +131,13 @@ export class Kernel {
       messages.push({ role: "user", content: toolResults });
     }
 
-    return { messages, finalText, turns, stopReason };
+    return {
+      messages,
+      finalText,
+      turns,
+      stopReason,
+      ...(this.notices.length ? { notices: [...this.notices] } : {}),
+    };
   }
 
   // The LLM call is the one step in the turn loop that fails *transiently* — rate
@@ -145,6 +158,7 @@ export class Kernel {
     signal?: AbortSignal,
   ): Promise<CompletionResult> {
     let view = messages;
+    let triedCompact = false;
     for (;;) {
       const req: CompletionRequest = {
         system: this.opts.system,
@@ -158,6 +172,26 @@ export class Kernel {
         return await this.completeWithRetry(req, signal);
       } catch (err) {
         if (!isContextOverflowError(err)) throw err;
+        // First overflow: try to COMPACT — summarise the older portion into a synopsis and
+        // keep recent turns verbatim. Lossy-but-informative, unlike dropping. Triggered by
+        // the provider's *actual* "context exceeded" error, so it adapts to whatever window
+        // the model has — no hardcoded cap. Once per call; if it still overflows afterwards
+        // (or summarising fails), fall back to dropping oldest so we always make progress.
+        if (!triedCompact) {
+          triedCompact = true;
+          const compacted = await this.tryCompact(view, signal);
+          if (compacted) {
+            this.notices.push(
+              "🗜️ Our conversation got long, so I summarised the earlier part to stay within the model's context window. Ask me to recap anything I seem to have lost.",
+            );
+            log.info(
+              { fromMessages: view.length, toMessages: compacted.length },
+              "context window exceeded — compacted older history into a summary",
+            );
+            view = compacted;
+            continue;
+          }
+        }
         const trimmed = trimOldest(view);
         if (trimmed.length >= view.length) {
           throw new Error(
@@ -173,6 +207,68 @@ export class Kernel {
         );
         view = trimmed;
       }
+    }
+  }
+
+  // Summarise the older portion of `view` into a single synopsis prepended to the most
+  // recent kept turn, returning a shorter message list — or null when there's nothing
+  // worth compacting (caller then falls back to dropping oldest). Lossy by design: a long
+  // history becomes a dense summary, freeing context while preserving the gist. The full
+  // history is untouched in the session DB; we only shrink what's SENT this turn.
+  private async tryCompact(view: Message[], signal?: AbortSignal): Promise<Message[] | null> {
+    if (view.length <= 3) return null;
+    // Keep the most recent half (>=2) verbatim; summarise everything older.
+    const keep = Math.max(2, Math.floor(view.length / 2));
+    let recent = view.slice(view.length - keep);
+    // The kept window must open cleanly (not on an assistant turn or a bare tool_result).
+    while (recent.length > 1 && startsMidExchange(recent[0]!)) recent = recent.slice(1);
+    const older = view.slice(0, view.length - recent.length);
+    if (older.length === 0 || recent.length === 0) return null;
+    const summary = await this.summarize(older, signal);
+    if (!summary) return null;
+    const preamble: ContentPart = {
+      type: "text",
+      text: `[Summary of earlier conversation, condensed to save context]\n${summary}`,
+    };
+    const head = recent[0]!;
+    if (head.role === "user") {
+      // Fold the summary into the first kept user message — keeps role alternation valid.
+      const newHead: Message = { role: "user", content: [preamble, ...head.content] };
+      return [newHead, ...recent.slice(1)];
+    }
+    // Rare: kept window opens on an assistant turn. Prepend a standalone user synopsis.
+    return [{ role: "user", content: [preamble] }, ...recent];
+  }
+
+  // Ask the model to compress a slice of history into a dense, replaceable summary.
+  // Returns null on any failure so the caller falls back to dropping (never blocks a turn).
+  private async summarize(messages: Message[], signal?: AbortSignal): Promise<string | null> {
+    const transcript = messages
+      .map((m) => `${m.role.toUpperCase()}: ${summarizeContent(m.content)}`)
+      .join("\n\n");
+    const req: CompletionRequest = {
+      system:
+        "You compress conversation history. Produce a dense, factual summary that can REPLACE " +
+        "the original messages in context. Capture: the user's goals and stated preferences, key " +
+        "facts and decisions, specifics worth keeping (names, numbers, URLs, file paths), and any " +
+        "open threads or pending actions. Use terse prose or bullets. No preamble, no commentary.",
+      messages: [
+        { role: "user", content: [{ type: "text", text: `Summarise this conversation:\n\n${transcript}` }] },
+      ],
+      tools: [],
+      model: this.opts.model,
+      maxTokens: 1024,
+    };
+    try {
+      const res = await this.completeWithRetry(req, signal);
+      const text = collectText(res.message.content).trim();
+      return text.length ? text : null;
+    } catch (err) {
+      log.warn(
+        { err: (err as Error).message },
+        "compaction summary failed — falling back to dropping history",
+      );
+      return null;
     }
   }
 
@@ -279,4 +375,37 @@ function collectText(parts: ContentPart[]): string {
     .filter((p): p is { type: "text"; text: string } => p.type === "text")
     .map((p) => p.text)
     .join("");
+}
+
+// Render a message's content parts to compact text for the summariser. Tool I/O is
+// truncated so a chatty history doesn't blow the summary call itself.
+function summarizeContent(parts: ContentPart[]): string {
+  const out: string[] = [];
+  for (const p of parts) {
+    switch (p.type) {
+      case "text":
+        out.push(p.text);
+        break;
+      case "tool_use":
+        out.push(`[called ${p.name}(${truncateText(JSON.stringify(p.input), 300)})]`);
+        break;
+      case "tool_result":
+        out.push(`[tool result: ${truncateText(p.content, 1500)}]`);
+        break;
+      case "image":
+        out.push("[image]");
+        break;
+      case "audio":
+        out.push(p.transcript ? `[audio: ${p.transcript}]` : "[audio]");
+        break;
+      case "file":
+        out.push(`[file ${p.filename}]`);
+        break;
+    }
+  }
+  return out.join("\n");
+}
+
+function truncateText(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
 }

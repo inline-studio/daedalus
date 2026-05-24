@@ -220,6 +220,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
         status: "pending_question",
         question: result.pendingQuestion.question,
         turns: result.turns,
+        ...(result.notices?.length ? { notices: result.notices } : {}),
       };
     }
     return {
@@ -227,6 +228,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       finalText: result.finalText,
       turns: result.turns,
       ...(outboundAttachments.length ? { attachments: outboundAttachments } : {}),
+      ...(result.notices?.length ? { notices: result.notices } : {}),
     };
   } finally {
     sessions.close();

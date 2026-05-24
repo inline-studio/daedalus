@@ -72,6 +72,13 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         userId: ingested.userId,
         isSubagent: false,
       });
+      // Deliver any in-turn notices (e.g. "I compacted our earlier conversation") as their
+      // own short messages first, so the user knows what happened before the reply lands.
+      if (result.notices?.length) {
+        for (const n of result.notices) {
+          await ch.send(msg.externalUserId, { text: n }).catch(() => undefined);
+        }
+      }
       const reply =
         result.status === "pending_question" ? result.question : result.finalText;
       const outgoing: OutgoingMessage = { text: reply };
