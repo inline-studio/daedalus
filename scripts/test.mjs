@@ -50,6 +50,7 @@ const CI_SAFE = [
   "smoke-vision",
   "smoke-whisper",
   "smoke-whisper-profile",
+  "smoke-whisper-provision",
 ];
 
 // Tests that don't need a service manager anymore (host services are retired), but

@@ -133,9 +133,9 @@ export const whisperSetup: ChannelSetup = {
         type: "text",
         name: "model",
         message: "Model identifier (server-specific; blank = server's default):",
-        initial: "Systran/faster-whisper-large-v3",
+        initial: "Systran/faster-whisper-small",
       });
-      model = (modelRes.model as string | undefined)?.trim() || "Systran/faster-whisper-large-v3";
+      model = (modelRes.model as string | undefined)?.trim() || "Systran/faster-whisper-small";
     }
 
     const proceed = await confirm(`Proceed and enable whisper (${mode})?`, true);

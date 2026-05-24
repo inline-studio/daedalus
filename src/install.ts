@@ -154,7 +154,7 @@ export async function runInstall(configFlag?: string): Promise<void> {
     yamlEdits.push(
       { keyPath: ["transcribe", "backend"], value: "openai-whisper" },
       { keyPath: ["transcribe", "baseUrl"], value: "http://whisper:8000/v1" },
-      { keyPath: ["transcribe", "model"], value: "Systran/faster-whisper-large-v3" },
+      { keyPath: ["transcribe", "model"], value: "Systran/faster-whisper-small" },
       { keyPath: ["transcribe", "apiKey"], value: "local-no-auth-required" },
     );
   }
