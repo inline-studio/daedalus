@@ -133,10 +133,14 @@ export function toOpenAIMessages(m: Message): OpenAI.Chat.Completions.ChatComple
       out.push({ role: "tool", tool_call_id: r.toolUseId, content: r.content });
     }
   } else if (m.role === "assistant") {
+    const hasTools = toolUses.length > 0;
     out.push({
       role: "assistant",
-      content: text || null,
-      ...(toolUses.length
+      // OpenAI/litellm reject an assistant message with neither content nor tool_calls.
+      // With tool_calls present, content may be null; without, it MUST be a string — so
+      // fall back to "" (never null) for a content-less, tool-less assistant turn.
+      content: hasTools ? text || null : text,
+      ...(hasTools
         ? {
             tool_calls: toolUses.map((tu) => {
               const t = tu as { id: string; name: string; input: Record<string, unknown> };
