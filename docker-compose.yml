@@ -192,10 +192,14 @@ services:
       context: .
       dockerfile: Dockerfile.mempalace
     restart: unless-stopped
-    # Loopback publish so host-side tooling / debugging can reach it; agents reach it
-    # by container name (`mempalace`) on the daedalus network regardless of this.
+    # Host publish for tooling/debugging and for fronting with your OWN reverse proxy
+    # (daedalus bundles none). Defaults to loopback; set MEMPALACE_BIND in .env to an
+    # interface your proxy can reach (e.g. 0.0.0.0). Agents reach it by container name
+    # (`mempalace`) on the daedalus network regardless of this. mcp-proxy enforces no
+    # auth itself — only expose it beyond loopback via a reverse proxy that checks a
+    # token (see docs/docker-mode.md → "The mempalace container").
     ports:
-      - "127.0.0.1:11364:11364"
+      - "${MEMPALACE_BIND:-127.0.0.1}:11364:11364"
     volumes:
       - ${MEMPALACE_PALACE_PATH:-mempalace-data}:/palace
     networks:

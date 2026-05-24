@@ -239,9 +239,45 @@ spawn, one shared instance.
   That makes every agent get `memory → http://mempalace:11364/mcp` automatically.
   (Prefer SSE, or have a non-daedalus client connect? Use an explicit def instead:
   `{ "mcpServers": { "memory": { "url": "http://mempalace:11364/sse", "transport": "sse" } } }`.)
-- **Auth.** The service publishes only to `127.0.0.1` and the internal `daedalus`
-  network, so isolation is the boundary. mcp-proxy doesn't enforce a bearer token
-  itself — front it with a TLS reverse proxy if you expose it beyond the host.
+- **Auth & internal access.** By default the service publishes only to `127.0.0.1`
+  plus the internal `daedalus` network, so network isolation is the boundary — agents
+  reach it in-cluster and nothing on your LAN can. `mcp-proxy` (and mempalace itself)
+  **enforce no authentication**, so don't expose the raw port to untrusted networks.
+
+#### Exposing memory to other devices (bring your own reverse proxy)
+
+Want to use the same memory vault from another machine — e.g. Claude Desktop/Code on
+your laptop — *without* an SSH tunnel? **Daedalus bundles no web server on purpose**
+(you likely already run one, and a second would fight for ports). Instead, front the
+published port with **your own** reverse proxy, which owns TLS and auth:
+
+1. **Make the port reachable by your proxy.** If your proxy runs on the host, the
+   default `127.0.0.1:11364` already works. If it runs elsewhere (a container, another
+   host), set `MEMPALACE_BIND` in the compose `.env` to an interface it can reach:
+   ```dotenv
+   MEMPALACE_BIND=0.0.0.0        # default is 127.0.0.1 (loopback only)
+   ```
+   (Hand-edited `.env` keys survive `dae install` re-runs.)
+2. **Terminate + authenticate at your proxy.** It checks the credential and streams SSE.
+   Example for Caddy (use `basic_auth`, `forward_auth` to your SSO, or mTLS instead if
+   you prefer):
+   ```caddy
+   memory.example.com {
+       @unauth not header Authorization "Bearer {env.MEMPALACE_TOKEN}"
+       respond @unauth "unauthorized" 401
+       reverse_proxy 127.0.0.1:11364 {
+           flush_interval -1            # don't buffer the SSE stream
+       }
+   }
+   ```
+3. **Point the client at your proxy URL.** `dae export mempalace` prints a paste-ready
+   MCP snippet (URL + token + the Claude Desktop/Code config path) — swap in your proxy
+   hostname. Internal daedalus agents keep using the in-cluster `mempalace:11364`, so
+   they're unaffected.
+
+The `MEMPALACE_TOKEN` daedalus already sends as `Authorization: Bearer …` is the value
+your proxy checks. It is **only meaningful behind a proxy that enforces it** — the raw
+port has no auth, so never publish it to an untrusted network without one.
 
 ## Scheduled tasks
 
