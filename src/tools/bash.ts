@@ -1,10 +1,11 @@
 import type { ToolImpl } from "./base.js";
+import { BASH_STREAM_MAX_CHARS, capChars } from "./limits.js";
 
 export const bashTool: ToolImpl = {
   definition: {
     name: "bash",
     description:
-      "Run a shell command. If the agent has a container image configured, the command runs inside that container; otherwise it runs on the host. Output is truncated to 30k chars.",
+      "Run a shell command. If the agent has a container image configured, the command runs inside that container; otherwise it runs on the host. Each stream (stdout/stderr) is truncated to ~16k chars — pipe noisy commands through grep/head/tail to keep output focused.",
     inputSchema: {
       type: "object",
       properties: {
@@ -46,10 +47,9 @@ export const bashTool: ToolImpl = {
       cwd: ctx.runtime.id === "docker" ? "/workspace" : ctx.workspacePath,
       env,
     });
-    const truncate = (s: string) => (s.length > 30_000 ? s.slice(0, 30_000) + "\n[truncated]" : s);
     const body = [
-      result.stdout && `STDOUT:\n${truncate(result.stdout)}`,
-      result.stderr && `STDERR:\n${truncate(result.stderr)}`,
+      result.stdout && `STDOUT:\n${capChars(result.stdout, BASH_STREAM_MAX_CHARS)}`,
+      result.stderr && `STDERR:\n${capChars(result.stderr, BASH_STREAM_MAX_CHARS)}`,
       `EXIT: ${result.exitCode}${result.timedOut ? " (timed out)" : ""}`,
     ]
       .filter(Boolean)

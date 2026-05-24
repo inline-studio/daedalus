@@ -40,6 +40,7 @@ const CI_SAFE = [
   "smoke-wizard-defaults",
   "smoke-wizard-shell",
   "smoke-time-awareness",
+  "smoke-tool-output-limits",
   "smoke-whisper",
 ];
 
