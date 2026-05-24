@@ -7,6 +7,7 @@ import type {
   CompletionRequest,
   CompletionResult,
   ContentPart,
+  ImagePart,
   Message,
   ToolDefinition,
   ToolUsePart,
@@ -27,8 +28,11 @@ export interface KernelOptions {
   // Image input policy (from the agent manifest's `vision`):
   //   undefined/false — no vision: images are stripped before the model call.
   //   true            — the agent's own `model` is multimodal: send images to it.
-  //   "provider/model"— route image-bearing turns to that vision model; text turns
-  //                     use `model` with images stripped (a text model can't take them).
+  //   "provider/model"— a SEPARATE vision model. Inbound images are described by it in a
+  //                     minimal side-call (just the image + the user's text — no history,
+  //                     no tools), and the description is injected as text so the main
+  //                     `model` handles the turn with full context and tools. Keeps the
+  //                     (often small-window) vision model's payload tiny.
   vision?: boolean | string;
 }
 
@@ -72,6 +76,10 @@ export class Kernel {
   async runWithMessages(initialMessages: Message[], signal?: AbortSignal): Promise<KernelResult> {
     const messages: Message[] = [...initialMessages];
     this.notices = [];
+
+    // If a separate vision model is configured, turn the freshest image into text up front
+    // (a tiny side-call) so the rest of the turn runs entirely on the main model.
+    await this.describeImages(messages, signal);
 
     let turns = 0;
     let stopReason = "end_turn";
@@ -219,18 +227,82 @@ export class Kernel {
     }
   }
 
-  // Decide which model handles this completion and which images (if any) it sees.
+  // Decide which images (if any) the model sees this completion. A multimodal `model`
+  // (vision:true) gets the freshest image directly; otherwise images are stripped — a
+  // separate vision model has already converted them to text via describeImages(), and a
+  // text-only model can't accept raw images. The model is always the agent's own `model`;
+  // the separate vision model is only ever used inside describeImages().
   private resolveVision(view: Message[]): { messages: Message[]; model: string } {
-    const v = this.opts.vision;
-    // No vision: never hand images to the model (it may be text-only → would error).
-    if (!v) return { messages: stripImages(view), model: this.opts.model };
-    // Same-model vision: the agent's own model is multimodal. Send the freshest image(s)
-    // only — older ones are stripped so vision tokens aren't re-sent every turn.
-    if (v === true) return { messages: keepLatestImages(view), model: this.opts.model };
-    // Separate vision model: route a turn that just brought an image to it; other turns
-    // use the default (text) model with images stripped.
-    if (lastMessageHasImage(view)) return { messages: keepLatestImages(view), model: v };
+    if (this.opts.vision === true) {
+      return { messages: keepLatestImages(view), model: this.opts.model };
+    }
     return { messages: stripImages(view), model: this.opts.model };
+  }
+
+  // Separate-vision-model path. Convert the most recently received image(s) into a text
+  // description via a minimal side-call to the vision model (just the image + the user's
+  // text — no history, no tools, tiny system), then splice that text into the message in
+  // place of the image. Keeps the (often small-window) vision model's payload tiny, and
+  // lets the main model handle the actual turn with full context + tools. Non-fatal: if
+  // the call fails, drop the image and note it so the turn still completes.
+  private async describeImages(messages: Message[], signal?: AbortSignal): Promise<void> {
+    const v = this.opts.vision;
+    if (typeof v !== "string" || v.length === 0) return;
+    let idx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (hasImage(messages[i]!)) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx === -1) return;
+    const msg = messages[idx]!;
+    const images = msg.content.filter((c): c is ImagePart => c.type === "image");
+    if (images.length === 0) return;
+    const userText = collectText(msg.content).trim();
+
+    let description = "";
+    try {
+      const res = await this.completeWithRetry(
+        {
+          system:
+            "You are a vision model. Describe the attached image(s) in thorough, concrete " +
+            "detail. If the user's message asks something specific about the image, answer " +
+            "that as part of the description. Output plain text only — no preamble.",
+          messages: [
+            {
+              role: "user",
+              content: [
+                ...(userText ? [{ type: "text", text: userText } as ContentPart] : []),
+                ...images,
+              ],
+            },
+          ],
+          tools: [],
+          model: v,
+          maxTokens: this.opts.maxTokens,
+        },
+        signal,
+      );
+      description = collectText(res.message.content).trim();
+    } catch (err) {
+      log.warn(
+        { err: (err as Error).message, visionModel: v },
+        "vision describe call failed — proceeding without the image",
+      );
+    }
+
+    const rest = msg.content.filter((c) => c.type !== "image");
+    if (description) {
+      log.info({ visionModel: v, chars: description.length }, "described image via vision model");
+      rest.push({ type: "text", text: `[Image description (via ${v}): ${description}]` });
+    } else {
+      this.notices.push(
+        "⚠️ I couldn't view the image — the vision model is unavailable right now — so I'm replying without it.",
+      );
+      rest.push({ type: "text", text: "[An image was attached but the vision model couldn't be reached.]" });
+    }
+    messages[idx] = { role: msg.role, content: rest };
   }
 
   // Summarise the older portion of `view` into a single synopsis prepended to the most
@@ -434,11 +506,6 @@ function truncateText(s: string, n: number): string {
 }
 
 const hasImage = (m: Message): boolean => m.content.some((c) => c.type === "image");
-
-function lastMessageHasImage(messages: Message[]): boolean {
-  const last = messages[messages.length - 1];
-  return !!last && hasImage(last);
-}
 
 function stripImagesFromMessage(m: Message): Message {
   if (!hasImage(m)) return m;
