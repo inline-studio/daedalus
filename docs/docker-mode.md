@@ -279,6 +279,56 @@ The `MEMPALACE_TOKEN` daedalus already sends as `Authorization: Bearer …` is t
 your proxy checks. It is **only meaningful behind a proxy that enforces it** — the raw
 port has no auth, so never publish it to an untrusted network without one.
 
+### The `graphiti` container (temporal-graph memory)
+
+The newer memory backend. [Graphiti](https://github.com/getzep/graphiti) is a **temporal
+knowledge graph** — it extracts entities/relationships/decisions from conversations and
+tracks *when* facts held, not just snapshots. It runs as one container (bundled FalkorDB +
+MCP server) and is reached at `http://graphiti:8000/mcp/` on the daedalus network.
+
+Why it replaces mempalace: it stays **local + leak-free** (no SSRF / no verbatim-secret
+dump) — the graph store and embeddings are local, and the only egress is the extraction
+LLM call, which points at **your spark**, not the public internet.
+
+It's **opt-in** while it beds in (mempalace is left intact so you can flip back). To enable:
+
+1. **Compose `.env`** (`~/.daedalus/compose/.env`):
+   ```dotenv
+   COMPOSE_PROFILES=graphiti          # (comma-join with whisper if you use both)
+   SPARK_URL=<your spark base URL, incl /v1>
+   SPARK_API_KEY=<your spark key>     # graphiti calls spark directly, not via OneCLI
+   GRAPHITI_LLM_MODEL=artemis         # extraction model (a capable INSTRUCT model)
+   GRAPHITI_EMBED_MODEL=embeddings    # your spark embeddings model
+   GRAPHITI_EMBED_DIM=768             # must match the embeddings model's dimension
+   GRAPHITI_DATA_PATH=/home/you/.daedalus/graphiti   # portable graph store (see below)
+   ```
+2. **Config** (`~/.daedalus/config.yaml`): point the memory slot at graphiti and disable mempalace:
+   ```yaml
+   memory:
+     backend: graphiti
+   graphiti:
+     enabled: true
+     url: http://graphiti:8000/mcp/
+   mempalace:
+     localHttp:
+       enabled: false
+   ```
+3. `dae update` (or `docker compose --profile graphiti up -d`).
+
+**Verify (leak-check + recall):**
+- Egress: confirm graphiti talks only to your spark — **no** connections to `api.openai.com`
+  (the one config footgun). e.g. `docker compose exec graphiti sh -c "getent hosts api.openai.com"` should not be hit during use; watch its logs for the spark URL only.
+- Recall: have an agent remember a fact, then ask for it back.
+
+**Portability (transfer to a new machine):** the graph lives in `GRAPHITI_DATA_PATH`
+(bind-mounted to `/var/lib/falkordb/data`). To move: **graceful-stop** the stack (so
+FalkorDB flushes its snapshot), copy that one directory to the new host, set the same
+`.env`, and start the stack — your memory comes with it.
+
+> Auto-save, proactive recall, and the scheduled "dream" consolidation are added by
+> daedalus *around* this store (see the roadmap) — Graphiti provides the storage,
+> extraction, and graph search; daedalus orchestrates when to write, recall, and consolidate.
+
 ## Scheduled tasks
 
 Two flavours, both go through the same dispatcher and both spawn per-agent

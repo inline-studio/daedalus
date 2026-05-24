@@ -15,7 +15,13 @@ export async function resolveAgentMcpDefs(
 ): Promise<McpServerMap> {
   const allDefs = await loadMcpConfig(config.mcp.configPath);
 
-  // Merge in the implicit MemPalace MCP if the config has it enabled.
+  // Merge in the implicit Graphiti memory MCP if enabled (takes the `memory` slot).
+  const gr = config.graphiti;
+  if (gr?.enabled && !allDefs["memory"] && !allDefs["mempalace"]) {
+    allDefs["memory"] = { url: gr.url, transport: "http", args: [], env: {}, headers: {} };
+  }
+
+  // Merge in the implicit MemPalace MCP if the config has it enabled (legacy backend).
   const lh = config.mempalace?.localHttp;
   if (lh?.enabled && !allDefs["memory"] && !allDefs["mempalace"]) {
     // If mempalace requires a bearer token, it's stored as MEMPALACE_TOKEN

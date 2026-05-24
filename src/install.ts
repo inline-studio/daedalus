@@ -380,7 +380,12 @@ async function ensureConfig(configFlag?: string): Promise<string | null> {
 
 // The compose stack files shipped in the npm package (next to dist/). `dae install`
 // copies these into the compose dir so a global install is self-contained.
-const COMPOSE_FILES = ["docker-compose.yml", "Dockerfile", "Dockerfile.mempalace"];
+const COMPOSE_FILES = [
+  "docker-compose.yml",
+  "Dockerfile",
+  "Dockerfile.mempalace",
+  "graphiti.config.yaml",
+];
 
 // Restrict the docker build context to just the build inputs — never the compose
 // .env (secrets), config, brain, or memory data that may sit nearby.

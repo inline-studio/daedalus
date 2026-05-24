@@ -1,0 +1,37 @@
+# Graphiti MCP server config for daedalus (mounted into the `graphiti` compose service).
+# All values are env-driven from the compose .env so nothing is hardcoded.
+#
+# Both the extraction LLM and the embeddings run on YOUR spark endpoint (OpenAI-compatible),
+# so nothing leaves your infrastructure. The only egress is to ${SPARK_URL}.
+server:
+  transport: "http" # MCP at http://graphiti:8000/mcp/
+  host: "0.0.0.0"
+  port: 8000
+
+llm:
+  # Entity/relationship extraction. Use a capable INSTRUCT model (it must emit structured
+  # output) — not a code/autocomplete model. Default: the agent's main model on spark.
+  provider: "openai"
+  model: ${GRAPHITI_LLM_MODEL:artemis}
+  max_tokens: 4096
+  providers:
+    openai:
+      api_key: ${SPARK_API_KEY}
+      api_url: ${SPARK_URL}
+
+embedder:
+  provider: "openai"
+  model: ${GRAPHITI_EMBED_MODEL:embeddings}
+  dimensions: ${GRAPHITI_EMBED_DIM:768}
+  providers:
+    openai:
+      api_key: ${SPARK_API_KEY}
+      api_url: ${SPARK_URL}
+
+database:
+  provider: "falkordb" # bundled in this image; data persists to /var/lib/falkordb/data
+  providers:
+    falkordb:
+      uri: "redis://localhost:6379"
+      password: ${FALKORDB_PASSWORD:}
+      database: ${FALKORDB_DATABASE:default_db}
