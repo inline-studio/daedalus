@@ -10,7 +10,7 @@ export function readAttachmentTool(store: AttachmentStore): ToolImpl {
     definition: {
       name: "read_attachment",
       description:
-        "Read a stored attachment by its content-addressable reference (e.g. 'sha256:abcd…'). Returns text for text-shaped files; otherwise returns size + mime type.",
+        "Read a stored attachment by its content-addressable reference (e.g. 'sha256:abcd…'). Returns text for text-shaped files; for binary files (PDFs, etc.) it returns the on-disk PATH so you can hand it to a format-specific skill or tool (e.g. a PDF reader).",
       inputSchema: {
         type: "object",
         properties: {
@@ -40,7 +40,16 @@ export function readAttachmentTool(store: AttachmentStore): ToolImpl {
       if (buf.length < 200_000 && looksLikeText(buf)) {
         return { content: buf.toString("utf8") };
       }
-      return { content: `binary attachment ${ref}: ${buf.length} bytes` };
+      // Binary (PDF, image, etc.): hand back the on-disk path. The attachments dir lives
+      // on the shared /data volume mounted identically into every container, so this path
+      // is valid for the bash tool — pass it to a format-specific skill (e.g. pdf-reader).
+      const file = await store.resolve(ref);
+      return {
+        content: file
+          ? `Binary attachment (${buf.length} bytes) saved on disk at: ${file}\n` +
+            `Read it by passing this path to a format-appropriate skill or tool (for a PDF, use your PDF-reading skill).`
+          : `binary attachment ${ref}: ${buf.length} bytes`,
+      };
     },
   };
 }

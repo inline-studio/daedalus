@@ -102,9 +102,15 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
         mediaType: a.mediaType,
         ref: meta.ref,
       });
+      // Include the on-disk path so the agent can read it straight away (e.g. a PDF via
+      // the pdf-reader skill) without a read_attachment round-trip. The attachments dir is
+      // on the shared /data volume, mounted at the same path in the agent's container.
+      const stored = await attachments.resolve(meta.ref);
       inboundParts.push({
         type: "text",
-        text: `[attachment ${a.filename ?? a.mediaType} stored as ${meta.ref}]`,
+        text: stored
+          ? `[attachment ${a.filename ?? a.mediaType} (${a.mediaType}) saved at ${stored} — ref ${meta.ref}]`
+          : `[attachment ${a.filename ?? a.mediaType} stored as ${meta.ref}]`,
       });
     }
   }
