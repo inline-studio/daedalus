@@ -74,7 +74,7 @@ filename, so any value set in frontmatter is ignored.)
 | `maxTurns` | No | int — `50` | Max tool-use iterations in one turn before the loop stops. |
 | `maxTokens` | No | int — `4096` | Max output tokens per LLM call. |
 | `temperature` | No | 0–2 — provider default | Sampling temperature; omit for the provider default. |
-| `vision` | No | bool \| string — `false` | Image input. `false`/omit = inbound images aren't sent to the model. `true` = the agent's own `model` is multimodal. `"provider/model"` = route image-bearing turns to that vision model. See below. |
+| `vision` | No | bool \| string — `false` | Image input. `false`/omit = inbound images aren't sent to the model. `true` = the agent's own `model` is multimodal. `"provider/model"` = describe images via that separate vision model, then the main `model` answers. See below. |
 | `tools` | No | string[] — `[]` | Built-in tools the agent may use: `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`, `schedule_message`, … `['*']` = all. **Empty = none** (the safe default for subagents). |
 | `skills` | No | string[] — `[]` | Skills from `brain/skills/`. `['*']` = every skill. See [skills.md](./skills.md). |
 | `mcpServers` | No | string[] — `[]` | MCP servers from `brain/mcp/`. `['*']` = all. The `memory` server is auto-injected. See [mcp.md](./mcp.md). |
@@ -133,16 +133,22 @@ vision: "spark/qwen2-vl"   # route image-bearing turns to this vision model
 
 - **`false` / omitted** — images are stripped before the model call. Use this when the
   model can't see (so it never errors on an image), which is the safe default.
-- **`true`** — the agent's `model` accepts images, so they're passed straight through.
+- **`true`** — the agent's `model` accepts images, so the most recent one is passed
+  straight through to it. (Older images are dropped so the same picture isn't re-sent and
+  re-charged every turn.)
 - **`"provider/model"`** — for setups where the main model is text-only but a separate
-  vision model exists. A turn that *just brought an image* is routed to that model (which
-  sees the image + the user's question); ordinary text turns keep using `model`. This keeps
-  vision decoupled from your main model choice.
+  vision model exists. Daedalus uses that model as a **describe-the-image step**: when an
+  image arrives it makes a *minimal* side-call to the vision model — **just the image plus
+  the user's message, with no conversation history and no tools** — gets a description
+  back, splices it into the turn as text (`[Image description: …]`), and then your **main
+  `model`** handles the turn normally with full context and tools.
 
-In all cases only the **most recent** image is kept in context — older ones are dropped so
-the same picture isn't re-sent (and re-charged) on every following turn. The model picked
-for image turns should speak the same API as the provider (tool-calls included) if the turn
-might use tools.
+  Why this shape: the vision model only ever sees a tiny payload, so it fits even a
+  small-context VL model and never triggers compaction; your main model does the reasoning,
+  voice, and any tool use, and never needs to be multimodal. It also generalises to "here's
+  a photo, now *do something* with it." The cost is one extra (small) model call per image
+  turn. If the vision model is unreachable, daedalus drops the image, tells the user, and
+  the main model still replies — the turn never crashes.
 
 ## How the system prompt is composed
 
