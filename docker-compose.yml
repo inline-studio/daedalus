@@ -211,6 +211,32 @@ services:
   # Internal-only: the supervisor reaches it by container name (http://whisper:8000/v1)
   # on the daedalus network. We deliberately DON'T publish a host port — nothing on
   # the host needs it, and publishing 8000 just collides with whatever else is there.
+  # Graphiti temporal-knowledge-graph memory (bundled FalkorDB + MCP server in one
+  # container). Opt-in via the `graphiti` compose profile + memory.backend: graphiti.
+  # Extraction LLM + embeddings run on your spark (set in .env); the graph store is local
+  # and portable — bind-mount GRAPHITI_DATA_PATH to back it up / move it to another host.
+  graphiti:
+    image: ${GRAPHITI_IMAGE:-zepai/knowledge-graph-mcp:latest}
+    restart: unless-stopped
+    profiles: ["graphiti"]
+    environment:
+      # Graphiti is its own container, so it calls spark DIRECTLY (not via OneCLI) and needs
+      # the key here. SPARK_URL is your OpenAI-compatible base URL (incl. /v1).
+      SPARK_URL: ${SPARK_URL:?set SPARK_URL in .env (spark/litellm base URL incl /v1)}
+      SPARK_API_KEY: ${SPARK_API_KEY:?set SPARK_API_KEY in .env}
+      GRAPHITI_LLM_MODEL: ${GRAPHITI_LLM_MODEL:-artemis}
+      GRAPHITI_EMBED_MODEL: ${GRAPHITI_EMBED_MODEL:-embeddings}
+      GRAPHITI_EMBED_DIM: ${GRAPHITI_EMBED_DIM:-768}
+      CONFIG_PATH: /app/mcp/config/config.yaml
+      # spark is CPU-constrained — keep episode-processing concurrency low.
+      SEMAPHORE_LIMIT: ${GRAPHITI_SEMAPHORE_LIMIT:-3}
+      BROWSER: "0" # disable the FalkorDB web UI
+    volumes:
+      - ${GRAPHITI_DATA_PATH:-graphiti-data}:/var/lib/falkordb/data
+      - ./graphiti.config.yaml:/app/mcp/config/config.yaml:ro
+    networks:
+      - daedalus
+
   whisper:
     image: ${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:latest-cpu}
     restart: unless-stopped
@@ -267,6 +293,7 @@ volumes:
   daedalus-data:
   daedalus-shared:
   mempalace-data:
+  graphiti-data:
   # Holds the injectable agent runtime (node binary + daedalus install).
   # Populated by dae-runtime-init at startup; mounted ro into every per-agent
   # container so they don't need Node/daedalus pre-installed.

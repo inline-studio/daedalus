@@ -108,7 +108,7 @@ export const McpConfigSchema = z.object({
 export type McpConfig = z.infer<typeof McpConfigSchema>;
 
 export const MemoryConfigSchema = z.object({
-  backend: z.enum(["none", "mempalace", "sqlite"]).default("none"),
+  backend: z.enum(["none", "mempalace", "graphiti", "sqlite"]).default("none"),
   brainSync: z
     .object({
       enabled: z.boolean().default(false),
@@ -145,6 +145,15 @@ export const MempalaceConfigSchema = z.object({
     }),
 });
 export type MempalaceConfig = z.infer<typeof MempalaceConfigSchema>;
+
+// Graphiti temporal-knowledge-graph memory (the `graphiti` compose service). When enabled
+// it's auto-injected as every agent's `memory` MCP server, reached by name on the daedalus
+// network. The store + embeddings are local; extraction runs on your spark endpoint.
+export const GraphitiConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  url: z.string().default("http://graphiti:8000/mcp/"),
+});
+export type GraphitiConfig = z.infer<typeof GraphitiConfigSchema>;
 
 export const SessionsConfigSchema = z.object({
   dbPath: z.string().default("./data/sessions.sqlite"),
@@ -259,6 +268,7 @@ export const ArtemisConfigSchema = z.object({
       urlPath: "/mcp",
     },
   }),
+  graphiti: GraphitiConfigSchema.default({ enabled: false, url: "http://graphiti:8000/mcp/" }),
   sessions: SessionsConfigSchema.default({
     dbPath: "./data/sessions.sqlite",
     attachmentsPath: "./data/attachments",
