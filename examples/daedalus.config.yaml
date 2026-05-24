@@ -52,7 +52,12 @@ memory:
 sessions:
   dbPath: ./data/sessions.sqlite
   attachmentsPath: ./data/attachments
-  historyLimit: 80
+  # Hard cap on prior messages loaded per turn.
+  historyLimit: 40
+  # Estimated-token budget for replayed history; the tail is trimmed (oldest-first) to
+  # fit before each turn so a few large messages can't fill the context window. Raise it
+  # if your model has a larger context. ~4 chars/token.
+  contextTokenBudget: 32000
 
 # Channels are not "groups" — every channel publishes into the same per-user session.
 # A user reaching you via Telegram and via Web shares one conversation history.

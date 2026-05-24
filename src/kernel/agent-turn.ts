@@ -2,6 +2,7 @@ import path from "node:path";
 import type { ArtemisConfig } from "../config/schema.js";
 import type { Message, ToolUsePart, ToolResultPart } from "../types.js";
 import { Kernel } from "./agent.js";
+import { budgetTail } from "./context-budget.js";
 import { buildProvider } from "../providers/index.js";
 import { buildRuntime } from "../runtime/factory.js";
 import { selectBuiltins } from "../tools/registry.js";
@@ -153,9 +154,18 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     });
     if (orchestratorTool) builtinTools.push(orchestratorTool);
 
-    // 8. Read history tail and run kernel.
+    // 8. Read history tail and run kernel. The count-limited tail is then trimmed to a
+    // token budget so a few large (or old, pre-cap) messages can't fill the context
+    // window before the turn even starts; the kernel's reactive trim still backstops it.
     const tail = sessions.tail(sessionId, config.sessions.historyLimit);
-    const messages = await prepareMessagesForTurn(tail);
+    const full = await prepareMessagesForTurn(tail);
+    const messages = budgetTail(full, config.sessions.contextTokenBudget);
+    if (messages.length < full.length) {
+      log.info(
+        { from: full.length, to: messages.length, budget: config.sessions.contextTokenBudget },
+        "history trimmed to token budget",
+      );
+    }
 
     const kernel = new Kernel({
       provider,

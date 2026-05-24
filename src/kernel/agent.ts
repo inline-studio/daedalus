@@ -269,7 +269,7 @@ function trimOldest(messages: Message[]): Message[] {
 }
 
 // A conversation window should open with a user message that isn't just a tool_result.
-function startsMidExchange(first: Message): boolean {
+export function startsMidExchange(first: Message): boolean {
   if (first.role === "assistant") return true;
   return first.role === "user" && first.content.some((c) => c.type === "tool_result");
 }

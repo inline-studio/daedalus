@@ -16,6 +16,7 @@ import { spawnSync } from "node:child_process";
 
 const CI_SAFE = [
   "smoke-commands",
+  "smoke-context-budget",
   "smoke-context-trim",
   "smoke-disable",
   "smoke-dispatcher",
