@@ -3,6 +3,7 @@ import type {
   CompletionRequest,
   CompletionResult,
   ContentPart,
+  ImagePart,
   Message,
 } from "../types.js";
 import { ProviderError, type LLMProvider, type ProviderCapabilities } from "./base.js";
@@ -102,14 +103,31 @@ export class OpenAICompatibleProvider implements LLMProvider {
   }
 }
 
-function toOpenAIMessages(m: Message): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+export function toOpenAIMessages(m: Message): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
   const out: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
   const text = m.content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("");
   const toolUses = m.content.filter((c) => c.type === "tool_use");
   const toolResults = m.content.filter((c) => c.type === "tool_result");
+  const images = m.content.filter((c): c is ImagePart => c.type === "image");
 
   if (m.role === "user") {
-    if (text) out.push({ role: "user", content: text });
+    if (images.length) {
+      // Multimodal user turn: send a content array of text + image_url parts. The caller
+      // (kernel) only leaves images here when the agent has vision; otherwise they're
+      // stripped before we get them, so a text-only model never receives an image_url.
+      const parts: OpenAI.Chat.Completions.ChatCompletionContentPart[] = [];
+      if (text) parts.push({ type: "text", text });
+      for (const img of images) {
+        const url =
+          img.source.kind === "base64"
+            ? `data:${img.source.mediaType};base64,${img.source.data}`
+            : img.source.url;
+        parts.push({ type: "image_url", image_url: { url } });
+      }
+      out.push({ role: "user", content: parts });
+    } else if (text) {
+      out.push({ role: "user", content: text });
+    }
     for (const tr of toolResults) {
       const r = tr as { toolUseId: string; content: string };
       out.push({ role: "tool", tool_call_id: r.toolUseId, content: r.content });

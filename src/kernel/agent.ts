@@ -24,6 +24,12 @@ export interface KernelOptions {
   maxTurns: number;
   maxTokens: number;
   temperature?: number;
+  // Image input policy (from the agent manifest's `vision`):
+  //   undefined/false — no vision: images are stripped before the model call.
+  //   true            — the agent's own `model` is multimodal: send images to it.
+  //   "provider/model"— route image-bearing turns to that vision model; text turns
+  //                     use `model` with images stripped (a text model can't take them).
+  vision?: boolean | string;
 }
 
 export interface KernelResult {
@@ -160,11 +166,14 @@ export class Kernel {
     let view = messages;
     let triedCompact = false;
     for (;;) {
+      // Apply the vision policy: pick the model (default vs a routed vision model) and the
+      // image-bearing view to send (stripped when the target model can't see images).
+      const { messages: sendView, model } = this.resolveVision(view);
       const req: CompletionRequest = {
         system: this.opts.system,
-        messages: view,
+        messages: sendView,
         tools: this.allToolDefs,
-        model: this.opts.model,
+        model,
         maxTokens: this.opts.maxTokens,
         ...(this.opts.temperature !== undefined ? { temperature: this.opts.temperature } : {}),
       };
@@ -208,6 +217,20 @@ export class Kernel {
         view = trimmed;
       }
     }
+  }
+
+  // Decide which model handles this completion and which images (if any) it sees.
+  private resolveVision(view: Message[]): { messages: Message[]; model: string } {
+    const v = this.opts.vision;
+    // No vision: never hand images to the model (it may be text-only → would error).
+    if (!v) return { messages: stripImages(view), model: this.opts.model };
+    // Same-model vision: the agent's own model is multimodal. Send the freshest image(s)
+    // only — older ones are stripped so vision tokens aren't re-sent every turn.
+    if (v === true) return { messages: keepLatestImages(view), model: this.opts.model };
+    // Separate vision model: route a turn that just brought an image to it; other turns
+    // use the default (text) model with images stripped.
+    if (lastMessageHasImage(view)) return { messages: keepLatestImages(view), model: v };
+    return { messages: stripImages(view), model: this.opts.model };
   }
 
   // Summarise the older portion of `view` into a single synopsis prepended to the most
@@ -408,4 +431,39 @@ function summarizeContent(parts: ContentPart[]): string {
 
 function truncateText(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+const hasImage = (m: Message): boolean => m.content.some((c) => c.type === "image");
+
+function lastMessageHasImage(messages: Message[]): boolean {
+  const last = messages[messages.length - 1];
+  return !!last && hasImage(last);
+}
+
+function stripImagesFromMessage(m: Message): Message {
+  if (!hasImage(m)) return m;
+  const content = m.content.filter((c) => c.type !== "image");
+  // Keep the message non-empty so the provider doesn't choke on an empty turn.
+  if (content.length === 0) content.push({ type: "text", text: "[image omitted]" });
+  return { role: m.role, content };
+}
+
+// Remove every image part — used when the target model has no vision.
+function stripImages(messages: Message[]): Message[] {
+  if (!messages.some(hasImage)) return messages;
+  return messages.map(stripImagesFromMessage);
+}
+
+// Keep images only in the most recent message that has any; strip them from older
+// messages so the same picture isn't re-sent (re-charged) on every subsequent turn.
+function keepLatestImages(messages: Message[]): Message[] {
+  let lastIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (hasImage(messages[i]!)) {
+      lastIdx = i;
+      break;
+    }
+  }
+  if (lastIdx === -1) return messages;
+  return messages.map((m, i) => (i === lastIdx ? m : stripImagesFromMessage(m)));
 }
