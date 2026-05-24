@@ -26,9 +26,10 @@ three:
   All channels share one session per user; conversation continues across surfaces.
 - **Per-agent containers** — give a coder agent `node:24-alpine`, a php agent `php:8-cli`.
   Tool execution runs in the right runtime; brain repo auto-mounted read-only.
-- **Real memory** — MemPalace MCP backend for verbatim, vector-searchable conversation
-  storage. Run it locally as stdio, locally as HTTP, or remotely on a server you point
-  every device at.
+- **Real memory** — a [Graphiti](https://github.com/getzep/graphiti) temporal knowledge-graph
+  MCP backend: extracts entities/relationships/decisions and tracks when facts held. Fully
+  local + leak-free (extraction LLM + embeddings run on your own endpoint via the OneCLI proxy)
+  and portable — the whole store is one directory you can move to a new host.
 - **Reversible setup** — every `dae setup <thing>` has a matching `dae disable <thing>`,
   with idempotent default + `--purge` for clean slate.
 
@@ -107,7 +108,8 @@ then runs `docker compose up -d` to bring up the whole stack:
 
 ```
 daedalus    supervisor + scheduler
-mempalace   shared memory (always)
+dae-worker  warm agent worker (top-level turns)
+graphiti    knowledge-graph memory (when a spark endpoint is configured)
 onecli      credential gateway + its postgres (always)
 whisper     local speech-to-text (only if you opt in)
 ```
@@ -139,7 +141,7 @@ brain/
 ├── skills/<name>/SKILL.md   loadable capabilities; declare required secrets, tools
 ├── mcp/servers.json         MCP server configs (or a directory of *.json)
 ├── schedules/*.yaml         cron-driven agent invocations
-└── memory/                  optional periodic memory snapshots from mempalace
+└── memory/                  optional periodic memory snapshots
 ```
 
 Daedalus composes the system prompt deterministically:
@@ -201,14 +203,14 @@ dae serve                           Long-running: channels + scheduler (what the
 dae agents | skills | mcp           Browse what's in the brain
 dae config                          Print resolved config as JSON
 dae identity [name] [--nickname]    Show or change the orchestrator's persona name
-dae export mempalace [--host]       Print paste-ready MCP snippet for other devices
+dae export mempalace [--host]       Migration: export data out of a legacy MemPalace store
 ```
 
 ### Setup / disable (every setup has a symmetric disable)
 
 ```
 dae setup                                   Interactive guided wizard (default)
-dae setup [telegram|whatsapp|search|onecli|mempalace|whisper]
+dae setup [telegram|whatsapp|search|onecli|whisper]
 dae setup --list
 
 dae disable <thing>                         Idempotent: flips toggles off; secrets preserved
@@ -235,10 +237,10 @@ The stack runs as containers — there is no host systemd/launchd unit to instal
 manage it afterwards with plain compose:
 
 ```
-dae install                                 Write config + .env, then `docker compose up -d`
+dae install                                 Write config + .env, build images, bring the stack up
 dae uninstall                               `docker compose down` (--purge also: -v + delete config)
 
-docker compose up -d                        Start the stack (daedalus + mempalace)
+docker compose up -d                        Start the stack (daedalus + onecli)
 docker compose --profile whisper up -d      Also start local whisper STT
 docker compose logs -f daedalus             Tail the supervisor
 docker compose restart daedalus             Restart after a config change
@@ -287,24 +289,15 @@ mcp:
   configPath: ./brain/mcp/servers.json # file or directory of *.json
 
 memory:
-  backend: none # 'mempalace' to enable
-  brainSync:
-    enabled: false
-    schedule: "0 */6 * * *"
+  backend: none # `dae install` sets this to 'graphiti' when a spark endpoint is configured
 
-mempalace:
-  # When localHttp.enabled is true, daedalus auto-injects an MCP server named
-  # `memory` (→ this host:port) into EVERY agent. NOTE: this auto-inject is
-  # suppressed if an MCP server named `memory` OR `mempalace` already exists in
-  # your `mcp:` config — an explicit def overrides the built-in. To rely on the
-  # built-in, don't define one (and remove any leftover brain/mcp/memory.json).
-  localHttp: # only used when you ran `dae setup mempalace` in local-http mode
-    enabled: false
-    command: uvx
-    args: [mempalace-mcp]
-    host: 127.0.0.1
-    port: 11364
-    urlPath: /mcp
+graphiti:
+  # When enabled, daedalus auto-injects an MCP server named `memory` (→ this URL) into
+  # EVERY agent. `dae install` sets this up; the container runs the extraction LLM +
+  # embeddings on your spark via the OneCLI proxy. NOTE: the auto-inject is suppressed if
+  # an MCP server named `memory` already exists in your `mcp:` config (an explicit def wins).
+  enabled: false
+  url: http://graphiti:8000/mcp/
 
 channels:
   cli:
@@ -337,19 +330,14 @@ docker compose up -d         # (or `dae install`) — the supervisor long-polls 
 `dae install` also asks for a Telegram token directly, so this is only needed when
 adding/changing the bot after the initial install.
 
-### Shared MemPalace memory, accessible from your laptop
+### Memory
 
-MemPalace runs as the `mempalace` compose service (loopback-published on `:11364`).
-Other devices can point their MCP client at it:
-
-```bash
-dae export mempalace             # prints the paste-ready MCP snippet (+ token if auth is on)
-
-# Copy the snippet into every device that needs the same memory:
-#   - Claude Desktop:  ~/Library/Application Support/Claude/claude_desktop_config.json
-#   - VS Code MCP:     .vscode/mcp.json
-#   - OpenCode:        ~/.config/opencode/mcp.json
-```
+Memory is a [Graphiti](https://github.com/getzep/graphiti) temporal knowledge-graph MCP,
+auto-injected into every agent and reached in-cluster at `http://graphiti:8000/mcp/`. It's
+wired up by `dae install` (extraction LLM + embeddings run on your spark via the OneCLI
+proxy). The whole store is one portable directory (`GRAPHITI_DATA_PATH`) — see
+[docs/docker-mode.md](./docs/docker-mode.md) → "The `graphiti` container". Pooling the same
+memory across devices (e.g. Claude Desktop) is a roadmap item.
 
 ### Switch your assistant's name
 
@@ -396,7 +384,7 @@ dae secret save BRAVE_API_KEY \
        │  Provider    │    │ ToolRegistry │    │ MCP client │
        │  adapters    │    │   bash, web, │    │  stdio /   │
        │ Anthropic /  │    │ file, attach,│    │  http/SSE  │
-       │  OpenAI*/    │    │ ask_user,    │    │  (mempalace│
+       │  OpenAI*/    │    │ ask_user,    │    │  (graphiti │
        │  Ollama      │    │ spawn_subagt │    │   etc.)    │
        └──────────────┘    └──────┬───────┘    └────────────┘
                                   │ ToolContext

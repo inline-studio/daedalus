@@ -16,7 +16,7 @@ llm:
   max_tokens: 4096
   providers:
     openai:
-      api_key: ${SPARK_API_KEY}
+      api_key: onecli-managed # placeholder — OneCLI injects the real key for the spark host
       api_url: ${SPARK_URL}
 
 embedder:
@@ -25,7 +25,7 @@ embedder:
   dimensions: ${GRAPHITI_EMBED_DIM:768}
   providers:
     openai:
-      api_key: ${SPARK_API_KEY}
+      api_key: onecli-managed # placeholder — OneCLI injects the real key for the spark host
       api_url: ${SPARK_URL}
 
 database:
