@@ -203,6 +203,17 @@ export async function runInstall(
   // Route top-level turns to the long-lived warm worker (dae-worker service) so each
   // message skips the per-turn container cold-start. Subagents still spawn containers.
   yamlEdits.push({ keyPath: ["runtime", "persistentAgent"], value: true });
+  // Channels for an all-container deployment: the Web chat UI is ON by default (served by
+  // the supervisor on :8765, front it with your own reverse proxy — printed at the end).
+  // The CLI channel is disabled: it needs an interactive stdin the supervisor container
+  // doesn't have, and would otherwise EOF-loop the process. Talk to agents via the Web UI
+  // (and/or Telegram). The web channel is the same agent + Graphiti memory as any channel.
+  yamlEdits.push(
+    { keyPath: ["channels", "cli", "enabled"], value: false },
+    { keyPath: ["channels", "web", "enabled"], value: true },
+    { keyPath: ["channels", "web", "defaultAgent"], value: defaultAgent },
+    { keyPath: ["channels", "web", "port"], value: 8765 },
+  );
 
   await editYamlFile(configPath, (doc) => {
     for (const e of yamlEdits) setIn(doc, e.keyPath, e.value);
@@ -405,6 +416,25 @@ export async function runInstall(
   if (graphitiEnabled) console.log("    graphiti   — knowledge-graph memory (FalkorDB)");
   console.log("    onecli     — credential gateway (+ postgres)");
   if (wantWhisper) console.log("    whisper    — local speech-to-text");
+
+  // Web UI is on by default. It's published to loopback only — daedalus bundles no web
+  // server, so print a ready-to-adapt reverse-proxy config (TLS + auth live there).
+  console.log("\n── Web chat UI ──────────────────────────────────────────────");
+  console.log("Served on http://127.0.0.1:8765 (loopback). Front it with your own reverse");
+  console.log("proxy for TLS + auth. Example Caddy (replace the hostname; the SSE reply stream");
+  console.log("needs flush_interval -1; `caddy hash-password` makes the basic_auth hash):\n");
+  console.log("    chat.example.com {");
+  console.log("        reverse_proxy 127.0.0.1:8765 {");
+  console.log("            flush_interval -1");
+  console.log("        }");
+  console.log("        basic_auth {");
+  console.log("            you <bcrypt-hash>");
+  console.log("        }");
+  console.log("    }\n");
+  console.log("  If your proxy runs on another host/container, set WEB_BIND=0.0.0.0 in");
+  console.log(`  ${rel(composeEnvPath)} so it can reach the port.`);
+  console.log("─────────────────────────────────────────────────────────────");
+
   if (!graphitiEnabled) {
     console.log(
       "\n⚠ Memory (Graphiti) is OFF: it needs an OpenAI-compatible (spark) endpoint for its\n" +
