@@ -166,14 +166,20 @@ export async function runInstall(
 
   const enableTelegram = Boolean(tgToken) && TELEGRAM_TOKEN_RE.test(tgToken);
 
-  // Web UI login (username/password). Reuse existing creds from .env.local on every run. If
-  // login isn't configured yet and this is an interactive run (NOT an automated `dae update`),
-  // offer to set one up — so you don't have to lean on the reverse proxy's basic_auth. The
-  // raw password is never stored: we keep only an scrypt hash plus a stable signing secret.
+  // Web UI login (username/password). Reuse existing creds from .env.local on every run. Offer
+  // to set one up whenever it isn't configured yet AND we have an interactive terminal — this
+  // fires on `dae install` AND `dae update` (both run with a TTY), so an update lands the
+  // feature too without a separate command. A previous decline is remembered
+  // (WEB_LOGIN_OPT_OUT) so we don't re-ask every run; `--fresh` re-asks regardless; a
+  // non-interactive invocation (no TTY, e.g. cron) just skips. The raw password is never
+  // stored: only an scrypt hash plus a stable signing secret.
   let webUsername = envLocalPrev.WEB_USERNAME ?? "";
   let webPasswordHash = envLocalPrev.WEB_PASSWORD_HASH ?? "";
   let webSessionSecret = envLocalPrev.WEB_SESSION_SECRET ?? "";
-  if (mode !== "apply" && !(webUsername && webPasswordHash)) {
+  let webOptOut = false;
+  const loginConfigured = Boolean(webUsername && webPasswordHash);
+  const declinedBefore = envLocalPrev.WEB_LOGIN_OPT_OUT === "1";
+  if (process.stdin.isTTY && !loginConfigured && (fresh || !declinedBefore)) {
     const wantLogin = await confirm(
       "Protect the web chat UI with its own username/password login (no reverse-proxy basic_auth needed)?",
       true,
@@ -190,6 +196,7 @@ export async function runInstall(
       }
     } else {
       webUsername = "";
+      webOptOut = true; // remember the decline so future install/update runs don't re-ask
     }
   }
   const webLogin = Boolean(webUsername && webPasswordHash);
@@ -276,6 +283,9 @@ export async function runInstall(
       { keyPath: ["channels", "web", "passwordHash"], value: "${WEB_PASSWORD_HASH}" },
       { keyPath: ["channels", "web", "sessionSecret"], value: "${WEB_SESSION_SECRET}" },
     );
+  } else if (webOptOut) {
+    // Persist the "no thanks" so `dae install`/`dae update` stop offering it (until --fresh).
+    runnerEnv.WEB_LOGIN_OPT_OUT = "1";
   }
 
   await editYamlFile(configPath, (doc) => {
