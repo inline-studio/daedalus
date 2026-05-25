@@ -264,7 +264,7 @@ program
 program
   .command("install")
   .description("turnkey install: create the config (if missing), then bring the docker stack up with `docker compose`")
-  .option("--fresh", "ask every question from scratch instead of reusing your previous answers as defaults")
+  .option("--fresh", "reconfigure from scratch (ask every question) instead of reusing your existing setup")
   .action(async (opts: { fresh?: boolean }) => {
     await runInstall({ config: program.opts().config, fresh: Boolean(opts.fresh) });
   });

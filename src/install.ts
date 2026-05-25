@@ -43,9 +43,13 @@ export interface InstallAnswers {
   braveKey?: string;
 }
 
-// `dae install` — interactive (reuses prior answers as defaults unless `fresh`). When
-// `opts.answers` is supplied (by `dae update`), the questions are skipped and that intent is
-// applied directly — same code path, no prompts.
+// `dae install` resolves the deployment intent in one of three modes (see installAnswerMode):
+//   • apply  — `opts.answers` supplied (by `dae update`): apply that intent, no prompts.
+//   • reuse  — a re-run of an existing install WITHOUT `--fresh`: infer the intent from the
+//              current config (same as `dae update`) and re-apply it — no re-asking. The
+//              bring-up still prompts for a genuinely-missing *required* key. One-and-done.
+//   • ask    — `--fresh`, or a genuine first install (no prior compose .env): ask the
+//              questions (prior answers, if any, pre-fill the defaults).
 export async function runInstall(
   opts: { config?: string; fresh?: boolean; answers?: InstallAnswers } = {},
 ): Promise<void> {
@@ -84,8 +88,15 @@ export async function runInstall(
   let tgToken = "";
   let braveKey = "";
 
-  if (opts.answers) {
-    const a = opts.answers;
+  // A prior install wrote the compose .env; its presence means "already set up". Decide how
+  // to resolve the intent: apply supplied answers (update), reuse the existing setup (re-run
+  // without --fresh), or ask (fresh / genuine first install).
+  const priorInstall = Object.keys(prev).length > 0;
+  const mode = installAnswerMode({ hasAnswers: Boolean(opts.answers), fresh, priorInstall });
+  const answers = opts.answers ?? (mode === "reuse" ? resolveAnswersInferred(config) : undefined);
+
+  if (answers) {
+    const a = answers;
     useAnthropic = a.useAnthropic;
     anthropicKey = a.anthropicKey ?? "";
     useOpenai = a.useOpenai;
@@ -94,6 +105,12 @@ export async function runInstall(
     wantWhisper = a.wantWhisper;
     tgToken = a.telegramToken ?? "";
     braveKey = a.braveKey ?? "";
+    if (mode === "reuse") {
+      console.log(
+        "\nReusing your existing configuration (stored keys kept; only a genuinely-missing\n" +
+          "required key would be asked for). Pass `--fresh` to reconfigure from scratch.",
+      );
+    }
   } else {
     console.log("\nDaedalus runs entirely in docker containers. A few questions:\n");
 
@@ -401,8 +418,22 @@ export async function runInstall(
   //    compose .env (written above + read automatically), so `up` brings up the graphiti
   //    profile without a `--profile` flag. `--build` builds the daedalus + graphiti images.
   //    Idempotent — OneCLI stays as-is.
+  //
+  //    First, stop the prior `daedalus` web container so its 127.0.0.1:8765 publish is
+  //    released BEFORE the recreate tries to bind it again. The supervisor is the only
+  //    service that publishes a host port (the web UI); on a re-run, docker's lazy teardown
+  //    of a loopback publish (or a still-running prior container) otherwise makes the new
+  //    container fail with "address already in use". Best-effort — a no-op on first install.
   try {
-    await composeUp(["up", "-d", "--build"]);
+    await composeUp(["stop", "daedalus"]);
+  } catch {
+    // nothing to stop (first install / already down) — fine.
+  }
+
+  //    `--remove-orphans` clears containers for services dropped from the compose file
+  //    (e.g. the retired mempalace container) so re-runs converge on the current stack.
+  try {
+    await composeUp(["up", "-d", "--build", "--remove-orphans"]);
   } catch (err) {
     console.error(`\nCompose bring-up failed: ${(err as Error).message}`);
     console.error("Fix the issue above, then re-run `dae install` (it's idempotent).");
@@ -459,10 +490,27 @@ export async function runInstall(
   console.log("\nFollow the supervisor:  docker compose logs -f daedalus");
 }
 
-// Infer the deployment intent from an existing config — used by `dae update` so it can
-// re-apply everything (config migrations, provisioning, bring-up) without prompts. Keys are
-// left undefined: they're already in OneCLI, and runInstall skips re-registering present ones
-// (prompting only for an enabled provider whose key is genuinely missing).
+// Decide how `dae install`/`dae update` resolves the deployment intent:
+//   • "apply"       — answers were supplied (by `dae update`): apply them, no prompts.
+//   • "reuse"       — re-run of an existing install without --fresh: infer from the config and
+//                     re-apply (no re-asking; bring-up still prompts for a missing required key).
+//   • "interactive" — --fresh, or a genuine first install (no prior compose .env): ask.
+// Pure (no I/O) so it's unit-testable; runInstall passes priorInstall = "compose .env exists".
+export function installAnswerMode(opts: {
+  hasAnswers: boolean;
+  fresh: boolean;
+  priorInstall: boolean;
+}): "apply" | "reuse" | "interactive" {
+  if (opts.hasAnswers) return "apply";
+  if (!opts.fresh && opts.priorInstall) return "reuse";
+  return "interactive";
+}
+
+// Infer the deployment intent from an existing config — used by `dae update` (and a non-fresh
+// `dae install` re-run) so it can re-apply everything (config migrations, provisioning,
+// bring-up) without prompts. Keys are left undefined: they're already in OneCLI, and runInstall
+// skips re-registering present ones (prompting only for an enabled provider whose key is
+// genuinely missing).
 export function resolveAnswersInferred(config: ArtemisConfig): InstallAnswers {
   return {
     useAnthropic: Boolean(config.providers?.anthropic),
@@ -577,8 +625,11 @@ async function ensureConfig(configFlag?: string): Promise<string | null> {
 }
 
 // The compose stack files shipped in the npm package (next to dist/). `dae install`
-// copies these into the compose dir so a global install is self-contained.
-const COMPOSE_FILES = [
+// copies these into the compose dir so a global install is self-contained. EVERY name here
+// MUST also be in package.json's `files` whitelist — otherwise it won't ship in the npm
+// tarball and `dae install` materialises a compose dir that references a missing build file
+// (e.g. graphiti's Dockerfile). smoke-package-files guards exactly that invariant.
+export const COMPOSE_FILES = [
   "docker-compose.yml",
   "Dockerfile",
   "Dockerfile.graphiti",

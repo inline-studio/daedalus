@@ -17,7 +17,9 @@
     "README.md",
     "docker-compose.yml",
     "Dockerfile",
-    "Dockerfile.mempalace"
+    "Dockerfile.graphiti",
+    "graphiti-entrypoint.sh",
+    "graphiti.config.yaml"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
