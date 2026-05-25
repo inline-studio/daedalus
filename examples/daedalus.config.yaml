@@ -43,7 +43,7 @@ mcp:
   configPath: ./brain/mcp/servers.json
 
 memory:
-  backend: none             # 'none' | 'mempalace' | 'sqlite'
+  backend: none             # 'none' | 'graphiti' | 'sqlite'
   brainSync:
     enabled: false
     schedule: '0 */6 * * *'
