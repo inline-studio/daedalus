@@ -108,6 +108,9 @@ export const McpConfigSchema = z.object({
 export type McpConfig = z.infer<typeof McpConfigSchema>;
 
 export const MemoryConfigSchema = z.object({
+  // "mempalace" is DEPRECATED — it's been removed from the stack (Graphiti is the memory
+  // backend now). The value is kept only so configs written by an older `dae install`
+  // still validate; it's no longer wired up. `dae install` writes "graphiti".
   backend: z.enum(["none", "mempalace", "graphiti", "sqlite"]).default("none"),
   brainSync: z
     .object({
@@ -119,9 +122,11 @@ export const MemoryConfigSchema = z.object({
 });
 export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
 
-// Mempalace deployment options — only relevant when memory.backend = mempalace AND you've
-// chosen the "local-http" mode in setup. Tells the service-install wizard how to spawn
-// mempalace as a managed daemon that other machines on your LAN can also reach.
+// DEPRECATED. MemPalace has been removed from the daedalus stack (Graphiti is the memory
+// backend — see GraphitiConfigSchema). This schema is retained only so older configs that
+// still carry a `mempalace:` block validate; `dae install` no longer writes it and the
+// auto-injected memory MCP no longer reads it. The `dae export mempalace` command remains
+// for migrating data OUT of an existing palace.
 export const MempalaceConfigSchema = z.object({
   localHttp: z
     .object({

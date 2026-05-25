@@ -38,7 +38,7 @@ Then it runs `docker compose up -d --build`, bringing up:
 |---|---|
 | `daedalus` | Supervisor + scheduler (`dae serve`) — owns the channels. |
 | `dae-worker` | Warm agent worker — runs top-level agent turns without per-message boot. |
-| `mempalace` | Shared memory store (an MCP server every agent gets). |
+| `graphiti` | Shared memory — a temporal knowledge-graph MCP every agent gets (with the `graphiti` profile, enabled when a spark endpoint is configured). |
 | `onecli` (+ `onecli-db`) | Credential-injecting gateway (+ its Postgres). |
 | `whisper` | Local speech-to-text — only with the `whisper` profile (if you opted in). |
 
@@ -92,10 +92,12 @@ placeholder `apiKey: onecli-managed`) and registers the real key in OneCLI, inje
 
 ## Memory
 
-Memory is a **mempalace** container fronted as an HTTP MCP server, auto-injected as the
-`memory` server for every agent (see [mcp.md](./mcp.md)). The on-disk "palace" is a
-persistent bind/volume, so memories survive restarts. Optionally protected by a bearer
-token (`MEMPALACE_TOKEN`), which the supervisor forwards into agents.
+Memory is a **Graphiti** container — a temporal knowledge-graph MCP server, auto-injected as
+the `memory` server for every agent (see [mcp.md](./mcp.md)). Its extraction LLM + embeddings
+run on your spark endpoint, reached through the OneCLI proxy (so the key never hits disk). The
+graph store is a persistent bind-mount (`GRAPHITI_DATA_PATH`), so memories survive restarts and
+the whole store is portable to another host. See [docker-mode.md](./docker-mode.md) → "The
+`graphiti` container" for details.
 
 ## Why all-container (the Docker choice)
 

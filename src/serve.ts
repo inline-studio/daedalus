@@ -38,7 +38,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
   // forget so serving isn't blocked on the download; it's idempotent across restarts.
   void provisionWhisperModel(config);
 
-  const channels = buildChannels(config.channels);
+  const channels = buildChannels(config.channels, sessions);
   if (channels.length === 0) {
     log.error(
       "No channels enabled in config.channels — nothing to listen on. Enable at least one (cli/web/telegram/whatsapp).",

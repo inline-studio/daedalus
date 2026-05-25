@@ -54,17 +54,16 @@ directory) is also accepted and read directly.
 - **stdio** servers: set `command` (+ `args`, `env`, `cwd`); daedalus spawns the process.
 - **http / sse** servers: set `url` (+ `transport`, `headers`).
 - **`${VAR}` expansion:** `env` and `headers` values expand from the process environment,
-  so secrets (e.g. `MEMPALACE_TOKEN`) stay out of the JSON. For agent containers, the
-  referenced vars are forwarded in (see the dispatcher's `forwardEnv`).
+  so secrets stay out of the JSON. For agent containers, the referenced vars are forwarded
+  in (see the dispatcher's `forwardEnv`).
 
 ## The auto-injected `memory` server
 
-When `mempalace.localHttp.enabled` is true and you haven't defined a `memory` (or
-`mempalace`) server yourself, daedalus injects one automatically — an HTTP MCP at
-`http://<host>:<port><urlPath>` with the `MEMPALACE_TOKEN` bearer when set. **Every agent
-gets `memory`** regardless of its `mcpServers:` list, so memory is a default capability.
-Define your own `memory`/`mempalace` server to override. See [install.md](./install.md)
-for the memory stack.
+When `graphiti.enabled` is true and you haven't defined a `memory` server yourself, daedalus
+injects one automatically — the Graphiti HTTP MCP at `graphiti.url`
+(`http://graphiti:8000/mcp/`). **Every agent gets `memory`** regardless of its `mcpServers:`
+list, so memory is a default capability. Define your own `memory` server to override. See
+[install.md](./install.md) and [docker-mode.md](./docker-mode.md) for the memory stack.
 
 ## A note on networking
 

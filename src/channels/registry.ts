@@ -1,11 +1,13 @@
 import type { ChannelsConfig } from "../config/schema.js";
+import type { SessionStore } from "../sessions/store.js";
 import type { Channel } from "./base.js";
 import { CliChannel } from "./cli.js";
 import { WebChannel } from "./web.js";
 import { TelegramChannel } from "./telegram.js";
 import { WhatsappChannel } from "./whatsapp.js";
 
-export function buildChannels(config: ChannelsConfig): Channel[] {
+// `sessions` is threaded in so the web channel can serve session history (GET /history).
+export function buildChannels(config: ChannelsConfig, sessions?: SessionStore): Channel[] {
   const out: Channel[] = [];
   if (config.cli?.enabled) {
     out.push(new CliChannel({ defaultAgent: config.cli.defaultAgent }));
@@ -16,6 +18,7 @@ export function buildChannels(config: ChannelsConfig): Channel[] {
         defaultAgent: config.web.defaultAgent,
         ...(config.web.port !== undefined ? { port: config.web.port } : {}),
         ...(config.web.token ? { token: config.web.token } : {}),
+        ...(sessions ? { sessions } : {}),
       }),
     );
   }

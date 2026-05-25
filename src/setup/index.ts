@@ -26,7 +26,10 @@ export function listSetups(): ChannelSetup[] {
 // Suggested setup order for `setup all`: foundational pieces first (so secrets and proxy
 // behaviour are correct before later flows store credentials), then capabilities, then
 // channels.
-const ALL_ORDER = ["onecli", "search", "whisper", "mempalace", "telegram", "whatsapp"] as const;
+// mempalace is intentionally omitted — it's been removed from the stack (Graphiti is the
+// memory backend). The `setup mempalace` command stays registered for legacy use, but the
+// bulk `dae setup` wizard no longer walks through it.
+const ALL_ORDER = ["onecli", "search", "whisper", "telegram", "whatsapp"] as const;
 
 export async function runSetupAll(configPathArg: string | undefined): Promise<void> {
   const { default: prompts } = await import("prompts");

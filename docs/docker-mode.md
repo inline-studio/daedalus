@@ -47,7 +47,7 @@ from the kernel.
 ```
 
 All containers join the `daedalus` docker network so they reach each other and
-shared services (OneCLI, MemPalace, …) by container name.
+shared services (OneCLI, Graphiti, …) by container name.
 
 ## Per-agent mounts
 
@@ -195,139 +195,115 @@ Two enforcement points:
    `write`, etc.; subagents that don't need them won't have them.
 
 2. **MCP servers.** `mcpServers:` in the manifest is the allowlist. The
-   MemPalace MCP is the one auto-injected exception — every agent gets
-   `memory` automatically when `mempalace.localHttp.enabled: true` in the
-   supervisor's config, so every agent can persist + recall memories without
-   declaring it.
+   Graphiti memory MCP is the one auto-injected exception — every agent gets
+   `memory` automatically when `graphiti.enabled: true` in the supervisor's
+   config, so every agent can persist + recall memories without declaring it.
 
    > **Gotcha — an explicit def overrides the built-in injection.** The
-   > auto-inject only fires when *no* MCP server named `memory` **or**
-   > `mempalace` already exists in your mcp config (the guard in `connectAgentMcp`
-   > is `!allDefs["memory"] && !allDefs["mempalace"]`). Define either one — a
-   > leftover `mcp/memory.json`, or the entry `dae setup mempalace` writes — and
-   > it *replaces* the built-in: agents connect to your def instead. If that def
-   > points somewhere dead, agents silently get no memory even though
-   > `mempalace.localHttp.enabled` looks correct. To use the built-in mempalace,
-   > leave `memory`/`mempalace` out of the mcp config entirely.
+   > auto-inject only fires when *no* MCP server named `memory` already exists in
+   > your mcp config (the guard in `resolveAgentMcpDefs` is `!allDefs["memory"]`).
+   > Define one — e.g. a leftover `mcp/memory.json` — and it *replaces* the
+   > built-in: agents connect to your def instead. If that def points somewhere
+   > dead, agents silently get no memory even though `graphiti.enabled` looks
+   > correct. To use the built-in Graphiti memory, leave `memory` out of the mcp
+   > config entirely.
 
-### The `mempalace` container
+### Migrating off MemPalace
 
-MemPalace's own MCP server is **stdio-only** (no HTTP transport). For docker mode
-it runs as its own service (`Dockerfile.mempalace` + the `mempalace` service in
-`docker-compose.yml`): the image fronts the stdio server with
-[`mcp-proxy`](https://github.com/sparfenyuk/mcp-proxy), exposing it over the
-network at **`http://mempalace:11364/sse`**. Every agent container reaches it by
-that name on the `daedalus` network — no `host.docker.internal`, no per-turn
-spawn, one shared instance.
-
-- **Palace persistence.** The on-disk store (chroma + knowledge graph) lives at
-  `/palace` in the container. Set `MEMPALACE_PALACE_PATH` in your compose `.env` to
-  a host dir (e.g. `/home/you/.daedalus/mempalace`) to bind-mount it; unset falls
-  back to the `mempalace-data` named volume.
-- **Wiring the connection.** mcp-proxy serves both streamable-HTTP at `/mcp` and
-  SSE at `/sse`. The `/mcp` endpoint matches daedalus's built-in auto-inject, so
-  the simplest setup needs **no explicit def** — just point the auto-inject at the
-  container:
-  ```yaml
-  mempalace:
-    localHttp:
-      enabled: true
-      host: mempalace      # the container name on the daedalus network
-      port: 11364
-      urlPath: /mcp
-  ```
-  That makes every agent get `memory → http://mempalace:11364/mcp` automatically.
-  (Prefer SSE, or have a non-daedalus client connect? Use an explicit def instead:
-  `{ "mcpServers": { "memory": { "url": "http://mempalace:11364/sse", "transport": "sse" } } }`.)
-- **Auth & internal access.** By default the service publishes only to `127.0.0.1`
-  plus the internal `daedalus` network, so network isolation is the boundary — agents
-  reach it in-cluster and nothing on your LAN can. `mcp-proxy` (and mempalace itself)
-  **enforce no authentication**, so don't expose the raw port to untrusted networks.
-
-#### Exposing memory to other devices (bring your own reverse proxy)
-
-Want to use the same memory vault from another machine — e.g. Claude Desktop/Code on
-your laptop — *without* an SSH tunnel? **Daedalus bundles no web server on purpose**
-(you likely already run one, and a second would fight for ports). Instead, front the
-published port with **your own** reverse proxy, which owns TLS and auth:
-
-1. **Make the port reachable by your proxy.** If your proxy runs on the host, the
-   default `127.0.0.1:11364` already works. If it runs elsewhere (a container, another
-   host), set `MEMPALACE_BIND` in the compose `.env` to an interface it can reach:
-   ```dotenv
-   MEMPALACE_BIND=0.0.0.0        # default is 127.0.0.1 (loopback only)
-   ```
-   (Hand-edited `.env` keys survive `dae install` re-runs.)
-2. **Terminate + authenticate at your proxy.** It checks the credential and streams SSE.
-   Example for Caddy (use `basic_auth`, `forward_auth` to your SSO, or mTLS instead if
-   you prefer):
-   ```caddy
-   memory.example.com {
-       @unauth not header Authorization "Bearer {env.MEMPALACE_TOKEN}"
-       respond @unauth "unauthorized" 401
-       reverse_proxy 127.0.0.1:11364 {
-           flush_interval -1            # don't buffer the SSE stream
-       }
-   }
-   ```
-3. **Point the client at your proxy URL.** `dae export mempalace` prints a paste-ready
-   MCP snippet (URL + token + the Claude Desktop/Code config path) — swap in your proxy
-   hostname. Internal daedalus agents keep using the in-cluster `mempalace:11364`, so
-   they're unaffected.
-
-The `MEMPALACE_TOKEN` daedalus already sends as `Authorization: Bearer …` is the value
-your proxy checks. It is **only meaningful behind a proxy that enforces it** — the raw
-port has no auth, so never publish it to an untrusted network without one.
+MemPalace has been **removed from the stack** — Graphiti (below) is the memory backend.
+If you ran an older daedalus, your config may still carry a `mempalace:` block; it's
+harmless (the schema keeps the field only so old configs still validate) and no longer
+wired up. To pull data **out** of an existing palace before decommissioning it,
+`dae export mempalace` still works.
 
 ### The `graphiti` container (temporal-graph memory)
 
-The newer memory backend. [Graphiti](https://github.com/getzep/graphiti) is a **temporal
-knowledge graph** — it extracts entities/relationships/decisions from conversations and
-tracks *when* facts held, not just snapshots. It runs as one container (bundled FalkorDB +
-MCP server) and is reached at `http://graphiti:8000/mcp/` on the daedalus network.
+[Graphiti](https://github.com/getzep/graphiti) is daedalus's memory backend — a **temporal
+knowledge graph** that extracts entities/relationships/decisions from conversations and
+tracks *when* facts held, not just snapshots. It runs as one container — built from
+`Dockerfile.graphiti`, a thin pinned layer over Zep's bundled FalkorDB + MCP image — and is
+reached at `http://graphiti:8000/mcp/` on the daedalus network.
 
-Why it replaces mempalace: it stays **local + leak-free** (no SSRF / no verbatim-secret
-dump) — the graph store and embeddings are local, and the only egress is the extraction
-LLM call, which points at **your spark**, not the public internet.
+It stays **local + leak-free**: the graph store is on local disk, and the extraction LLM +
+embeddings run on **your spark**, reached **through the OneCLI proxy** — so the spark key is
+never written to disk (OneCLI injects it per request). The image also disables graphiti-core's
+PostHog telemetry and points its cross-encoder reranker at spark, so nothing phones home.
 
-It's **opt-in** while it beds in (mempalace is left intact so you can flip back). To enable:
+`dae install` wires all of this **automatically** when you configure an OpenAI-compatible
+(spark) endpoint — there's nothing to hand-edit. It:
+- builds `Dockerfile.graphiti` and starts the `graphiti` service (its profile is merged into
+  `COMPOSE_PROFILES` alongside whisper — never overwritten);
+- sets `memory.backend: graphiti` + `graphiti.enabled: true` in your config;
+- writes `SPARK_URL`, a host `GRAPHITI_DATA_PATH`, and — after OneCLI is up — the OneCLI
+  proxy URL + CA into the compose `.env`, so graphiti routes egress through OneCLI.
 
-1. **Compose `.env`** (`~/.daedalus/compose/.env`):
-   ```dotenv
-   COMPOSE_PROFILES=graphiti          # (comma-join with whisper if you use both)
-   SPARK_URL=<your spark base URL, incl /v1>
-   SPARK_API_KEY=<your spark key>     # graphiti calls spark directly, not via OneCLI
-   GRAPHITI_LLM_MODEL=artemis         # extraction model (a capable INSTRUCT model)
-   GRAPHITI_EMBED_MODEL=embeddings    # your spark embeddings model
-   GRAPHITI_EMBED_DIM=768             # must match the embeddings model's dimension
-   GRAPHITI_DATA_PATH=/home/you/.daedalus/graphiti   # portable graph store (see below)
-   ```
-2. **Config** (`~/.daedalus/config.yaml`): point the memory slot at graphiti and disable mempalace:
-   ```yaml
-   memory:
-     backend: graphiti
-   graphiti:
-     enabled: true
-     url: http://graphiti:8000/mcp/
-   mempalace:
-     localHttp:
-       enabled: false
-   ```
-3. `dae update` (or `docker compose --profile graphiti up -d`).
+`dae update` re-checks and self-heals this (re-fetches the proxy/CA, keeps the merged profile
+set). Knobs with sane defaults you can override in `.env`: `GRAPHITI_LLM_MODEL` (default
+`artemis`, a capable INSTRUCT model), `GRAPHITI_EMBED_MODEL` (`embeddings`), `GRAPHITI_EMBED_DIM`
+(`768` — must match your embeddings model's dimension).
+
+> **Why a custom image?** The upstream `openai` provider uses the OpenAI **Responses API**,
+> which litellm-fronted local models don't enforce structured outputs on, so extraction fails.
+> `Dockerfile.graphiti` patches the factory to use the **chat.completions** client (which they
+> *do* enforce json-schema on), disables telemetry, and trusts the OneCLI CA at startup.
 
 **Verify (leak-check + recall):**
-- Egress: confirm graphiti talks only to your spark — **no** connections to `api.openai.com`
-  (the one config footgun). e.g. `docker compose exec graphiti sh -c "getent hosts api.openai.com"` should not be hit during use; watch its logs for the spark URL only.
-- Recall: have an agent remember a fact, then ask for it back.
+- Egress: confirm graphiti talks only to your spark — watch `docker compose logs onecli` for
+  `url=https://<spark-host>/...` and **no** `api.openai.com` / `posthog.com`.
+- Recall: have an agent remember a fact, then ask for it back. Recall needs your spark
+  **embeddings** model up — every query is embedded, so if embeddings is down, recall returns
+  nothing (the rest of the agent still works).
 
-**Portability (transfer to a new machine):** the graph lives in `GRAPHITI_DATA_PATH`
-(bind-mounted to `/var/lib/falkordb/data`). To move: **graceful-stop** the stack (so
-FalkorDB flushes its snapshot), copy that one directory to the new host, set the same
-`.env`, and start the stack — your memory comes with it.
+**Portability (transfer to a new machine):** the whole store is one directory —
+`GRAPHITI_DATA_PATH` (bind-mounted to `/var/lib/falkordb/data`). To move: **graceful-stop**
+the stack (so FalkorDB flushes its snapshot), copy that directory to the new host, run
+`dae install`/`dae update` there, and start the stack. The graph data, the vector embeddings,
+and the indices all travel in the snapshot — **no reindex needed**; recall works as soon as the
+embeddings endpoint is reachable again.
 
 > Auto-save, proactive recall, and the scheduled "dream" consolidation are added by
 > daedalus *around* this store (see the roadmap) — Graphiti provides the storage,
 > extraction, and graph search; daedalus orchestrates when to write, recall, and consolidate.
+
+## The web chat UI
+
+The `web` channel ships a built-in, zero-dependency chat UI — a single HTML page the
+channel serves at **`GET /`** on its own port. It talks to the same channel API it's served
+from (`POST /messages`, `GET /events` SSE, `GET /history`), so it's the *same* conversation
++ memory as any other channel — a reply you got on Telegram shows up here too, and Graphiti
+memory is shared. It supports streaming replies, **file uploads** (images / PDFs / docs →
+the agent's vision/pdf skills), **file responses** (attachments the agent sends back render
+inline / as downloads), Markdown, and history that survives reloads.
+
+Enable it in `~/.daedalus/config.yaml`:
+```yaml
+channels:
+  web:
+    enabled: true
+    defaultAgent: orchestrator
+    port: 8765
+    # token: ${WEB_TOKEN}   # optional bearer token (see auth below)
+```
+
+The supervisor publishes the port to **loopback** by default (`127.0.0.1:8765`). As with
+mempalace before it, **daedalus bundles no web server** — front the port with **your own**
+reverse proxy for TLS + auth:
+
+1. **Reach the port.** Loopback is fine if your proxy runs on the host. If it runs elsewhere
+   (another container/host), set `WEB_BIND=0.0.0.0` in the compose `.env` so it can connect.
+2. **Terminate TLS + authenticate at your proxy** (Caddy `basic_auth` / `forward_auth` / mTLS).
+   Example Caddy:
+   ```caddy
+   chat.example.com {
+       reverse_proxy 127.0.0.1:8765 {
+           flush_interval -1   # don't buffer the SSE reply stream
+       }
+   }
+   ```
+3. **Open the UI** at your proxy URL. The page loads unauthenticated (it's just the app
+   shell); its API calls then carry the credential. If you also set `channels.web.token`,
+   the UI prompts for it once (stored in your browser) — belt-and-suspenders behind the proxy.
+   The page check (`GET /`) is intentionally unauthenticated so it can load and *then* auth.
 
 ## Scheduled tasks
 
@@ -412,15 +388,21 @@ If you'd rather wire it by hand:
 cat > .env <<'EOF'
 BRAIN_PATH=/home/you/.daedalus/brain
 DAEDALUS_CONFIG_DIR=/home/you/.daedalus
-MEMPALACE_PALACE_PATH=/home/you/.daedalus/mempalace
 UID=1000
 DOCKER_GID=998
-# Optional — only if you use OneCLI / memory auth:
-# ONECLI_API_KEY=oc_…
-# MEMPALACE_TOKEN=…
+ONECLI_API_KEY=oc_…
+# Graphiti memory (the `graphiti` profile). SPARK_URL is your OpenAI-compatible base
+# URL; the spark key is NOT put here — graphiti routes through OneCLI, which injects it.
+COMPOSE_PROFILES=graphiti              # comma-join with whisper if you use both
+SPARK_URL=https://your-spark/v1
+GRAPHITI_DATA_PATH=/home/you/.daedalus/graphiti
+# ONECLI_PROXY_URL + ONECLI_CA_PATH are written by `dae install` AFTER OneCLI is up
+# (it fetches OneCLI's proxy URL + MITM CA). Hand-wiring them is fiddly — prefer
+# `dae install`, which does the two-phase bring-up + provisioning for you.
 EOF
 
-# 2. Bring it up (add --profile whisper for local STT)
+# 2. Bring it up (add --profile whisper for local STT). Note: graphiti needs the OneCLI
+#    proxy/CA provisioned first — `dae install` handles that ordering automatically.
 docker compose up -d
 docker compose logs -f daedalus
 ```

@@ -5,7 +5,7 @@ import { log } from "../log.js";
 
 // Resolve the set of MCP server definitions a given agent should connect to:
 //   - everything it declares (or all of them for the `*` wildcard)
-//   - PLUS the auto-injected MemPalace HTTP MCP ("memory") when localHttp.enabled,
+//   - PLUS the auto-injected Graphiti memory HTTP MCP ("memory") when enabled,
 //     so every agent gets memory by default.
 // Pure (no connections) so both the one-shot connector and the persistent pool can
 // share the selection logic.
@@ -15,26 +15,11 @@ export async function resolveAgentMcpDefs(
 ): Promise<McpServerMap> {
   const allDefs = await loadMcpConfig(config.mcp.configPath);
 
-  // Merge in the implicit Graphiti memory MCP if enabled (takes the `memory` slot).
+  // Merge in the implicit Graphiti memory MCP if enabled (takes the `memory` slot), so
+  // every agent gets memory by default without an explicit MCP entry.
   const gr = config.graphiti;
-  if (gr?.enabled && !allDefs["memory"] && !allDefs["mempalace"]) {
+  if (gr?.enabled && !allDefs["memory"]) {
     allDefs["memory"] = { url: gr.url, transport: "http", args: [], env: {}, headers: {} };
-  }
-
-  // Merge in the implicit MemPalace MCP if the config has it enabled (legacy backend).
-  const lh = config.mempalace?.localHttp;
-  if (lh?.enabled && !allDefs["memory"] && !allDefs["mempalace"]) {
-    // If mempalace requires a bearer token, it's stored as MEMPALACE_TOKEN
-    // (by `dae setup mempalace`). Carry it on the auto-injected def so an
-    // authenticated server works without writing an explicit MCP entry.
-    const token = process.env.MEMPALACE_TOKEN;
-    allDefs["memory"] = {
-      url: `http://${lh.host}:${lh.port}${lh.urlPath}`,
-      transport: "http",
-      args: [],
-      env: {},
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    };
   }
 
   // `mcpServers: ['*']` expands to every server in the mcp config. Subagents

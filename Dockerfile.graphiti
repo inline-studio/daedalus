@@ -1,0 +1,55 @@
+# Graphiti temporal-knowledge-graph memory for daedalus — a thin layer over Zep's
+# combined FalkorDB + MCP image that makes it work against a LOCAL OpenAI-compatible
+# endpoint (your spark/litellm) routed through the OneCLI proxy.
+#
+# Why this image exists (each fix was validated against a real llama.cpp-via-litellm spark):
+#
+#  1. Generic (chat.completions) client. The upstream MCP factory hardwires the `openai`
+#     provider to OpenAIClient, which uses the OpenAI *Responses API* (responses.parse
+#     with a json schema). litellm in front of a local model returns 200 but does NOT
+#     enforce that schema on /v1/responses, so entity extraction fails ("ExtractedEntities
+#     missing"). graphiti-core ships OpenAIGenericClient, which uses chat.completions +
+#     response_format json_schema — which litellm/llama.cpp DO enforce. We patch the
+#     factory to use it. (Build-time + verified, so this fails loudly if upstream moves.)
+#
+#  2. Telemetry off. graphiti-core ships PostHog telemetry ON by default (us.i.posthog.com).
+#
+#  3. CA trust at runtime (see graphiti-entrypoint.sh) so the Python client trusts the
+#     OneCLI MITM CA and can reach spark through the proxy with no key on disk.
+#
+#  4. DNS-rebinding Host check disabled. FastMCP defaults to allowing only localhost Hosts;
+#     agents reach graphiti by its service name (graphiti:8000), which the default rejects
+#     with 421 "Invalid Host header". graphiti is only on the internal daedalus network
+#     (never published), so the browser-oriented protection doesn't apply.
+#
+# Pinned by digest so a rebuild is reproducible (bump deliberately, not implicitly).
+FROM zepai/knowledge-graph-mcp@sha256:c9e0efd3f0bcdb4125eceed08958aea94fe2d85a90c20dfdaadaaf8304e1c4d6
+
+# (1) Route the `openai` provider to the chat.completions client. Patch + VERIFY: if any
+# step doesn't match (upstream restructured), the build fails here rather than silently
+# shipping a broken image.
+RUN set -eu; \
+    F=/app/mcp/src/services/factories.py; \
+    sed -i 's/return OpenAIClient(config=llm_config, reasoning=.*/return OpenAIGenericClient(config=llm_config)/' "$F"; \
+    sed -i '/^from graphiti_core.llm_client import LLMClient, OpenAIClient/a from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient' "$F"; \
+    grep -q 'return OpenAIGenericClient(config=llm_config)' "$F"; \
+    grep -q 'import OpenAIGenericClient' "$F"; \
+    ! grep -q 'return OpenAIClient(config=llm_config, reasoning' "$F"; \
+    python3 -c "import ast; ast.parse(open('$F').read())"
+
+# (4) Disable the MCP DNS-rebinding Host check so agents can reach graphiti by its service
+# name (graphiti:8000) — FastMCP's default allows only localhost Hosts. Inline __import__
+# avoids a separate import line. Build-time + verified.
+RUN set -eu; \
+    F=/app/mcp/src/graphiti_mcp_server.py; \
+    sed -i 's/    instructions=GRAPHITI_MCP_INSTRUCTIONS,/    instructions=GRAPHITI_MCP_INSTRUCTIONS,\n    transport_security=__import__("mcp.server.transport_security", fromlist=["TransportSecuritySettings"]).TransportSecuritySettings(enable_dns_rebinding_protection=False),/' "$F"; \
+    grep -q 'transport_security=__import__' "$F"; \
+    python3 -c "import ast; ast.parse(open('$F').read())"
+
+# (2) Disable PostHog telemetry by default (also set in compose for visibility).
+ENV GRAPHITI_TELEMETRY_ENABLED=false
+
+# (3) CA-trust wrapper, then the image's real entrypoint.
+COPY graphiti-entrypoint.sh /graphiti-entrypoint.sh
+RUN chmod +x /graphiti-entrypoint.sh
+ENTRYPOINT ["/graphiti-entrypoint.sh"]

@@ -8,17 +8,17 @@
 #                    MCP connections warm and serves top-level turns over HTTP, so each
 #                    message skips the container cold-start. Spawns its subagents as
 #                    ephemeral containers. Isolated from the supervisor's channel tokens.
-#   - mempalace    — shared HTTP-MCP memory store every agent connects to.
+#   - graphiti     — knowledge-graph memory MCP (FalkorDB + MCP; `graphiti` profile).
 #   - whisper      — local speech-to-text (optional; `whisper` profile only).
 #   - onecli       — credential gateway (+ onecli-db postgres). Comment both out if you
 #                    run OneCLI externally instead.
 #
 # All services join the `daedalus` network so they reach each other by container name
-# (e.g. http://onecli:10254, http://mempalace:11364). Agent containers spawned by the
+# (e.g. http://onecli:10254, http://graphiti:8000/mcp/). Agent containers spawned by the
 # supervisor join the same network — their HTTPS_PROXY ends up pointing at the OneCLI
 # service name rather than `host.docker.internal`.
 #
-# Bring up: `docker compose up -d`                       (core: daedalus + mempalace)
+# Bring up: `docker compose up -d`                       (core: daedalus + onecli)
 #           `docker compose --profile whisper up -d`     (also local whisper STT)
 # Logs:     `docker compose logs -f daedalus`
 #
@@ -70,9 +70,6 @@ services:
       # gateway bundle at startup and forwards it into each agent container via
       # ContainerAgentDispatcher. Optional: leave unset to run with OneCLI disabled.
       ONECLI_API_KEY: ${ONECLI_API_KEY:-}
-      # Bearer token for the mempalace MCP. When set, the supervisor adds it to the
-      # auto-injected `memory` server and forwards it into every agent container.
-      MEMPALACE_TOKEN: ${MEMPALACE_TOKEN:-}
       # Tells the supervisor to spawn each agent turn as its own container (vs
       # in-process), and lets it pass the right network name + image into them.
       DAE_DISPATCHER: container
@@ -107,11 +104,15 @@ services:
       - daedalus-shared:/shared
       # Docker socket so the supervisor can `docker run` per-agent containers.
       - /var/run/docker.sock:/var/run/docker.sock
+    # Web chat UI + channel API — only meaningful when channels.web is enabled (port 8765
+    # by default). Loopback-published so nothing on your LAN reaches it directly; front it
+    # with your OWN reverse proxy for TLS + auth (daedalus bundles none). Set WEB_BIND to an
+    # interface your proxy can reach (e.g. 0.0.0.0) if it runs on another host.
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:8765:8765"
     networks:
       - daedalus
     depends_on:
-      mempalace:
-        condition: service_started
       # Wait until onecli's gateway is actually accepting requests, not just until
       # the container exists — the supervisor fetches its OneCLI bundle once at
       # startup, and onecli isn't ready until postgres is healthy + migrations run.
@@ -146,7 +147,6 @@ services:
     environment:
       DAE_CONFIG: /etc/daedalus/config.yaml
       ONECLI_API_KEY: ${ONECLI_API_KEY:-}
-      MEMPALACE_TOKEN: ${MEMPALACE_TOKEN:-}
       # Subagents the worker spawns run as their own ephemeral containers.
       DAE_DISPATCHER: container
       DAE_AGENT_IMAGE_DEFAULT: ${DAEDALUS_IMAGE:-ghcr.io/inline-studio/daedalus:latest}
@@ -172,36 +172,61 @@ services:
     networks:
       - daedalus
     depends_on:
-      mempalace:
-        condition: service_started
       onecli:
         condition: service_healthy
       dae-runtime-init:
         condition: service_completed_successfully
     user: "${UID:-1000}:${DOCKER_GID:-998}"
 
-  # Shared memory MCP every agent connects to (http://mempalace:11364/sse).
-  # MemPalace's own MCP server is stdio-only, so the image fronts it with mcp-proxy
-  # (see Dockerfile.mempalace). The palace (on-disk store) is bind-mounted so it
-  # persists and the container stays stateless: set MEMPALACE_PALACE_PATH in .env to
-  # your host palace dir (e.g. /home/you/.daedalus/mempalace). If unset, a named
-  # volume (mempalace-data) is used instead.
-  mempalace:
-    image: ${MEMPALACE_IMAGE:-ghcr.io/inline-studio/mempalace-mcp:latest}
+  # Graphiti temporal-knowledge-graph memory (bundled FalkorDB + MCP server in one
+  # container), built from Dockerfile.graphiti (a thin layer over Zep's image — see that
+  # file for the why). Opt-in via the `graphiti` compose profile + memory.backend: graphiti.
+  # Extraction LLM + embeddings run on your spark, reached THROUGH the OneCLI proxy (so the
+  # spark key is never on disk — OneCLI injects it). The graph store is local and portable —
+  # bind-mount GRAPHITI_DATA_PATH to back it up / move it to another host (then reindex).
+  graphiti:
     build:
       context: .
-      dockerfile: Dockerfile.mempalace
+      dockerfile: Dockerfile.graphiti
+    image: ${GRAPHITI_IMAGE:-daedalus-graphiti:local}
     restart: unless-stopped
-    # Host publish for tooling/debugging and for fronting with your OWN reverse proxy
-    # (daedalus bundles none). Defaults to loopback; set MEMPALACE_BIND in .env to an
-    # interface your proxy can reach (e.g. 0.0.0.0). Agents reach it by container name
-    # (`mempalace`) on the daedalus network regardless of this. mcp-proxy enforces no
-    # auth itself — only expose it beyond loopback via a reverse proxy that checks a
-    # token (see docs/docker-mode.md → "The mempalace container").
-    ports:
-      - "${MEMPALACE_BIND:-127.0.0.1}:11364:11364"
+    profiles: ["graphiti"]
+    environment:
+      # SPARK_URL is your OpenAI-compatible base URL (incl. /v1). graphiti reaches it via
+      # the OneCLI proxy; the api key is a placeholder that OneCLI swaps for the real one.
+      # Soft default so compose interpolation never errors when graphiti isn't in the
+      # active profile; `dae install` always sets it when graphiti IS enabled.
+      SPARK_URL: ${SPARK_URL:-}
+      # graphiti-core builds its cross-encoder/reranker client itself from these env vars —
+      # point them at spark too so nothing ever falls back to api.openai.com. Placeholder
+      # key; OneCLI injects the real one for the spark host.
+      OPENAI_BASE_URL: ${SPARK_URL}
+      OPENAI_API_KEY: onecli-managed
+      GRAPHITI_LLM_MODEL: ${GRAPHITI_LLM_MODEL:-artemis}
+      GRAPHITI_EMBED_MODEL: ${GRAPHITI_EMBED_MODEL:-embeddings}
+      GRAPHITI_EMBED_DIM: ${GRAPHITI_EMBED_DIM:-768}
+      # graphiti-core ships PostHog telemetry ON by default — disabled (also baked into the image).
+      GRAPHITI_TELEMETRY_ENABLED: "false"
+      # Route egress through the OneCLI proxy (it injects the spark key). `dae install` sets
+      # ONECLI_PROXY_URL after onecli is up. NO_PROXY keeps loopback + the proxy itself direct.
+      HTTP_PROXY: ${ONECLI_PROXY_URL:-}
+      HTTPS_PROXY: ${ONECLI_PROXY_URL:-}
+      http_proxy: ${ONECLI_PROXY_URL:-}
+      https_proxy: ${ONECLI_PROXY_URL:-}
+      NO_PROXY: "localhost,127.0.0.1,onecli"
+      no_proxy: "localhost,127.0.0.1,onecli"
+      CONFIG_PATH: /app/mcp/config/config.yaml
+      # spark is CPU-constrained — keep episode-processing concurrency low.
+      SEMAPHORE_LIMIT: ${GRAPHITI_SEMAPHORE_LIMIT:-3}
+      BROWSER: "0" # disable the FalkorDB web UI
     volumes:
-      - ${MEMPALACE_PALACE_PATH:-mempalace-data}:/palace
+      - ${GRAPHITI_DATA_PATH:-graphiti-data}:/var/lib/falkordb/data
+      - ./graphiti.config.yaml:/app/mcp/config/config.yaml:ro
+      # OneCLI MITM CA so graphiti's Python client trusts the proxy. Written by `dae install`.
+      - ${ONECLI_CA_PATH:-./onecli-ca.pem}:/certs/onecli-ca.pem:ro
+    depends_on:
+      onecli:
+        condition: service_healthy
     networks:
       - daedalus
 
@@ -211,32 +236,6 @@ services:
   # Internal-only: the supervisor reaches it by container name (http://whisper:8000/v1)
   # on the daedalus network. We deliberately DON'T publish a host port — nothing on
   # the host needs it, and publishing 8000 just collides with whatever else is there.
-  # Graphiti temporal-knowledge-graph memory (bundled FalkorDB + MCP server in one
-  # container). Opt-in via the `graphiti` compose profile + memory.backend: graphiti.
-  # Extraction LLM + embeddings run on your spark (set in .env); the graph store is local
-  # and portable — bind-mount GRAPHITI_DATA_PATH to back it up / move it to another host.
-  graphiti:
-    image: ${GRAPHITI_IMAGE:-zepai/knowledge-graph-mcp:latest}
-    restart: unless-stopped
-    profiles: ["graphiti"]
-    environment:
-      # Graphiti is its own container, so it calls spark DIRECTLY (not via OneCLI) and needs
-      # the key here. SPARK_URL is your OpenAI-compatible base URL (incl. /v1).
-      SPARK_URL: ${SPARK_URL:?set SPARK_URL in .env (spark/litellm base URL incl /v1)}
-      SPARK_API_KEY: ${SPARK_API_KEY:?set SPARK_API_KEY in .env}
-      GRAPHITI_LLM_MODEL: ${GRAPHITI_LLM_MODEL:-artemis}
-      GRAPHITI_EMBED_MODEL: ${GRAPHITI_EMBED_MODEL:-embeddings}
-      GRAPHITI_EMBED_DIM: ${GRAPHITI_EMBED_DIM:-768}
-      CONFIG_PATH: /app/mcp/config/config.yaml
-      # spark is CPU-constrained — keep episode-processing concurrency low.
-      SEMAPHORE_LIMIT: ${GRAPHITI_SEMAPHORE_LIMIT:-3}
-      BROWSER: "0" # disable the FalkorDB web UI
-    volumes:
-      - ${GRAPHITI_DATA_PATH:-graphiti-data}:/var/lib/falkordb/data
-      - ./graphiti.config.yaml:/app/mcp/config/config.yaml:ro
-    networks:
-      - daedalus
-
   whisper:
     image: ${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:latest-cpu}
     restart: unless-stopped
@@ -292,7 +291,6 @@ services:
 volumes:
   daedalus-data:
   daedalus-shared:
-  mempalace-data:
   graphiti-data:
   # Holds the injectable agent runtime (node binary + daedalus install).
   # Populated by dae-runtime-init at startup; mounted ro into every per-agent
