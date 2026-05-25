@@ -14,6 +14,7 @@ import { secretPrompt } from "./setup/secret-prompt.js";
 import { editYamlFile, setIn, ensureMap } from "./setup/yaml-edit.js";
 import { upsertEnvFile } from "./setup/env-file.js";
 import { OneCliSecretsBackend } from "./secrets/store/onecli-backend.js";
+import { hashPassword } from "./channels/web-auth.js";
 import { OneCLI } from "@onecli-sh/sdk";
 
 // `dae install` — the one turnkey command. It is a thin orchestrator around
@@ -74,6 +75,9 @@ export async function runInstall(
   const composeEnvPath = path.join(composeDir, ".env");
   const prev = await readEnvFile(composeEnvPath);
   const prevOnecliKey = prev.ONECLI_API_KEY ?? process.env.ONECLI_API_KEY ?? "";
+  // The runner's .env.local holds locally-verified secrets (telegram token, web-login creds) —
+  // read it so re-runs preserve them ("leave blank to keep").
+  const envLocalPrev = await readEnvFile(envLocalPath);
 
   // 2. Resolve the deployment intent — supplied (dae update, no prompts) or asked. Keys are
   // stored in OneCLI (never on disk); a blank/undefined key means "keep what's already in
@@ -162,6 +166,35 @@ export async function runInstall(
 
   const enableTelegram = Boolean(tgToken) && TELEGRAM_TOKEN_RE.test(tgToken);
 
+  // Web UI login (username/password). Reuse existing creds from .env.local on every run. If
+  // login isn't configured yet and this is an interactive run (NOT an automated `dae update`),
+  // offer to set one up — so you don't have to lean on the reverse proxy's basic_auth. The
+  // raw password is never stored: we keep only an scrypt hash plus a stable signing secret.
+  let webUsername = envLocalPrev.WEB_USERNAME ?? "";
+  let webPasswordHash = envLocalPrev.WEB_PASSWORD_HASH ?? "";
+  let webSessionSecret = envLocalPrev.WEB_SESSION_SECRET ?? "";
+  if (mode !== "apply" && !(webUsername && webPasswordHash)) {
+    const wantLogin = await confirm(
+      "Protect the web chat UI with its own username/password login (no reverse-proxy basic_auth needed)?",
+      true,
+    );
+    if (wantLogin) {
+      const defUser = webUsername || "admin";
+      webUsername = (await textPrompt(`Web login username [${defUser}]:`)) || defUser;
+      const pw = ((await secretPrompt({ message: "Web login password:" })) ?? "").trim();
+      if (pw) {
+        webPasswordHash = hashPassword(pw);
+      } else {
+        webUsername = "";
+        console.log("  (no password entered — skipping web login; front the UI with your own proxy auth)");
+      }
+    } else {
+      webUsername = "";
+    }
+  }
+  const webLogin = Boolean(webUsername && webPasswordHash);
+  if (webLogin && !webSessionSecret) webSessionSecret = randomBytes(32).toString("base64");
+
   // OneCLI runs in the stack in local auth mode (it ignores the key's value), but daedalus
   // still needs a non-empty ONECLI_API_KEY to attempt the connection. Keep it stable.
   const onecliKey = prevOnecliKey || randomBytes(24).toString("base64url");
@@ -231,6 +264,19 @@ export async function runInstall(
     { keyPath: ["channels", "web", "defaultAgent"], value: defaultAgent },
     { keyPath: ["channels", "web", "port"], value: 8765 },
   );
+  // Web login: store the creds in .env.local and reference them from config via ${…} (the
+  // raw password is never written — only the scrypt hash). With all three set, the web channel
+  // serves its own /login page + cookie auth and ignores the bearer token.
+  if (webLogin) {
+    runnerEnv.WEB_USERNAME = webUsername;
+    runnerEnv.WEB_PASSWORD_HASH = webPasswordHash;
+    runnerEnv.WEB_SESSION_SECRET = webSessionSecret;
+    yamlEdits.push(
+      { keyPath: ["channels", "web", "username"], value: "${WEB_USERNAME}" },
+      { keyPath: ["channels", "web", "passwordHash"], value: "${WEB_PASSWORD_HASH}" },
+      { keyPath: ["channels", "web", "sessionSecret"], value: "${WEB_SESSION_SECRET}" },
+    );
+  }
 
   await editYamlFile(configPath, (doc) => {
     for (const e of yamlEdits) setIn(doc, e.keyPath, e.value);
@@ -465,20 +511,36 @@ export async function runInstall(
   console.log("    onecli     — credential gateway (+ postgres)");
   if (wantWhisper) console.log("    whisper    — local speech-to-text");
 
-  // Web UI is on by default. It's published to loopback only — daedalus bundles no web
-  // server, so print a ready-to-adapt reverse-proxy config (TLS + auth live there).
+  // Web UI is on by default, published to loopback only. Front it with your own reverse proxy
+  // for TLS. Auth lives in the app when the built-in login is configured; otherwise put it in
+  // the proxy (basic_auth). Print the matching Caddy example.
   console.log("\n── Web chat UI ──────────────────────────────────────────────");
-  console.log("Served on http://127.0.0.1:8765 (loopback). Front it with your own reverse");
-  console.log("proxy for TLS + auth. Example Caddy (replace the hostname; the SSE reply stream");
-  console.log("needs flush_interval -1; `caddy hash-password` makes the basic_auth hash):\n");
-  console.log("    chat.example.com {");
-  console.log("        reverse_proxy 127.0.0.1:8765 {");
-  console.log("            flush_interval -1");
-  console.log("        }");
-  console.log("        basic_auth {   # the first field is a USERNAME you choose, not a keyword");
-  console.log("            <username> <bcrypt-hash>   # hash: run `caddy hash-password`");
-  console.log("        }");
-  console.log("    }\n");
+  if (webLogin) {
+    console.log(`Served on http://127.0.0.1:8765 (loopback). It has its OWN login (user: ${webUsername}),`);
+    console.log("so the proxy only needs to add TLS — no basic_auth. Example Caddy (replace the");
+    console.log("hostname; the SSE reply stream needs flush_interval -1):\n");
+    console.log("    chat.example.com {");
+    console.log("        reverse_proxy 127.0.0.1:8765 {");
+    console.log("            flush_interval -1");
+    console.log("        }");
+    console.log("    }\n");
+    console.log("  Change the login later with: dae web hash-password  (update WEB_PASSWORD_HASH in");
+    console.log(`  ${rel(envLocalPath)}), or re-run \`dae install --fresh\`.`);
+  } else {
+    console.log("Served on http://127.0.0.1:8765 (loopback). No built-in login is configured, so");
+    console.log("front it with your own reverse proxy for TLS + auth. Example Caddy (replace the");
+    console.log("hostname; the SSE reply stream needs flush_interval -1; `caddy hash-password`");
+    console.log("makes the basic_auth hash):\n");
+    console.log("    chat.example.com {");
+    console.log("        reverse_proxy 127.0.0.1:8765 {");
+    console.log("            flush_interval -1");
+    console.log("        }");
+    console.log("        basic_auth {   # the first field is a USERNAME you choose, not a keyword");
+    console.log("            <username> <bcrypt-hash>   # hash: run `caddy hash-password`");
+    console.log("        }");
+    console.log("    }\n");
+    console.log("  (Prefer an in-app login? Re-run `dae install` and enable the web login.)");
+  }
   console.log("  If your proxy runs on another host/container, set WEB_BIND=0.0.0.0 in");
   console.log(`  ${rel(composeEnvPath)} so it can reach the port.`);
   console.log("─────────────────────────────────────────────────────────────");

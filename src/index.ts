@@ -531,6 +531,31 @@ function resolveConfigDir(configPath: string | undefined): string {
   return path.dirname(path.resolve(configPath));
 }
 
+// `web` command group — helpers for the built-in web login.
+const webCmd = program.command("web").description("web UI helpers (login password hashing)");
+
+webCmd
+  .command("hash-password")
+  .description("scrypt-hash a web-login password for WEB_PASSWORD_HASH (prompts silently)")
+  .option("-v, --value <password>", "pass the password as a flag instead of prompting (visible in argv!)")
+  .action(async (opts: { value?: string }) => {
+    const { hashPassword } = await import("./channels/web-auth.js");
+    let pw = opts.value;
+    if (!pw) {
+      const { secretPrompt } = await import("./setup/secret-prompt.js");
+      pw = (await secretPrompt({ message: "Web login password:" })) ?? "";
+    }
+    if (!pw) {
+      console.error("cancelled (empty password)");
+      process.exit(2);
+    }
+    const hash = hashPassword(pw);
+    console.log(hash); // stdout: just the hash, so it's pipeable
+    console.error("\nAdd to your runner .env.local (e.g. ~/.daedalus/.env.local):");
+    console.error("  WEB_PASSWORD_HASH=" + hash);
+    console.error("…plus WEB_USERNAME and a random WEB_SESSION_SECRET. `dae install` sets all three for you.");
+  });
+
 program
   .command("export <what>")
   .description("export config snippets for other devices/clients (currently: 'mempalace')")
