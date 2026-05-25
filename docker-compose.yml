@@ -104,6 +104,12 @@ services:
       - daedalus-shared:/shared
       # Docker socket so the supervisor can `docker run` per-agent containers.
       - /var/run/docker.sock:/var/run/docker.sock
+    # Web chat UI + channel API — only meaningful when channels.web is enabled (port 8765
+    # by default). Loopback-published so nothing on your LAN reaches it directly; front it
+    # with your OWN reverse proxy for TLS + auth (daedalus bundles none). Set WEB_BIND to an
+    # interface your proxy can reach (e.g. 0.0.0.0) if it runs on another host.
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:8765:8765"
     networks:
       - daedalus
     depends_on:

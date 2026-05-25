@@ -1,5 +1,8 @@
 import http from "node:http";
 import type { Channel, ChannelContext, IncomingAttachment, OutgoingMessage } from "./base.js";
+import type { ContentPart } from "../types.js";
+import type { SessionStore } from "../sessions/store.js";
+import { WEB_UI_HTML } from "./web-ui.js";
 import { log } from "../log.js";
 
 // Minimal HTTP+SSE channel.
@@ -19,30 +22,51 @@ export class WebChannel implements Channel {
   private streams = new Map<string, http.ServerResponse>();
   private port: number;
   private token: string | undefined;
+  private sessions: SessionStore | undefined;
 
-  constructor(opts: { defaultAgent: string; port?: number; token?: string }) {
+  constructor(opts: { defaultAgent: string; port?: number; token?: string; sessions?: SessionStore }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
     this.token = opts.token;
+    this.sessions = opts.sessions;
   }
 
   async start(ctx: ChannelContext): Promise<void> {
     this.server = http.createServer(async (req, res) => {
       try {
+        const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+        const pathname = url.pathname;
+
+        // Serve the chat UI shell UNAUTHENTICATED so the page can load and then
+        // authenticate its own API calls with the token (the API routes below are gated).
+        if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(WEB_UI_HTML);
+          return;
+        }
+
+        // Token gate for the API routes. fetch() sends `Authorization: Bearer …`;
+        // EventSource can't set headers, so also accept `?token=…` as a fallback.
         if (this.token) {
-          const auth = req.headers.authorization;
-          if (auth !== `Bearer ${this.token}`) {
+          const viaHeader = req.headers.authorization === `Bearer ${this.token}`;
+          const viaQuery = url.searchParams.get("token") === this.token;
+          if (!viaHeader && !viaQuery) {
             res.writeHead(401);
             res.end("unauthorized");
             return;
           }
         }
-        if (req.method === "POST" && req.url === "/messages") {
+
+        if (req.method === "POST" && pathname === "/messages") {
           await this.handlePost(req, res, ctx);
           return;
         }
-        if (req.method === "GET" && req.url?.startsWith("/events")) {
+        if (req.method === "GET" && pathname === "/events") {
           this.handleSse(req, res);
+          return;
+        }
+        if (req.method === "GET" && pathname === "/history") {
+          this.handleHistory(url, res);
           return;
         }
         res.writeHead(404);
@@ -142,6 +166,40 @@ export class WebChannel implements Channel {
     this.streams.set(externalUserId, res);
     req.on("close", () => this.streams.delete(externalUserId));
   }
+
+  // Replay recent session messages so the UI shows history across reloads. This is the
+  // REAL session (same one Telegram etc. write to), not a per-browser cache — so a reply
+  // received on another channel shows up here too. Empty if no SessionStore is wired.
+  private handleHistory(url: URL, res: http.ServerResponse): void {
+    const externalUserId = url.searchParams.get("externalUserId");
+    if (!externalUserId) {
+      res.writeHead(400);
+      res.end("externalUserId required");
+      return;
+    }
+    let messages: Array<{ role: string; text: string }> = [];
+    if (this.sessions) {
+      try {
+        const userId = this.sessions.resolveUser(this.id, externalUserId);
+        const session = this.sessions.getOrCreateSession(userId, this.defaultAgent);
+        messages = this.sessions
+          .tail(session.id, 50)
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .map((m) => ({ role: m.role as string, text: partsToText(m.content) }))
+          .filter((m) => m.text.length > 0);
+      } catch (err) {
+        log.warn({ err }, "web channel: history read failed");
+      }
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ messages }));
+  }
+}
+
+// Flatten a message's content parts to plain text for the history view (the live SSE
+// stream carries attachments; history is text-only).
+function partsToText(content: ContentPart[]): string {
+  return content.map((p) => (p.type === "text" ? p.text : "")).join("");
 }
 
 async function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {

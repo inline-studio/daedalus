@@ -34,7 +34,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
   await attachments.ensureDir();
   const transcriber = buildTranscriber(config);
 
-  const channels = buildChannels(config.channels);
+  const channels = buildChannels(config.channels, sessions);
   if (channels.length === 0) {
     log.error(
       "No channels enabled in config.channels — nothing to listen on. Enable at least one (cli/web/telegram/whatsapp).",

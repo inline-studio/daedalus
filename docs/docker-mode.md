@@ -265,6 +265,46 @@ embeddings endpoint is reachable again.
 > daedalus *around* this store (see the roadmap) — Graphiti provides the storage,
 > extraction, and graph search; daedalus orchestrates when to write, recall, and consolidate.
 
+## The web chat UI
+
+The `web` channel ships a built-in, zero-dependency chat UI — a single HTML page the
+channel serves at **`GET /`** on its own port. It talks to the same channel API it's served
+from (`POST /messages`, `GET /events` SSE, `GET /history`), so it's the *same* conversation
++ memory as any other channel — a reply you got on Telegram shows up here too, and Graphiti
+memory is shared. It supports streaming replies, **file uploads** (images / PDFs / docs →
+the agent's vision/pdf skills), **file responses** (attachments the agent sends back render
+inline / as downloads), Markdown, and history that survives reloads.
+
+Enable it in `~/.daedalus/config.yaml`:
+```yaml
+channels:
+  web:
+    enabled: true
+    defaultAgent: orchestrator
+    port: 8765
+    # token: ${WEB_TOKEN}   # optional bearer token (see auth below)
+```
+
+The supervisor publishes the port to **loopback** by default (`127.0.0.1:8765`). As with
+mempalace before it, **daedalus bundles no web server** — front the port with **your own**
+reverse proxy for TLS + auth:
+
+1. **Reach the port.** Loopback is fine if your proxy runs on the host. If it runs elsewhere
+   (another container/host), set `WEB_BIND=0.0.0.0` in the compose `.env` so it can connect.
+2. **Terminate TLS + authenticate at your proxy** (Caddy `basic_auth` / `forward_auth` / mTLS).
+   Example Caddy:
+   ```caddy
+   chat.example.com {
+       reverse_proxy 127.0.0.1:8765 {
+           flush_interval -1   # don't buffer the SSE reply stream
+       }
+   }
+   ```
+3. **Open the UI** at your proxy URL. The page loads unauthenticated (it's just the app
+   shell); its API calls then carry the credential. If you also set `channels.web.token`,
+   the UI prompts for it once (stored in your browser) — belt-and-suspenders behind the proxy.
+   The page check (`GET /`) is intentionally unauthenticated so it can load and *then* auth.
+
 ## Scheduled tasks
 
 Two flavours, both go through the same dispatcher and both spawn per-agent
