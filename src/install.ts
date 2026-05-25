@@ -427,8 +427,8 @@ export async function runInstall(
   console.log("        reverse_proxy 127.0.0.1:8765 {");
   console.log("            flush_interval -1");
   console.log("        }");
-  console.log("        basic_auth {");
-  console.log("            you <bcrypt-hash>");
+  console.log("        basic_auth {   # the first field is a USERNAME you choose, not a keyword");
+  console.log("            <username> <bcrypt-hash>   # hash: run `caddy hash-password`");
   console.log("        }");
   console.log("    }\n");
   console.log("  If your proxy runs on another host/container, set WEB_BIND=0.0.0.0 in");
