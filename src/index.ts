@@ -577,7 +577,7 @@ program
   .description("check for a newer release and install it")
   .option("--check", "check for updates without installing")
   .action(async (opts: { check?: boolean }) => {
-    await runUpdate(opts);
+    await runUpdate({ ...opts, ...(program.opts().config ? { config: program.opts().config as string } : {}) });
   });
 
 program

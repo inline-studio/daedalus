@@ -1,7 +1,6 @@
 import { createRequire } from "node:module";
 import { execa } from "execa";
-import { findComposeFile, runInstall, resolveAnswersInferred } from "../install.js";
-import { loadConfig } from "../config/load.js";
+import { findComposeFile } from "../install.js";
 
 const REPO = "inline-studio/daedalus";
 
@@ -34,7 +33,7 @@ function semverGt(a: string, b: string): boolean {
   return av.build > bv.build;
 }
 
-export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
+export async function runUpdate(opts: { check?: boolean; config?: string } = {}): Promise<void> {
   const current = currentVersion();
   process.stdout.write(`Current version: v${current}\nChecking GitHub for updates… `);
 
@@ -75,28 +74,29 @@ export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
 
   console.log(`\n✓ Updated the dae CLI to v${latest}.`);
 
-  // The npm update above only refreshed the host CLI. Now RE-APPLY the full deployment so
-  // the containers rebuild AND any config migrations / new provisioning that shipped in this
-  // release land automatically — by running the same install path non-interactively. The
-  // intent is inferred from the existing config (keys already live in OneCLI; only a
-  // genuinely-missing one is asked for). This keeps `dae update` one-and-done: no second
-  // command after an update.
+  // The npm update above only refreshed the host CLI. Now RE-APPLY the full deployment so the
+  // containers rebuild AND any config migrations / new setup that shipped in this release land
+  // automatically — keeping `dae update` one-and-done (no second command afterwards).
   const composeFile = await findComposeFile();
   if (!composeFile) {
-    console.log(
-      "\n(no installed stack found — run `dae install` to set up and start the containers)",
-    );
+    console.log("\n(no installed stack found — run `dae install` to set up and start the containers)");
     return;
   }
-  const config = (() => {
-    try {
-      return loadConfig();
-    } catch (err) {
-      console.error(`\nCouldn't read your daedalus config (${(err as Error).message}). Run \`dae install\`.`);
-      return undefined;
-    }
-  })();
-  if (!config) return;
-  console.log("\nRe-applying your configuration (this also lands any migrations from the update)…");
-  await runInstall({ answers: resolveAnswersInferred(config) });
+  // CRITICAL: re-EXEC the freshly-installed `dae`, rather than calling runInstall in-process.
+  // This process is still the OLD CLI (Node can't hot-swap its own imported modules), so an
+  // in-process re-apply would run the OLD install logic — new migrations and new prompts (e.g.
+  // the web-login offer) would silently land one update late. Spawning the new binary runs the
+  // NEW logic in the SAME update. `dae install` (no --fresh) reuses the existing config and only
+  // asks for genuinely-new bits; stdio is inherited so any prompt is interactive.
+  console.log("\nRe-applying your configuration with the updated CLI (lands migrations + any new setup)…\n");
+  const args: string[] = [];
+  if (opts.config) args.push("-c", opts.config);
+  args.push("install");
+  try {
+    await execa("dae", args, { stdio: "inherit" });
+  } catch (err) {
+    console.error(`\nRe-apply failed: ${(err as Error).message}`);
+    console.error("Run `dae install` to finish applying the update.");
+    process.exit(1);
+  }
 }
