@@ -16,6 +16,9 @@ export const WEB_UI_HTML = `<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Daedalus</title>
+<!-- Favicon: an inline SVG of a square-spiral labyrinth (Daedalus built the Labyrinth),
+     in the UI accent blue. Inlined as a data URI so the UI stays a single self-contained file. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzBkMTExNyIvPjxwYXRoIGQ9Ik01IDI3VjVIMjdWMjdIMTBWMTBIMjJWMjJIMTYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzU4YTZmZiIgc3Ryb2tlLXdpZHRoPSIyLjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==" />
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }

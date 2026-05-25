@@ -37,6 +37,7 @@ async function run(port, token) {
   const home = await fetch(base + "/");
   const html = await home.text();
   ok("GET / serves HTML shell", home.status === 200 && /<!doctype html>/i.test(html) && html.includes("/events"));
+  ok("shell includes an inline SVG favicon", /<link rel="icon"[^>]*data:image\/svg\+xml/.test(html));
 
   const hist = await fetch(base + "/history?externalUserId=u1");
   const hj = await hist.json();
