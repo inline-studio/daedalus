@@ -2,6 +2,7 @@
 // replays session history at GET /history, accepts messages at POST /messages, and a
 // bearer token (when set) gates the API routes but NOT the UI shell.
 
+import http from "node:http";
 import { WebChannel } from "../dist/channels/web.js";
 
 let pass = true;
@@ -145,6 +146,34 @@ async function run(port, token) {
   const out = await fetch(base + "/logout", { method: "POST", headers: { cookie } });
   ok("login: POST /logout → 204 + clears cookie", out.status === 204 && /Max-Age=0/.test(out.headers.get("set-cookie") || ""));
 
+  await ch.stop();
+}
+
+// 4. SSE broadcast: a user can have multiple live connections (tabs/reconnects); a reply must
+//    reach ALL of them, not just the last to connect (the login-mode delivery bug).
+{
+  const ch = new WebChannel({ defaultAgent: "orchestrator", port: 8794, sessions: fakeSessions });
+  await ch.start(ctx);
+  const base = "http://127.0.0.1:8794";
+  const openSse = (user) =>
+    new Promise((resolve) => {
+      const req = http.get(base + "/events?externalUserId=" + user, (res) => {
+        let buf = "";
+        res.on("data", (c) => (buf += c.toString()));
+        resolve({ req, get: () => buf });
+      });
+    });
+  const a = await openSse("u1");
+  const b = await openSse("u1");
+  await new Promise((r) => setTimeout(r, 120)); // let both register
+
+  await ch.send("u1", { text: "broadcast-test" });
+  await new Promise((r) => setTimeout(r, 120)); // let it flush to both sockets
+
+  ok("SSE broadcast: connection A received the reply", /broadcast-test/.test(a.get()));
+  ok("SSE broadcast: connection B (same user) ALSO received it", /broadcast-test/.test(b.get()));
+  a.req.destroy();
+  b.req.destroy();
   await ch.stop();
 }
 

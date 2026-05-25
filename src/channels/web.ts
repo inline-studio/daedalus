@@ -35,7 +35,11 @@ export class WebChannel implements Channel {
   readonly id = "web";
   readonly defaultAgent: string;
   private server: http.Server | null = null;
-  private streams = new Map<string, http.ServerResponse>();
+  // One user can have MANY live SSE connections (multiple tabs, a reconnect, even a curl test).
+  // In login mode the key is the username, so they ALL share a key — keying a single response
+  // per user makes connections evict each other and orphan the live one. Hold a Set per user
+  // and broadcast every reply to all of them.
+  private streams = new Map<string, Set<http.ServerResponse>>();
   private port: number;
   private token: string | undefined;
   private auth: WebAuth | undefined;
@@ -142,15 +146,15 @@ export class WebChannel implements Channel {
   }
 
   async stop(): Promise<void> {
-    for (const r of this.streams.values()) r.end();
+    for (const set of this.streams.values()) for (const r of set) r.end();
     this.streams.clear();
     await new Promise<void>((resolve) => this.server?.close(() => resolve()));
     this.server = null;
   }
 
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {
-    const stream = this.streams.get(externalUserId);
-    if (!stream) return; // user not connected; drop silently
+    const set = this.streams.get(externalUserId);
+    if (!set || set.size === 0) return; // user not connected; drop silently
     const data = JSON.stringify({
       text: msg.text ?? "",
       parts: msg.parts ?? [],
@@ -161,7 +165,8 @@ export class WebChannel implements Channel {
         base64: a.data.toString("base64"),
       })),
     });
-    stream.write(`event: message\ndata: ${data}\n\n`);
+    // Broadcast to every live connection for this user (all tabs/devices stay in sync).
+    for (const stream of set) stream.write(`event: message\ndata: ${data}\n\n`);
   }
 
   // Verify the session cookie and return the authenticated username, or null.
@@ -281,10 +286,43 @@ export class WebChannel implements Channel {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      // Tell nginx-style proxies never to buffer this stream (Caddy honours flush_interval -1).
+      "X-Accel-Buffering": "no",
     });
     res.write(`: connected\n\n`);
-    this.streams.set(externalUserId, res);
-    req.on("close", () => this.streams.delete(externalUserId));
+    // Add THIS connection to the user's set (don't replace — other tabs/reconnects coexist).
+    let set = this.streams.get(externalUserId);
+    if (!set) {
+      set = new Set();
+      this.streams.set(externalUserId, set);
+    }
+    set.add(res);
+
+    // Heartbeat. An agent turn can take tens of seconds (large context on a CPU model), during
+    // which NO data flows on this stream. Without periodic traffic a proxy/keepalive timeout
+    // silently drops the idle connection — and then the eventual reply is written to a dead
+    // stream and lost. A comment line every 20s keeps it alive. unref() so it never holds the
+    // process open on its own.
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(`: ping\n\n`);
+      } catch {
+        /* stream gone — the close handler will clean up */
+      }
+    }, 20_000);
+    if (typeof heartbeat.unref === "function") heartbeat.unref();
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      // Remove only THIS connection from the user's set (leave other tabs/reconnects intact).
+      const s = this.streams.get(externalUserId);
+      if (s) {
+        s.delete(res);
+        if (s.size === 0) this.streams.delete(externalUserId);
+      }
+    };
+    req.on("close", cleanup);
+    res.on("close", cleanup);
   }
 
   // Replay recent session messages so the UI shows history across reloads. This is the
