@@ -367,16 +367,16 @@ export async function runInstall(
   //    so it needs the proxy URL + OneCLI's MITM CA in .env BEFORE it starts — and those
   //    only exist once OneCLI is up. So: (a) start OneCLI, (b) register secrets + fetch
   //    Graphiti's proxy/CA, (c) build + start everything else.
-  const composeUp = async (extra: string[]) => {
-    const args = ["compose", "-f", composeFile, ...extra];
-    console.log(`\n$ docker ${args.join(" ")}\n`);
-    await execa("docker", args, { stdio: "inherit", cwd: composeDir });
-  };
+  // Run a compose command under a spinner with its (noisy) pull/build output captured rather
+  // than streamed. execa's `all` collects stdout+stderr so a caller can surface it on failure.
+  const composeUp = async (label: string, extra: string[]) =>
+    withSpinner(label, () => execa("docker", ["compose", "-f", composeFile, ...extra], { cwd: composeDir, all: true }));
 
   // (a) OneCLI first (brings up onecli-db via depends_on). No --build: it's a pulled image.
   try {
-    await composeUp(["up", "-d", "onecli"]);
+    await composeUp("Starting the credential gateway", ["up", "-d", "onecli"]);
   } catch (err) {
+    dumpComposeError(err);
     console.error(`\nOneCLI bring-up failed: ${(err as Error).message}`);
     console.error("Fix the issue above, then re-run `dae install` (it's idempotent).");
     process.exitCode = 1;
@@ -498,16 +498,22 @@ export async function runInstall(
   //    of a loopback publish (or a still-running prior container) otherwise makes the new
   //    container fail with "address already in use". Best-effort — a no-op on first install.
   try {
-    await composeUp(["stop", "daedalus"]);
+    await composeUp("Preparing the web service", ["stop", "daedalus"]);
   } catch {
-    // nothing to stop (first install / already down) — fine.
+    // nothing to stop (first install / already down) — fine (no output dump).
   }
 
   //    `--remove-orphans` clears containers for services dropped from the compose file
   //    (e.g. the retired mempalace container) so re-runs converge on the current stack.
   try {
-    await composeUp(["up", "-d", "--build", "--remove-orphans"]);
+    await composeUp("Building & starting Daedalus (first run can take a few minutes)", [
+      "up",
+      "-d",
+      "--build",
+      "--remove-orphans",
+    ]);
   } catch (err) {
+    dumpComposeError(err);
     console.error(`\nCompose bring-up failed: ${(err as Error).message}`);
     console.error("Fix the issue above, then re-run `dae install` (it's idempotent).");
     process.exitCode = 1;
@@ -896,6 +902,43 @@ async function exists(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// Run an async task under a one-line spinner, keeping its (noisy docker pull/build) output
+// hidden. On a non-TTY (CI/piped) it just prints the label and runs. The caller surfaces the
+// captured output on failure via dumpComposeError. Always restores the cursor.
+async function withSpinner<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  if (!process.stdout.isTTY) {
+    process.stdout.write(`${label}…\n`);
+    return fn();
+  }
+  const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+  let i = 0;
+  process.stdout.write("[?25l"); // hide cursor
+  const timer = setInterval(() => {
+    process.stdout.write(`\r${frames[i++ % frames.length]} ${label}…`);
+  }, 80);
+  const finish = (mark: string) => {
+    clearInterval(timer);
+    process.stdout.write(`\r${mark} ${label}[K\n`); // [K clears the rest of the line
+    process.stdout.write("[?25h"); // restore cursor
+  };
+  try {
+    const r = await fn();
+    finish("✓");
+    return r;
+  } catch (e) {
+    finish("✗");
+    throw e;
+  }
+}
+
+// Surface a failed compose command's captured output (execa merges stdout+stderr into `all`)
+// so a hidden-behind-the-spinner failure is still debuggable.
+function dumpComposeError(err: unknown): void {
+  const e = err as { all?: string; stdout?: string; stderr?: string };
+  const out = e.all ?? [e.stdout, e.stderr].filter(Boolean).join("\n");
+  if (out && out.trim()) console.error("\n" + out.trimEnd());
 }
 
 function rel(p: string): string {
