@@ -281,10 +281,34 @@ export class WebChannel implements Channel {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      // Tell nginx-style proxies never to buffer this stream (Caddy honours flush_interval -1).
+      "X-Accel-Buffering": "no",
     });
     res.write(`: connected\n\n`);
     this.streams.set(externalUserId, res);
-    req.on("close", () => this.streams.delete(externalUserId));
+
+    // Heartbeat. An agent turn can take tens of seconds (large context on a CPU model), during
+    // which NO data flows on this stream. Without periodic traffic a proxy/keepalive timeout
+    // silently drops the idle connection — and then the eventual reply is written to a dead
+    // stream and lost (the exact "turn completed but nothing showed" failure). A comment line
+    // every 20s keeps it alive. unref() so it never holds the process open on its own.
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(`: ping\n\n`);
+      } catch {
+        /* stream gone — the close handler will clean up */
+      }
+    }, 20_000);
+    if (typeof heartbeat.unref === "function") heartbeat.unref();
+
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      // Only drop the slot if THIS response still owns it. A reconnect may have already
+      // replaced it (streams.set), and the old connection's close must not delete the new one.
+      if (this.streams.get(externalUserId) === res) this.streams.delete(externalUserId);
+    };
+    req.on("close", cleanup);
+    res.on("close", cleanup);
   }
 
   // Replay recent session messages so the UI shows history across reloads. This is the
