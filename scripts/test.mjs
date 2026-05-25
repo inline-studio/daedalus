@@ -31,6 +31,7 @@ const CI_SAFE = [
   "smoke-install-mode",
   "smoke-kernel-retry",
   "smoke-onecli-setup",
+  "smoke-onecli-encryption-key",
   "smoke-package-files",
   "smoke-onecli-proxy-env",
   "smoke-outbound-attachment",
