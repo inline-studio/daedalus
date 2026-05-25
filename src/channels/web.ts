@@ -35,7 +35,11 @@ export class WebChannel implements Channel {
   readonly id = "web";
   readonly defaultAgent: string;
   private server: http.Server | null = null;
-  private streams = new Map<string, http.ServerResponse>();
+  // One user can have MANY live SSE connections (multiple tabs, a reconnect, even a curl test).
+  // In login mode the key is the username, so they ALL share a key — keying a single response
+  // per user makes connections evict each other and orphan the live one. Hold a Set per user
+  // and broadcast every reply to all of them.
+  private streams = new Map<string, Set<http.ServerResponse>>();
   private port: number;
   private token: string | undefined;
   private auth: WebAuth | undefined;
@@ -142,15 +146,15 @@ export class WebChannel implements Channel {
   }
 
   async stop(): Promise<void> {
-    for (const r of this.streams.values()) r.end();
+    for (const set of this.streams.values()) for (const r of set) r.end();
     this.streams.clear();
     await new Promise<void>((resolve) => this.server?.close(() => resolve()));
     this.server = null;
   }
 
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {
-    const stream = this.streams.get(externalUserId);
-    if (!stream) return; // user not connected; drop silently
+    const set = this.streams.get(externalUserId);
+    if (!set || set.size === 0) return; // user not connected; drop silently
     const data = JSON.stringify({
       text: msg.text ?? "",
       parts: msg.parts ?? [],
@@ -161,7 +165,8 @@ export class WebChannel implements Channel {
         base64: a.data.toString("base64"),
       })),
     });
-    stream.write(`event: message\ndata: ${data}\n\n`);
+    // Broadcast to every live connection for this user (all tabs/devices stay in sync).
+    for (const stream of set) stream.write(`event: message\ndata: ${data}\n\n`);
   }
 
   // Verify the session cookie and return the authenticated username, or null.
@@ -285,13 +290,19 @@ export class WebChannel implements Channel {
       "X-Accel-Buffering": "no",
     });
     res.write(`: connected\n\n`);
-    this.streams.set(externalUserId, res);
+    // Add THIS connection to the user's set (don't replace — other tabs/reconnects coexist).
+    let set = this.streams.get(externalUserId);
+    if (!set) {
+      set = new Set();
+      this.streams.set(externalUserId, set);
+    }
+    set.add(res);
 
     // Heartbeat. An agent turn can take tens of seconds (large context on a CPU model), during
     // which NO data flows on this stream. Without periodic traffic a proxy/keepalive timeout
     // silently drops the idle connection — and then the eventual reply is written to a dead
-    // stream and lost (the exact "turn completed but nothing showed" failure). A comment line
-    // every 20s keeps it alive. unref() so it never holds the process open on its own.
+    // stream and lost. A comment line every 20s keeps it alive. unref() so it never holds the
+    // process open on its own.
     const heartbeat = setInterval(() => {
       try {
         res.write(`: ping\n\n`);
@@ -303,9 +314,12 @@ export class WebChannel implements Channel {
 
     const cleanup = () => {
       clearInterval(heartbeat);
-      // Only drop the slot if THIS response still owns it. A reconnect may have already
-      // replaced it (streams.set), and the old connection's close must not delete the new one.
-      if (this.streams.get(externalUserId) === res) this.streams.delete(externalUserId);
+      // Remove only THIS connection from the user's set (leave other tabs/reconnects intact).
+      const s = this.streams.get(externalUserId);
+      if (s) {
+        s.delete(res);
+        if (s.size === 0) this.streams.delete(externalUserId);
+      }
     };
     req.on("close", cleanup);
     res.on("close", cleanup);
