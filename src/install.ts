@@ -344,10 +344,12 @@ export async function runInstall(configFlag?: string): Promise<void> {
     }
   }
 
-  // (c) Build + start the rest with the MERGED profiles. `--build` builds the daedalus
-  //    and graphiti images. Idempotent — OneCLI stays as-is.
+  // (c) Build + start the rest. The active profiles come from COMPOSE_PROFILES in the
+  //    compose .env (written above + read automatically), so `up` brings up the graphiti
+  //    profile without a `--profile` flag. `--build` builds the daedalus + graphiti images.
+  //    Idempotent — OneCLI stays as-is.
   try {
-    await composeUp(["up", "-d", "--build", ...profileArgsFrom(composeEnv.COMPOSE_PROFILES)]);
+    await composeUp(["up", "-d", "--build"]);
   } catch (err) {
     console.error(`\nCompose bring-up failed: ${(err as Error).message}`);
     console.error("Fix the issue above, then re-run `dae install` (it's idempotent).");
@@ -411,15 +413,6 @@ export function computeComposeProfiles(opts: { whisper: boolean; graphiti: boole
   if (opts.graphiti) profiles.push("graphiti");
   if (opts.whisper) profiles.push("whisper");
   return profiles.join(",");
-}
-
-// Turn a comma-joined COMPOSE_PROFILES value into repeated `--profile X` compose args.
-export function profileArgsFrom(profiles: string): string[] {
-  return profiles
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .flatMap((p) => ["--profile", p]);
 }
 
 // Poll OneCLI's REST API until it answers — it runs prisma migrations at boot, so it

@@ -6,7 +6,6 @@ import {
   refreshComposeAssets,
   localWhisperEnabled,
   computeComposeProfiles,
-  profileArgsFrom,
   provisionGraphitiProxy,
   waitForOnecli,
 } from "../install.js";
@@ -142,7 +141,9 @@ export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
     }
   }
 
-  const args = ["compose", "-f", composeFile, ...profileArgsFrom(profiles), "up", "-d", "--build"];
+  // Profiles come from COMPOSE_PROFILES in the compose .env (persisted above + read
+  // automatically), so `up` brings up the right services without a `--profile` flag.
+  const args = ["compose", "-f", composeFile, "up", "-d", "--build"];
   console.log(`\nRebuilding the stack:\n$ docker ${args.join(" ")}\n`);
   try {
     await execa("docker", args, { stdio: "inherit", cwd: composeDir });
