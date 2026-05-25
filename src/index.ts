@@ -264,8 +264,9 @@ program
 program
   .command("install")
   .description("turnkey install: create the config (if missing), then bring the docker stack up with `docker compose`")
-  .action(async () => {
-    await runInstall(program.opts().config);
+  .option("--fresh", "ask every question from scratch instead of reusing your previous answers as defaults")
+  .action(async (opts: { fresh?: boolean }) => {
+    await runInstall({ config: program.opts().config, fresh: Boolean(opts.fresh) });
   });
 
 // Reverse of `dae install`: stop the docker stack. With --purge it also deletes the

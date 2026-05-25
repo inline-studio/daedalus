@@ -1,16 +1,7 @@
-import path from "node:path";
 import { createRequire } from "node:module";
 import { execa } from "execa";
-import {
-  findComposeFile,
-  refreshComposeAssets,
-  localWhisperEnabled,
-  computeComposeProfiles,
-  provisionGraphitiProxy,
-  waitForOnecli,
-} from "../install.js";
+import { findComposeFile, runInstall, resolveAnswersInferred } from "../install.js";
 import { loadConfig } from "../config/load.js";
-import { upsertEnvFile } from "../setup/env-file.js";
 
 const REPO = "inline-studio/daedalus";
 
@@ -84,9 +75,12 @@ export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
 
   console.log(`\n✓ Updated the dae CLI to v${latest}.`);
 
-  // The live stack runs as containers built from the daedalus image — the npm
-  // update above only refreshed the host CLI. Rebuild + restart the containers so
-  // they pick up the new code, reusing the existing compose .env (no re-prompting).
+  // The npm update above only refreshed the host CLI. Now RE-APPLY the full deployment so
+  // the containers rebuild AND any config migrations / new provisioning that shipped in this
+  // release land automatically — by running the same install path non-interactively. The
+  // intent is inferred from the existing config (keys already live in OneCLI; only a
+  // genuinely-missing one is asked for). This keeps `dae update` one-and-done: no second
+  // command after an update.
   const composeFile = await findComposeFile();
   if (!composeFile) {
     console.log(
@@ -94,62 +88,15 @@ export async function runUpdate(opts: { check?: boolean } = {}): Promise<void> {
     );
     return;
   }
-  const composeDir = path.dirname(composeFile);
-  const envPath = path.join(composeDir, ".env");
-  // Re-pack the just-updated CLI into the build context so --build actually
-  // rebuilds the image from the new version (not the stale tarball from install).
-  await refreshComposeAssets(composeDir);
-
-  // Keep the SAME services up across the rebuild. compose `up` without the profiles would
-  // drop whichever isn't named — so transcription/memory would silently die after an
-  // update. Derive the merged set from the config and persist COMPOSE_PROFILES so it
-  // stays fixed (this also self-heals older installs that predate the persisted profile).
-  let whisper = false;
-  let graphiti = false;
-  try {
-    const cfg = loadConfig();
-    whisper = localWhisperEnabled(cfg);
-    graphiti = cfg.graphiti?.enabled === true || cfg.memory?.backend === "graphiti";
-  } catch {
-    // No/invalid config on the host — skip; default services still come up.
-  }
-  const profiles = computeComposeProfiles({ whisper, graphiti });
-  await upsertEnvFile(envPath, { COMPOSE_PROFILES: profiles });
-
-  // Graphiti reaches spark through the OneCLI proxy. Re-provision its proxy URL + CA so
-  // the rebuild self-heals any drift (e.g. a rotated CA, or a .env predating Graphiti).
-  // OneCLI must be up first; on an update the stack is already running, but bring it up
-  // explicitly + wait to be safe. local-auth OneCLI ignores the token value.
-  if (graphiti) {
+  const config = (() => {
     try {
-      await execa("docker", ["compose", "-f", composeFile, "up", "-d", "onecli"], {
-        stdio: "inherit",
-        cwd: composeDir,
-      });
-      if (await waitForOnecli("http://localhost:10254")) {
-        const proxyUrl = await provisionGraphitiProxy({
-          baseUrl: "http://localhost:10254",
-          apiKey: "dae-update", // local-auth OneCLI ignores the value
-          caPath: path.join(composeDir, "onecli-ca.pem"),
-        });
-        if (proxyUrl) await upsertEnvFile(envPath, { ONECLI_PROXY_URL: proxyUrl });
-      } else {
-        console.error("⚠ OneCLI didn't come up — skipping Graphiti proxy refresh.");
-      }
+      return loadConfig();
     } catch (err) {
-      console.error(`⚠ Couldn't refresh Graphiti's OneCLI proxy: ${(err as Error).message}`);
+      console.error(`\nCouldn't read your daedalus config (${(err as Error).message}). Run \`dae install\`.`);
+      return undefined;
     }
-  }
-
-  // Profiles come from COMPOSE_PROFILES in the compose .env (persisted above + read
-  // automatically), so `up` brings up the right services without a `--profile` flag.
-  const args = ["compose", "-f", composeFile, "up", "-d", "--build"];
-  console.log(`\nRebuilding the stack:\n$ docker ${args.join(" ")}\n`);
-  try {
-    await execa("docker", args, { stdio: "inherit", cwd: composeDir });
-    console.log("\n✓ Stack rebuilt and restarted.");
-  } catch (err) {
-    console.error(`\nStack rebuild failed: ${(err as Error).message}`);
-    console.error("Rebuild manually with: docker compose up -d --build");
-  }
+  })();
+  if (!config) return;
+  console.log("\nRe-applying your configuration (this also lands any migrations from the update)…");
+  await runInstall({ answers: resolveAnswersInferred(config) });
 }

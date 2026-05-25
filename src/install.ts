@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import prompts from "prompts";
 import { loadConfig } from "./config/load.js";
+import type { ArtemisConfig } from "./config/schema.js";
 import { initUserConfig } from "./init.js";
 import { confirm } from "./setup/base.js";
 import { secretPrompt } from "./setup/secret-prompt.js";
@@ -26,7 +27,30 @@ import { OneCLI } from "@onecli-sh/sdk";
 
 const TELEGRAM_TOKEN_RE = /^\d{5,}:[A-Za-z0-9_-]{30,}$/;
 
-export async function runInstall(configFlag?: string): Promise<void> {
+// The deployment intent — what `dae install` gathers interactively and `dae update` infers
+// from the existing config + OneCLI. A `*Key` left undefined means "don't (re-)register it":
+// either it's already in OneCLI, or — for an enabled provider that's genuinely missing one —
+// applyDeployment prompts for just that key. Lets `dae update` re-apply everything (config
+// migrations, provisioning, bring-up) with no prompts in the happy path.
+export interface InstallAnswers {
+  useAnthropic: boolean;
+  anthropicKey?: string;
+  useOpenai: boolean;
+  openaiBaseUrl?: string;
+  openaiKey?: string;
+  wantWhisper: boolean;
+  telegramToken?: string;
+  braveKey?: string;
+}
+
+// `dae install` — interactive (reuses prior answers as defaults unless `fresh`). When
+// `opts.answers` is supplied (by `dae update`), the questions are skipped and that intent is
+// applied directly — same code path, no prompts.
+export async function runInstall(
+  opts: { config?: string; fresh?: boolean; answers?: InstallAnswers } = {},
+): Promise<void> {
+  const configFlag = opts.config;
+  const fresh = Boolean(opts.fresh);
   // 1. Ensure a config exists; offer to bootstrap one if not.
   const configPath = await ensureConfig(configFlag);
   if (!configPath) return;
@@ -47,77 +71,82 @@ export async function runInstall(configFlag?: string): Promise<void> {
   const prev = await readEnvFile(composeEnvPath);
   const prevOnecliKey = prev.ONECLI_API_KEY ?? process.env.ONECLI_API_KEY ?? "";
 
-  // 2. The questions. Everything else is inferred; memory + onecli always run.
-  console.log("\nDaedalus runs entirely in docker containers. A few questions:\n");
-
-  // 2a. LLM provider credentials — the one thing nothing works without. Each agent
-  // picks its provider in its own frontmatter (provider: anthropic | openai), and a
-  // brain can mix both, so we offer each independently. Keys are stored in OneCLI
-  // (never on disk): the agent sends the `onecli-managed` placeholder and the gateway
-  // swaps in the real key for the matching host at the proxy edge. Here we only enable
-  // the provider block (+ record the openai base URL); the OneCLI registration runs
-  // once the stack is up (step 6).
-  const useAnthropic = await confirm(
-    "Will any agent use Anthropic (Claude) directly at api.anthropic.com?",
-    false,
-  );
-  const anthropicKey = useAnthropic
-    ? ((await secretPrompt({ message: "Anthropic API key (sk-ant-…):" })) ?? "").trim()
-    : "";
-  if (useAnthropic && !anthropicKey) {
-    console.log(
-      "  ⚠ no Anthropic key entered — skipping. Add it later with:\n" +
-        "    dae secret save ANTHROPIC_API_KEY -u api.anthropic.com -H x-api-key",
-    );
-  }
-
-  const useOpenai = await confirm(
-    "Will any agent use an OpenAI-compatible endpoint (OpenAI, LiteLLM, vLLM, Ollama …)?",
-    false,
-  );
+  // 2. Resolve the deployment intent — supplied (dae update, no prompts) or asked. Keys are
+  // stored in OneCLI (never on disk); a blank/undefined key means "keep what's already in
+  // OneCLI" (the bring-up below prompts only for an enabled provider that's genuinely missing
+  // one). Interactive defaults reuse your previous setup unless --fresh.
+  let useAnthropic = false;
+  let anthropicKey = "";
+  let useOpenai = false;
   let openaiKey = "";
   let openaiBaseUrl = "";
-  if (useOpenai) {
-    const defaultBase = config.providers?.openai?.baseUrl ?? "https://api.openai.com/v1";
-    openaiBaseUrl =
-      (await textPrompt(`Base URL for that endpoint (must include /v1) [${defaultBase}]:`)) ||
-      defaultBase;
-    openaiKey = ((await secretPrompt({ message: "API key / token for that endpoint:" })) ?? "").trim();
-    if (!openaiKey) {
-      console.log(
-        `  ⚠ no key entered — skipping. Add it later with:\n` +
-          `    dae secret save OPENAI_API_KEY -u ${hostnameOf(openaiBaseUrl)} -H Authorization`,
-      );
+  let wantWhisper = false;
+  let tgToken = "";
+  let braveKey = "";
+
+  if (opts.answers) {
+    const a = opts.answers;
+    useAnthropic = a.useAnthropic;
+    anthropicKey = a.anthropicKey ?? "";
+    useOpenai = a.useOpenai;
+    openaiBaseUrl = a.openaiBaseUrl ?? config.providers?.openai?.baseUrl ?? "";
+    openaiKey = a.openaiKey ?? "";
+    wantWhisper = a.wantWhisper;
+    tgToken = a.telegramToken ?? "";
+    braveKey = a.braveKey ?? "";
+  } else {
+    console.log("\nDaedalus runs entirely in docker containers. A few questions:\n");
+
+    useAnthropic = await confirm(
+      "Will any agent use Anthropic (Claude) directly at api.anthropic.com?",
+      !fresh && Boolean(config.providers?.anthropic),
+    );
+    if (useAnthropic) {
+      const keep = !fresh && Boolean(config.providers?.anthropic);
+      anthropicKey = ((await secretPrompt({
+        message: keep ? "Anthropic API key (leave blank to keep existing):" : "Anthropic API key (sk-ant-…):",
+      })) ?? "").trim();
     }
+
+    useOpenai = await confirm(
+      "Will any agent use an OpenAI-compatible endpoint (OpenAI, LiteLLM, vLLM, Ollama …)?",
+      !fresh && Boolean(config.providers?.openai?.baseUrl),
+    );
+    if (useOpenai) {
+      const defaultBase = config.providers?.openai?.baseUrl ?? "https://api.openai.com/v1";
+      openaiBaseUrl =
+        (await textPrompt(`Base URL for that endpoint (must include /v1) [${defaultBase}]:`)) || defaultBase;
+      const keep = !fresh && Boolean(config.providers?.openai?.baseUrl);
+      openaiKey = ((await secretPrompt({
+        message: keep ? "API key / token (leave blank to keep existing):" : "API key / token for that endpoint:",
+      })) ?? "").trim();
+    }
+
+    wantWhisper = await confirm(
+      "Run a local Whisper container for voice-note transcription?",
+      !fresh && localWhisperEnabled(config),
+    );
+
+    const tgRaw =
+      ((await secretPrompt({
+        message: "Telegram bot token from @BotFather (leave blank to skip / keep existing):",
+      })) ?? "").trim();
+    if (tgRaw && !TELEGRAM_TOKEN_RE.test(tgRaw)) {
+      console.log("  ⚠ that doesn't look like a Telegram bot token — skipping Telegram setup.");
+    } else {
+      tgToken = tgRaw;
+    }
+
+    braveKey =
+      ((await secretPrompt({
+        message: "Brave Search API key for web_search (leave blank to skip / keep existing):",
+      })) ?? "").trim();
   }
 
-  const wantWhisper = await confirm(
-    "Run a local Whisper container for voice-note transcription?",
-    false,
-  );
-
-  const tgRaw =
-    (await secretPrompt({
-      message: "Telegram bot token from @BotFather (leave blank to skip Telegram):",
-    })) ?? "";
-  const tgToken = tgRaw.trim();
-  if (tgToken && !TELEGRAM_TOKEN_RE.test(tgToken)) {
-    console.log("  ⚠ that doesn't look like a Telegram bot token — skipping Telegram setup.");
-  }
   const enableTelegram = Boolean(tgToken) && TELEGRAM_TOKEN_RE.test(tgToken);
 
-  // Brave web-search key. Stored in OneCLI (not on disk) and injected into
-  // api.search.brave.com requests at the proxy edge — registered after the stack is up.
-  const braveKey =
-    ((await secretPrompt({
-      message: "Brave Search API key for web_search (leave blank to skip / keep DuckDuckGo):",
-    })) ?? "").trim();
-
-  // OneCLI runs in the stack in local auth mode (open API on the daedalus network),
-  // so we DON'T ask for a key — the supervisor creates its own agent and reads the
-  // gateway config headlessly. daedalus still needs a non-empty ONECLI_API_KEY to
-  // attempt the connection (local-mode onecli ignores its value), so generate one
-  // and keep it stable across re-installs.
+  // OneCLI runs in the stack in local auth mode (it ignores the key's value), but daedalus
+  // still needs a non-empty ONECLI_API_KEY to attempt the connection. Keep it stable.
   const onecliKey = prevOnecliKey || randomBytes(24).toString("base64url");
 
   // 3. Persist config + runner secrets.
@@ -163,7 +192,7 @@ export async function runInstall(configFlag?: string): Promise<void> {
   // endpoint we wired up. The key itself is NOT written here — it lives in OneCLI;
   // leaving providers.openai.apiKey unset makes resolveProviderKey fall through to
   // the OneCLI placeholder, which the gateway swaps for the real Bearer token.
-  if (useOpenai && openaiKey) {
+  if (useOpenai && openaiBaseUrl) {
     yamlEdits.push({ keyPath: ["providers", "openai", "baseUrl"], value: openaiBaseUrl });
   }
   // OneCLI is always part of the stack — enable it + point at the in-stack gateway.
@@ -174,12 +203,23 @@ export async function runInstall(configFlag?: string): Promise<void> {
   // Route top-level turns to the long-lived warm worker (dae-worker service) so each
   // message skips the per-turn container cold-start. Subagents still spawn containers.
   yamlEdits.push({ keyPath: ["runtime", "persistentAgent"], value: true });
+  // Channels for an all-container deployment: the Web chat UI is ON by default (served by
+  // the supervisor on :8765, front it with your own reverse proxy — printed at the end).
+  // The CLI channel is disabled: it needs an interactive stdin the supervisor container
+  // doesn't have, and would otherwise EOF-loop the process. Talk to agents via the Web UI
+  // (and/or Telegram). The web channel is the same agent + Graphiti memory as any channel.
+  yamlEdits.push(
+    { keyPath: ["channels", "cli", "enabled"], value: false },
+    { keyPath: ["channels", "web", "enabled"], value: true },
+    { keyPath: ["channels", "web", "defaultAgent"], value: defaultAgent },
+    { keyPath: ["channels", "web", "port"], value: 8765 },
+  );
 
   await editYamlFile(configPath, (doc) => {
     for (const e of yamlEdits) setIn(doc, e.keyPath, e.value);
     // Materialise the anthropic provider block (no leaf value — the key lives in
     // OneCLI) so it's visible/enabled, without clobbering an existing one.
-    if (useAnthropic && anthropicKey) ensureMap(doc, ["providers", "anthropic"]);
+    if (useAnthropic) ensureMap(doc, ["providers", "anthropic"]);
   });
   console.log(`\n✓ updated ${rel(configPath)}`);
   if (Object.keys(runnerEnv).length) {
@@ -260,62 +300,75 @@ export async function runInstall(configFlag?: string): Promise<void> {
   }
   console.log("✓ OneCLI gateway is up");
 
-  // (b) Register secrets in OneCLI now the gateway is up. Stored in OneCLI, never on
-  //    disk — the agent sends the `onecli-managed` placeholder and the gateway swaps in
-  //    the real value for the matching host. LLM keys: anthropic via the x-api-key
-  //    header, openai-compatible via Authorization: Bearer.
-  const onecliSecrets: Array<{
+  // (b) Ensure provider/search secrets are in OneCLI (stored there, never on disk). For each
+  //    enabled provider: register the key if one was provided this run; else SKIP if it's
+  //    already in OneCLI (so `dae update` doesn't re-ask); else (enabled but genuinely
+  //    missing) prompt for just that one key. Keys: anthropic via x-api-key, openai via Bearer.
+  const onecli = new OneCliSecretsBackend({ baseUrl: "http://localhost:10254", token: onecliKey });
+  let presentSecrets = new Set<string>();
+  try {
+    presentSecrets = new Set((await onecli.list()).map((s) => s.name));
+  } catch (err) {
+    console.error(`⚠ couldn't list OneCLI secrets: ${(err as Error).message}`);
+  }
+  const secretSpecs: Array<{
     name: string;
-    value: string;
+    key: string;
     urlPattern: string;
     headerName: string;
     valueFormat: string;
-    note: string;
+    label: string;
+    optional?: boolean;
   }> = [];
-  if (braveKey) {
-    onecliSecrets.push({
-      name: "BRAVE_API_KEY",
-      value: braveKey,
-      urlPattern: "api.search.brave.com",
-      headerName: "X-Subscription-Token",
-      valueFormat: "{value}",
-      note: "injected into api.search.brave.com requests",
+  if (useOpenai) {
+    secretSpecs.push({
+      name: "OPENAI_API_KEY",
+      key: openaiKey,
+      urlPattern: hostnameOf(openaiBaseUrl),
+      headerName: "Authorization",
+      valueFormat: "Bearer {value}",
+      label: `API key for ${hostnameOf(openaiBaseUrl)}`,
     });
   }
-  if (useAnthropic && anthropicKey) {
-    onecliSecrets.push({
+  if (useAnthropic) {
+    secretSpecs.push({
       name: "ANTHROPIC_API_KEY",
-      value: anthropicKey,
+      key: anthropicKey,
       urlPattern: "api.anthropic.com",
       headerName: "x-api-key",
       valueFormat: "{value}",
-      note: "injected into api.anthropic.com requests (x-api-key)",
+      label: "Anthropic API key (sk-ant-…)",
     });
   }
-  if (useOpenai && openaiKey) {
-    const host = hostnameOf(openaiBaseUrl);
-    onecliSecrets.push({
-      name: "OPENAI_API_KEY",
-      value: openaiKey,
-      urlPattern: host,
-      headerName: "Authorization",
-      valueFormat: "Bearer {value}",
-      note: `injected into ${host} requests (Authorization: Bearer)`,
-    });
-  }
-  if (onecliSecrets.length) {
-    const onecli = new OneCliSecretsBackend({ baseUrl: "http://localhost:10254", token: onecliKey });
-    for (const s of onecliSecrets) {
-      try {
-        await onecli.save(s.name, s.value, {
-          urlPattern: s.urlPattern,
-          injectionConfig: { headerName: s.headerName, valueFormat: s.valueFormat },
-        });
-        console.log(`✓ registered ${s.name} in OneCLI (${s.note})`);
-      } catch (err) {
-        console.error(`\n⚠ Couldn't register ${s.name} in OneCLI: ${(err as Error).message}`);
-        console.error(`  Once onecli is up, run: dae secret save ${s.name} -u ${s.urlPattern} -H ${s.headerName}`);
+  secretSpecs.push({
+    name: "BRAVE_API_KEY",
+    key: braveKey,
+    urlPattern: "api.search.brave.com",
+    headerName: "X-Subscription-Token",
+    valueFormat: "{value}",
+    label: "Brave Search API key",
+    optional: true,
+  });
+  for (const s of secretSpecs) {
+    let value = s.key;
+    if (!value) {
+      if (presentSecrets.has(s.name)) continue; // already stored — keep it
+      if (s.optional) continue; // not provided, not present, optional → leave it off
+      // Required provider with no key anywhere — ask for just this one (keeps update one-and-done).
+      value = ((await secretPrompt({ message: `${s.label} (required; leave blank to skip):` })) ?? "").trim();
+      if (!value) {
+        console.error(`⚠ ${s.name} not set — add later: dae secret save ${s.name} -u ${s.urlPattern} -H ${s.headerName}`);
+        continue;
       }
+    }
+    try {
+      await onecli.save(s.name, value, {
+        urlPattern: s.urlPattern,
+        injectionConfig: { headerName: s.headerName, valueFormat: s.valueFormat },
+      });
+      console.log(`✓ registered ${s.name} in OneCLI (→ ${s.urlPattern})`);
+    } catch (err) {
+      console.error(`⚠ Couldn't register ${s.name} in OneCLI: ${(err as Error).message}`);
     }
   }
 
@@ -363,6 +416,25 @@ export async function runInstall(configFlag?: string): Promise<void> {
   if (graphitiEnabled) console.log("    graphiti   — knowledge-graph memory (FalkorDB)");
   console.log("    onecli     — credential gateway (+ postgres)");
   if (wantWhisper) console.log("    whisper    — local speech-to-text");
+
+  // Web UI is on by default. It's published to loopback only — daedalus bundles no web
+  // server, so print a ready-to-adapt reverse-proxy config (TLS + auth live there).
+  console.log("\n── Web chat UI ──────────────────────────────────────────────");
+  console.log("Served on http://127.0.0.1:8765 (loopback). Front it with your own reverse");
+  console.log("proxy for TLS + auth. Example Caddy (replace the hostname; the SSE reply stream");
+  console.log("needs flush_interval -1; `caddy hash-password` makes the basic_auth hash):\n");
+  console.log("    chat.example.com {");
+  console.log("        reverse_proxy 127.0.0.1:8765 {");
+  console.log("            flush_interval -1");
+  console.log("        }");
+  console.log("        basic_auth {");
+  console.log("            you <bcrypt-hash>");
+  console.log("        }");
+  console.log("    }\n");
+  console.log("  If your proxy runs on another host/container, set WEB_BIND=0.0.0.0 in");
+  console.log(`  ${rel(composeEnvPath)} so it can reach the port.`);
+  console.log("─────────────────────────────────────────────────────────────");
+
   if (!graphitiEnabled) {
     console.log(
       "\n⚠ Memory (Graphiti) is OFF: it needs an OpenAI-compatible (spark) endpoint for its\n" +
@@ -385,6 +457,19 @@ export async function runInstall(configFlag?: string): Promise<void> {
   }
 
   console.log("\nFollow the supervisor:  docker compose logs -f daedalus");
+}
+
+// Infer the deployment intent from an existing config — used by `dae update` so it can
+// re-apply everything (config migrations, provisioning, bring-up) without prompts. Keys are
+// left undefined: they're already in OneCLI, and runInstall skips re-registering present ones
+// (prompting only for an enabled provider whose key is genuinely missing).
+export function resolveAnswersInferred(config: ArtemisConfig): InstallAnswers {
+  return {
+    useAnthropic: Boolean(config.providers?.anthropic),
+    useOpenai: Boolean(config.providers?.openai?.baseUrl),
+    ...(config.providers?.openai?.baseUrl ? { openaiBaseUrl: config.providers.openai.baseUrl } : {}),
+    wantWhisper: localWhisperEnabled(config),
+  };
 }
 
 // Free-text prompt (non-masked) — for non-secret answers like a base URL. Returns
