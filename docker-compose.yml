@@ -260,6 +260,12 @@ services:
       - "127.0.0.1:10255:10255"
     environment:
       DATABASE_URL: postgresql://onecli:onecli@onecli-db:5432/onecli
+      # Stable at-rest encryption key for the secret store. WITHOUT it, OneCLI auto-generates a
+      # key into its EPHEMERAL /app/data, so a container recreate or image update silently rotates
+      # it and makes every stored secret undecryptable. `dae install` pins this in .env (generated
+      # once, reused on every run, lifted from a pre-existing container on migration) so secrets
+      # survive recreates AND image updates — which is why we can track a moving image tag safely.
+      SECRET_ENCRYPTION_KEY: ${SECRET_ENCRYPTION_KEY:-}
     # Wait until postgres ACCEPTS CONNECTIONS, not just until the container starts.
     # onecli runs prisma migrations at boot; if the DB isn't reachable yet it
     # mis-bootstraps the baseline migration and then crash-loops (relation does not

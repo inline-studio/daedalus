@@ -275,6 +275,23 @@ export async function runInstall(
     DOCKER_GID: String(dockerGid()),
   };
   composeEnv.ONECLI_API_KEY = onecliKey;
+  // Stable at-rest encryption key for OneCLI's secret store. OneCLI otherwise auto-generates
+  // one into its EPHEMERAL /app/data, so a container recreate or image update silently rotates
+  // it and makes every stored secret undecryptable (the casa outage). Pin it: reuse the one
+  // already in .env; else LIFT the existing onecli container's current key so already-stored
+  // secrets keep decrypting across this migration; else mint a fresh one. Reusing-from-.env on
+  // every re-run is what lets us stay on a moving image tag without ever losing secrets.
+  let secretEncKey = prev.SECRET_ENCRYPTION_KEY || process.env.SECRET_ENCRYPTION_KEY || "";
+  if (!secretEncKey) {
+    const captured = await captureOnecliEncryptionKey(composeFile, composeDir);
+    if (captured) {
+      secretEncKey = captured;
+      console.log("✓ preserved OneCLI's existing secret-encryption key (stored secrets stay valid)");
+    } else {
+      secretEncKey = randomBytes(32).toString("base64");
+    }
+  }
+  composeEnv.SECRET_ENCRYPTION_KEY = secretEncKey;
   if (graphitiEnabled) {
     // Graphiti reaches spark THROUGH the OneCLI proxy (ONECLI_PROXY_URL is written after
     // OneCLI is up — see the two-phase bring-up below). The raw spark key is never stored.
@@ -597,6 +614,39 @@ function graphitiProxyForContainer(rawProxyUrl: string): string {
     return u.toString();
   } catch {
     return rawProxyUrl.replace("host.docker.internal", "onecli");
+  }
+}
+
+// Read OneCLI's auto-generated secret-encryption key from an EXISTING onecli container (running
+// or stopped) so migrating to a pinned SECRET_ENCRYPTION_KEY doesn't orphan already-stored
+// secrets. OneCLI writes it to /app/data/secret-encryption-key in its ephemeral layer; we lift
+// it via `docker cp` BEFORE the container is recreated with the env-provided key. Returns the
+// trimmed key, or undefined when there's no prior container / key file (a genuine fresh install,
+// or a non-OSS edition that uses KMS). Best-effort: any failure falls back to minting a new key.
+async function captureOnecliEncryptionKey(
+  composeFile: string,
+  composeDir: string,
+): Promise<string | undefined> {
+  let cid = "";
+  try {
+    const r = await execa("docker", ["compose", "-f", composeFile, "ps", "-aq", "onecli"], {
+      cwd: composeDir,
+    });
+    cid = r.stdout.trim().split(/\r?\n/)[0] ?? "";
+  } catch {
+    return undefined; // docker/compose not available or no project yet
+  }
+  if (!cid) return undefined;
+  const tmp = path.join(os.tmpdir(), `onecli-enc-${process.pid}-${Date.now()}`);
+  try {
+    // `docker cp <container>:<file> <hostfile>` works on a stopped container too (no exec/start).
+    await execa("docker", ["cp", `${cid}:/app/data/secret-encryption-key`, tmp]);
+    const v = (await fs.readFile(tmp, "utf8")).trim();
+    return v || undefined;
+  } catch {
+    return undefined; // no key file (fresh) — caller mints a fresh key
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
   }
 }
 
