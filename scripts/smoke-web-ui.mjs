@@ -37,6 +37,7 @@ async function run(port, token) {
   const home = await fetch(base + "/");
   const html = await home.text();
   ok("GET / serves HTML shell", home.status === 200 && /<!doctype html>/i.test(html) && html.includes("/events"));
+  ok("shell includes an inline SVG favicon", /<link rel="icon"[^>]*data:image\/svg\+xml/.test(html));
 
   const hist = await fetch(base + "/history?externalUserId=u1");
   const hj = await hist.json();
@@ -83,6 +84,67 @@ async function run(port, token) {
     body: JSON.stringify({ externalUserId: "u1", text: "nope" }),
   });
   ok("token set → wrong Bearer → 401", badTok.status === 401);
+  await ch.stop();
+}
+
+// 3. Login mode: own /login page, signed-cookie auth, user derived from the cookie.
+{
+  const { hashPassword } = await import("../dist/channels/web-auth.js");
+  const auth = { username: "admin", passwordHash: hashPassword("pw"), sessionSecret: "sess-secret" };
+  const ch = new WebChannel({ defaultAgent: "orchestrator", port: 8793, auth, sessions: fakeSessions });
+  await ch.start(ctx);
+  const base = "http://127.0.0.1:8793";
+
+  const home = await fetch(base + "/", { redirect: "manual" });
+  ok("login: GET / unauthenticated → 302 /login", home.status === 302 && home.headers.get("location") === "/login");
+
+  const loginPage = await fetch(base + "/login");
+  const lp = await loginPage.text();
+  ok("login: GET /login serves the sign-in page", loginPage.status === 200 && /Sign in/i.test(lp));
+
+  ok("login: API without cookie → 401", (await fetch(base + "/history")).status === 401);
+
+  const bad = await fetch(base + "/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "admin", password: "wrong" }),
+  });
+  ok("login: wrong password → 401", bad.status === 401);
+
+  const good = await fetch(base + "/login", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ username: "admin", password: "pw" }),
+  });
+  const setCookie = good.headers.get("set-cookie") || "";
+  ok(
+    "login: correct creds → 200 + HttpOnly session cookie",
+    good.status === 200 && /dae_session=/.test(setCookie) && /HttpOnly/i.test(setCookie),
+  );
+  const cookie = setCookie.split(";")[0];
+
+  const app = await fetch(base + "/", { headers: { cookie } });
+  const appHtml = await app.text();
+  ok(
+    "login: GET / with cookie → 200 app shell with mode=login",
+    app.status === 200 && /<!doctype html>/i.test(appHtml) && /var MODE = "login"/.test(appHtml),
+  );
+
+  ok("login: /history with cookie, no externalUserId → 200", (await fetch(base + "/history", { headers: { cookie } })).status === 200);
+
+  const post = await fetch(base + "/messages", {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ text: "hi-login" }),
+  });
+  ok(
+    "login: POST /messages with cookie → 202, user forced to the logged-in name",
+    post.status === 202 && published.some((m) => m.text === "hi-login" && m.externalUserId === "admin"),
+  );
+
+  const out = await fetch(base + "/logout", { method: "POST", headers: { cookie } });
+  ok("login: POST /logout → 204 + clears cookie", out.status === 204 && /Max-Age=0/.test(out.headers.get("set-cookie") || ""));
+
   await ch.stop();
 }
 

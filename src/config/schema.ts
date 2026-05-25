@@ -183,6 +183,14 @@ export const ChannelsConfigSchema = z.object({
       defaultAgent: z.string(),
       port: z.number().int().min(1).max(65535).optional(),
       token: z.string().optional(),
+      // Built-in login (username/password). When username + passwordHash + sessionSecret are
+      // all set, the UI gets its own /login page + signed-cookie auth and the bearer token is
+      // ignored — so you don't need the reverse proxy's basic_auth. Values resolve from
+      // .env.local (passwordHash is an scrypt hash, never the raw password); `dae install`
+      // wires these up.
+      username: z.string().optional(),
+      passwordHash: z.string().optional(),
+      sessionSecret: z.string().optional(),
     })
     .optional(),
   telegram: z

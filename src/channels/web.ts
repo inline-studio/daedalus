@@ -2,7 +2,8 @@ import http from "node:http";
 import type { Channel, ChannelContext, IncomingAttachment, OutgoingMessage } from "./base.js";
 import type { ContentPart } from "../types.js";
 import type { SessionStore } from "../sessions/store.js";
-import { WEB_UI_HTML } from "./web-ui.js";
+import { WEB_UI_HTML, WEB_LOGIN_HTML } from "./web-ui.js";
+import { verifyPassword, signSession, verifySession, parseCookies } from "./web-auth.js";
 import { log } from "../log.js";
 
 // Minimal HTTP+SSE channel.
@@ -14,7 +15,22 @@ import { log } from "../log.js";
 // GET /events?externalUserId=...
 //   text/event-stream — receives outbound messages destined for that user.
 //
-// Auth: a bearer token (config.web.token) is required if set.
+// Auth — one of three modes:
+//   - login: when web.auth (username + passwordHash + sessionSecret) is configured, the UI
+//     gets its own /login page; a signed httpOnly cookie gates every route and the bearer
+//     token is ignored. The authenticated username IS the externalUserId (clients can't
+//     impersonate another user).
+//   - token: when only web.token is set, a bearer token gates the API (UI shell stays open).
+//   - open: neither set — everything is open (front it with your own proxy).
+const SESSION_COOKIE = "dae_session";
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+interface WebAuth {
+  username: string;
+  passwordHash: string;
+  sessionSecret: string;
+}
+
 export class WebChannel implements Channel {
   readonly id = "web";
   readonly defaultAgent: string;
@@ -22,12 +38,20 @@ export class WebChannel implements Channel {
   private streams = new Map<string, http.ServerResponse>();
   private port: number;
   private token: string | undefined;
+  private auth: WebAuth | undefined;
   private sessions: SessionStore | undefined;
 
-  constructor(opts: { defaultAgent: string; port?: number; token?: string; sessions?: SessionStore }) {
+  constructor(opts: {
+    defaultAgent: string;
+    port?: number;
+    token?: string;
+    auth?: WebAuth;
+    sessions?: SessionStore;
+  }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
     this.token = opts.token;
+    this.auth = opts.auth;
     this.sessions = opts.sessions;
   }
 
@@ -36,18 +60,53 @@ export class WebChannel implements Channel {
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
         const pathname = url.pathname;
+        const loginMode = Boolean(this.auth);
 
-        // Serve the chat UI shell UNAUTHENTICATED so the page can load and then
-        // authenticate its own API calls with the token (the API routes below are gated).
+        // --- Login mode: unauthenticated login routes, served before the gate ---
+        if (loginMode) {
+          if (req.method === "GET" && (pathname === "/login" || pathname === "/login.html")) {
+            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            res.end(WEB_LOGIN_HTML);
+            return;
+          }
+          if (req.method === "POST" && pathname === "/login") {
+            await this.handleLogin(req, res);
+            return;
+          }
+          if (req.method === "POST" && pathname === "/logout") {
+            res.writeHead(204, { "Set-Cookie": this.cookie("", 0, req) });
+            res.end();
+            return;
+          }
+        }
+
+        // Resolve the authenticated user from the session cookie (login mode only).
+        const loginUser = loginMode ? this.sessionUser(req) : null;
+
+        // Serve the chat UI shell. In login mode it requires a valid session (redirect to
+        // /login otherwise); in token/open mode it's served unauthenticated so the page can
+        // load and then authenticate its own API calls.
         if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
+          if (loginMode && !loginUser) {
+            res.writeHead(302, { Location: "/login" });
+            res.end();
+            return;
+          }
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-          res.end(WEB_UI_HTML);
+          res.end(this.renderShell());
           return;
         }
 
-        // Token gate for the API routes. fetch() sends `Authorization: Bearer …`;
-        // EventSource can't set headers, so also accept `?token=…` as a fallback.
-        if (this.token) {
+        // --- Gate the API routes ---
+        if (loginMode) {
+          if (!loginUser) {
+            res.writeHead(401);
+            res.end("unauthorized");
+            return;
+          }
+        } else if (this.token) {
+          // fetch() sends `Authorization: Bearer …`; EventSource can't set headers, so also
+          // accept `?token=…`.
           const viaHeader = req.headers.authorization === `Bearer ${this.token}`;
           const viaQuery = url.searchParams.get("token") === this.token;
           if (!viaHeader && !viaQuery) {
@@ -58,15 +117,15 @@ export class WebChannel implements Channel {
         }
 
         if (req.method === "POST" && pathname === "/messages") {
-          await this.handlePost(req, res, ctx);
+          await this.handlePost(req, res, ctx, loginUser);
           return;
         }
         if (req.method === "GET" && pathname === "/events") {
-          this.handleSse(req, res);
+          this.handleSse(req, res, loginUser);
           return;
         }
         if (req.method === "GET" && pathname === "/history") {
-          this.handleHistory(url, res);
+          this.handleHistory(url, res, loginUser);
           return;
         }
         res.writeHead(404);
@@ -78,7 +137,8 @@ export class WebChannel implements Channel {
       }
     });
     await new Promise<void>((resolve) => this.server!.listen(this.port, () => resolve()));
-    log.info({ port: this.port }, "web channel listening");
+    const mode = this.auth ? "login" : this.token ? "token" : "open";
+    log.info({ port: this.port, auth: mode }, "web channel listening");
   }
 
   async stop(): Promise<void> {
@@ -104,9 +164,69 @@ export class WebChannel implements Channel {
     stream.write(`event: message\ndata: ${data}\n\n`);
   }
 
-  private async handlePost(req: http.IncomingMessage, res: http.ServerResponse, ctx: ChannelContext): Promise<void> {
+  // Verify the session cookie and return the authenticated username, or null.
+  private sessionUser(req: http.IncomingMessage): string | null {
+    if (!this.auth) return null;
+    const token = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+    return token ? verifySession(token, this.auth.sessionSecret) : null;
+  }
+
+  // Build the session Set-Cookie value. maxAgeMs <= 0 clears it. Secure is set when the
+  // request reached us over https (Caddy/your proxy sets x-forwarded-proto).
+  private cookie(value: string, maxAgeMs: number, req: http.IncomingMessage): string {
+    const https = String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]?.trim() === "https";
+    const parts = [
+      `${SESSION_COOKIE}=${value}`,
+      "Path=/",
+      "HttpOnly",
+      "SameSite=Lax",
+      `Max-Age=${Math.max(0, Math.floor(maxAgeMs / 1000))}`,
+    ];
+    if (https) parts.push("Secure");
+    return parts.join("; ");
+  }
+
+  private async handleLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!this.auth) {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
     const body = await readJson(req);
-    const externalUserId = String(body.externalUserId ?? "");
+    const username = String(body.username ?? "");
+    const password = String(body.password ?? "");
+    const okUser = username === this.auth.username;
+    // Always run the hash compare (even on a wrong username) to avoid leaking which half failed.
+    const okPass = verifyPassword(password, this.auth.passwordHash);
+    if (!okUser || !okPass) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid credentials" }));
+      return;
+    }
+    const token = signSession(this.auth.username, this.auth.sessionSecret, SESSION_TTL_MS);
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Set-Cookie": this.cookie(token, SESSION_TTL_MS, req),
+    });
+    res.end(JSON.stringify({ ok: true }));
+  }
+
+  // Inject the active auth mode into the served shell so the UI can hide the token field
+  // (login mode) and show a Logout button.
+  private renderShell(): string {
+    const mode = this.auth ? "login" : this.token ? "token" : "open";
+    return WEB_UI_HTML.replace("__DAE_WEB_MODE__", mode);
+  }
+
+  private async handlePost(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    ctx: ChannelContext,
+    forcedUser: string | null,
+  ): Promise<void> {
+    const body = await readJson(req);
+    // In login mode the authenticated username IS the user — the client can't choose it.
+    const externalUserId = forcedUser ?? String(body.externalUserId ?? "");
     if (!externalUserId) {
       res.writeHead(400);
       res.end("externalUserId required");
@@ -149,9 +269,9 @@ export class WebChannel implements Channel {
     res.end("accepted");
   }
 
-  private handleSse(req: http.IncomingMessage, res: http.ServerResponse): void {
+  private handleSse(req: http.IncomingMessage, res: http.ServerResponse, forcedUser: string | null): void {
     const url = new URL(req.url!, `http://${req.headers.host}`);
-    const externalUserId = url.searchParams.get("externalUserId");
+    const externalUserId = forcedUser ?? url.searchParams.get("externalUserId");
     if (!externalUserId) {
       res.writeHead(400);
       res.end("externalUserId required");
@@ -170,8 +290,8 @@ export class WebChannel implements Channel {
   // Replay recent session messages so the UI shows history across reloads. This is the
   // REAL session (same one Telegram etc. write to), not a per-browser cache — so a reply
   // received on another channel shows up here too. Empty if no SessionStore is wired.
-  private handleHistory(url: URL, res: http.ServerResponse): void {
-    const externalUserId = url.searchParams.get("externalUserId");
+  private handleHistory(url: URL, res: http.ServerResponse, forcedUser: string | null): void {
+    const externalUserId = forcedUser ?? url.searchParams.get("externalUserId");
     if (!externalUserId) {
       res.writeHead(400);
       res.end("externalUserId required");

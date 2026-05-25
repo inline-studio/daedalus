@@ -4,9 +4,18 @@
 //   POST /messages                   → send a message (+ base64 file attachments)
 //   GET  /events?externalUserId=…    → SSE stream of replies (text + attachments)
 //
-// Auth: if the channel has a bearer token, the page loads unauthenticated but the API
-// calls carry it (Authorization header for fetch; ?token=… for the EventSource, which
-// can't set headers). The token + a per-browser externalUserId live in localStorage.
+// Auth (one of three modes, chosen by the server and injected as __DAE_WEB_MODE__):
+//   - "login": the channel has its own username/password login (WEB_LOGIN_HTML at /login). A
+//     signed httpOnly cookie carries auth — sent automatically with fetch + EventSource — so
+//     there's no bearer token UI and the server derives the user from the cookie. Header shows
+//     a Logout button instead of settings.
+//   - "token": a bearer token gates the API (Authorization header for fetch; ?token=… for the
+//     EventSource, which can't set headers). The token + a per-browser externalUserId live in
+//     localStorage; the gear settings expose the token field.
+//   - "open": no auth.
+//
+// Notifications: opt-in via the 🔔 button (Notification permission). When the tab isn't focused
+// and a reply arrives over SSE, a browser notification fires.
 //
 // The embedded <script> deliberately avoids backtick template literals and ${…} so this
 // whole document nests cleanly inside the TS template string below.
@@ -16,6 +25,9 @@ export const WEB_UI_HTML = `<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Daedalus</title>
+<!-- Favicon: an inline SVG of a square-spiral labyrinth (Daedalus built the Labyrinth),
+     in the UI accent blue. Inlined as a data URI so the UI stays a single self-contained file. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzBkMTExNyIvPjxwYXRoIGQ9Ik01IDI3VjVIMjdWMjdIMTBWMTBIMjJWMjJIMTYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzU4YTZmZiIgc3Ryb2tlLXdpZHRoPSIyLjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==" />
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -62,7 +74,9 @@ export const WEB_UI_HTML = `<!doctype html>
   <header>
     <b>Daedalus</b><span class="meta" id="status">connecting…</span>
     <span class="sp"></span>
+    <button id="notify" title="Notify me when Artemis replies and this tab isn't focused">🔔 off</button>
     <button id="gear">settings</button>
+    <button id="logout" style="display:none">logout</button>
   </header>
   <div id="settings">
     <label>Bearer token (if your server requires one)</label>
@@ -87,9 +101,61 @@ export const WEB_UI_HTML = `<!doctype html>
   var token = LS.getItem("dae_token") || "";
   var pending = []; // [{kind, mediaType, filename, base64}]
   var es = null;
+  // Injected by the server: "login" (cookie auth — no token UI), "token", or "open".
+  var MODE = "__DAE_WEB_MODE__";
+  var notifyOn = LS.getItem("dae_notify") === "1";
+  var iconEl = document.querySelector("link[rel=icon]");
+  var FAVICON = iconEl ? iconEl.href : "";
 
   var $ = function (id) { return document.getElementById(id); };
   var log = $("log"), chips = $("chips"), statusEl = $("status");
+
+  // In login mode the session cookie carries auth (sent automatically with fetch/EventSource),
+  // so there's no bearer token and the server derives the user from the cookie. Hide the token
+  // settings and offer Logout instead.
+  if (MODE === "login") {
+    token = "";
+    var gear = $("gear"); if (gear) gear.style.display = "none";
+    var lo = $("logout");
+    if (lo) {
+      lo.style.display = "";
+      lo.addEventListener("click", function () {
+        fetch("/logout", { method: "POST" }).then(gotoLogin, gotoLogin);
+      });
+    }
+  }
+  function gotoLogin() { location.href = "/login"; }
+  // If the session lapses mid-use, a protected call 401s — bounce to the login page.
+  function on401(r) { if (MODE === "login" && r && r.status === 401) { gotoLogin(); return true; } return false; }
+
+  // Browser notification when a reply lands and the tab isn't focused (opt-in; see the 🔔 button).
+  function maybeNotify(text) {
+    if (!notifyOn || !("Notification" in window) || Notification.permission !== "granted") return;
+    if (!document.hidden) return; // tab is focused — no need to nag
+    try {
+      var n = new Notification("Artemis replied", { body: (text || "").slice(0, 140), icon: FAVICON });
+      n.onclick = function () { window.focus(); n.close(); };
+    } catch (e) {}
+  }
+  function renderNotifyBtn() {
+    var b = $("notify");
+    if (!b) return;
+    if (!("Notification" in window)) { b.style.display = "none"; return; }
+    b.textContent = (notifyOn && Notification.permission === "granted") ? "🔔 on" : "🔔 off";
+  }
+  $("notify").addEventListener("click", function () {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "default") {
+      Notification.requestPermission().then(function (p) {
+        notifyOn = (p === "granted"); LS.setItem("dae_notify", notifyOn ? "1" : "0"); renderNotifyBtn();
+      });
+    } else if (Notification.permission === "granted") {
+      notifyOn = !notifyOn; LS.setItem("dae_notify", notifyOn ? "1" : "0"); renderNotifyBtn();
+    } else {
+      statusEl.textContent = "notifications are blocked in your browser settings";
+    }
+  });
+  renderNotifyBtn();
 
   function authHeaders() { var h = { "content-type": "application/json" }; if (token) h["authorization"] = "Bearer " + token; return h; }
 
@@ -145,13 +211,13 @@ export const WEB_UI_HTML = `<!doctype html>
     es.onopen = function () { statusEl.textContent = "connected"; };
     es.onerror = function () { statusEl.textContent = "reconnecting…"; };
     es.addEventListener("message", function (ev) {
-      try { var d = JSON.parse(ev.data); addMsg("assistant", d.text || "", d.attachments || []); } catch (e) {}
+      try { var d = JSON.parse(ev.data); addMsg("assistant", d.text || "", d.attachments || []); maybeNotify(d.text || ""); } catch (e) {}
     });
   }
 
   function loadHistory() {
     fetch("/history?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
-      .then(function (r) { return r.ok ? r.json() : { messages: [] }; })
+      .then(function (r) { if (on401(r)) return { messages: [] }; return r.ok ? r.json() : { messages: [] }; })
       .then(function (j) { (j.messages || []).forEach(function (m) { addMsg(m.role, m.text || "", m.attachments || []); }); })
       .catch(function () {});
   }
@@ -197,7 +263,7 @@ export const WEB_UI_HTML = `<!doctype html>
     addMsg("user", text, atts);
     $("text").value = ""; pending = []; renderChips(); autosize();
     fetch("/messages", { method: "POST", headers: authHeaders(), body: JSON.stringify(body) })
-      .then(function (r) { if (!r.ok) statusEl.textContent = "send failed (" + r.status + ")"; })
+      .then(function (r) { if (on401(r)) return; if (!r.ok) statusEl.textContent = "send failed (" + r.status + ")"; })
       .catch(function () { statusEl.textContent = "send failed"; });
   }
 
@@ -211,6 +277,57 @@ export const WEB_UI_HTML = `<!doctype html>
 
   loadHistory();
   connect();
+})();
+</script>
+</body>
+</html>`;
+
+// The login page served at GET /login when the channel is in "login" mode. POSTs the
+// credentials to /login; on success the server sets the session cookie and we go to /.
+export const WEB_LOGIN_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Daedalus — Sign in</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzBkMTExNyIvPjxwYXRoIGQ9Ik01IDI3VjVIMjdWMjdIMTBWMTBIMjJWMjJIMTYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzU4YTZmZiIgc3Ryb2tlLXdpZHRoPSIyLjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==" />
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background: #0d1117; color: #e6edf3; min-height: 100dvh; display: flex; align-items: center; justify-content: center; }
+  form { background: #161b22; border: 1px solid #21262d; border-radius: 12px; padding: 28px 24px;
+         width: 320px; display: flex; flex-direction: column; gap: 12px; }
+  .logo { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .logo img { width: 28px; height: 28px; }
+  input { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; font: inherit; }
+  button { background: #238636; color: #fff; border: 1px solid #2ea043; border-radius: 8px; padding: 10px 12px;
+           font: inherit; cursor: pointer; }
+  button:hover { background: #2ea043; }
+  .err { color: #f85149; font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+  <form id="f">
+    <div class="logo"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzBkMTExNyIvPjxwYXRoIGQ9Ik01IDI3VjVIMjdWMjdIMTBWMTBIMjJWMjJIMTYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzU4YTZmZiIgc3Ryb2tlLXdpZHRoPSIyLjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==" alt="" /> Daedalus</div>
+    <input id="u" name="username" placeholder="Username" autocomplete="username" autofocus />
+    <input id="p" name="password" type="password" placeholder="Password" autocomplete="current-password" />
+    <button type="submit">Sign in</button>
+    <div class="err" id="err"></div>
+  </form>
+<script>
+(function () {
+  var f = document.getElementById("f"), err = document.getElementById("err");
+  f.addEventListener("submit", function (e) {
+    e.preventDefault(); err.textContent = "";
+    fetch("/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: document.getElementById("u").value, password: document.getElementById("p").value })
+    }).then(function (r) {
+      if (r.ok) { location.href = "/"; } else { err.textContent = "Invalid username or password"; }
+    }).catch(function () { err.textContent = "Sign-in failed — try again"; });
+  });
 })();
 </script>
 </body>

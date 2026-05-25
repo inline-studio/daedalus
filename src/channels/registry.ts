@@ -13,11 +13,19 @@ export function buildChannels(config: ChannelsConfig, sessions?: SessionStore): 
     out.push(new CliChannel({ defaultAgent: config.cli.defaultAgent }));
   }
   if (config.web?.enabled) {
+    // Built-in login is active only when all three pieces are present (username + password
+    // hash + a session-signing secret). When it is, the bearer token is ignored.
+    const w = config.web;
+    const auth =
+      w.username && w.passwordHash && w.sessionSecret
+        ? { username: w.username, passwordHash: w.passwordHash, sessionSecret: w.sessionSecret }
+        : undefined;
     out.push(
       new WebChannel({
-        defaultAgent: config.web.defaultAgent,
-        ...(config.web.port !== undefined ? { port: config.web.port } : {}),
-        ...(config.web.token ? { token: config.web.token } : {}),
+        defaultAgent: w.defaultAgent,
+        ...(w.port !== undefined ? { port: w.port } : {}),
+        ...(w.token ? { token: w.token } : {}),
+        ...(auth ? { auth } : {}),
         ...(sessions ? { sessions } : {}),
       }),
     );
