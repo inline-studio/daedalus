@@ -181,7 +181,7 @@ export async function runInstall(
   const declinedBefore = envLocalPrev.WEB_LOGIN_OPT_OUT === "1";
   if (process.stdin.isTTY && !loginConfigured && (fresh || !declinedBefore)) {
     const wantLogin = await confirm(
-      "Protect the web chat UI with its own username/password login (no reverse-proxy basic_auth needed)?",
+      "Add the web chat UI's own username/password login (so your reverse proxy only needs to add TLS, not basic_auth)?",
       true,
     );
     if (wantLogin) {
