@@ -65,6 +65,35 @@ Every spawned agent container gets:
 Brain mount becomes RW only if `brain.writable: true` in the supervisor's
 config — the supervisor and every agent honor that single setting.
 
+### Giving agents an SSH key
+
+Drop key material into `<configDir>/ssh/` on the host (alongside
+`config.yaml`) and every agent picks it up automatically — no per-agent
+wiring, no extra env vars.
+
+```bash
+mkdir -p ~/daedalus/ssh && chmod 700 ~/daedalus/ssh
+ssh-keygen -t ed25519 -f ~/daedalus/ssh/id_ed25519 -N "" -C "daedalus@<host>"
+chmod 600 ~/daedalus/ssh/id_ed25519
+ssh-keyscan github.com >> ~/daedalus/ssh/known_hosts
+# Register the .pub wherever the agents need to reach (GitHub deploy key, etc.)
+```
+
+The agent-turn shim (`runtime/setup-ssh.sh`) symlinks each file from
+`/etc/daedalus/ssh/` (the in-container view of the host dir) into
+`$HOME/.ssh/` on every container start, and writes a minimal
+`~/.ssh/config` with `StrictModes no`.
+
+Why `StrictModes no` — the host file is `0600` owned by the host user
+(uid ~1000), but agent containers run as root (uid 0); SSH would
+otherwise reject the key as "owned by someone else." The check guards
+against another user on a multi-tenant box swapping your key — irrelevant
+when the file is bind-mounted ro from a path you control.
+
+If an agent has already placed its own `$HOME/.ssh/<name>` or
+`$HOME/.ssh/config` (e.g. via a skill bootstrap), the shim leaves it
+alone — agent-written files always win over the host-mounted defaults.
+
 ## Agent images can be anything (with a glibc + a shell)
 
 The supervisor mounts its own Node binary + daedalus install into every

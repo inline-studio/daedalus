@@ -109,14 +109,13 @@ RUN useradd --create-home --shell /bin/bash --non-unique --uid 1000 dae \
 RUN mkdir -p /dae-runtime \
     && cp -L "$(command -v node)" /dae-runtime/node \
     && DAE_PKG="$(npm root -g)/daedalus" \
-    && cp -RL "$DAE_PKG" /dae-runtime/daedalus \
-    && printf '%s\n' \
-         '#!/bin/sh' \
-         '# Injected agent runtime — runs daedalus through the supervisor-provided' \
-         '# Node + dist regardless of what the agent image has installed.' \
-         'exec /dae-runtime/node /dae-runtime/daedalus/dist/index.js "$@"' \
-       > /dae-runtime/agent-turn.sh \
-    && chmod +x /dae-runtime/agent-turn.sh \
+    && cp -RL "$DAE_PKG" /dae-runtime/daedalus
+
+# Entrypoint shim + sourced setup scripts. Real files (not an inline printf)
+# so they're testable on the host — see scripts/smoke-agent-shim.mjs.
+COPY runtime/agent-turn.sh /dae-runtime/agent-turn.sh
+COPY runtime/setup-ssh.sh /dae-runtime/setup-ssh.sh
+RUN chmod +x /dae-runtime/agent-turn.sh /dae-runtime/setup-ssh.sh \
     && chmod -R a+rX /dae-runtime
 
 # Sensible defaults — overridden by docker-compose / `docker run -e`.
