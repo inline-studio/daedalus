@@ -1,8 +1,10 @@
 import path from "node:path";
+import { writeFile } from "node:fs/promises";
+import os from "node:os";
 import type { ArtemisConfig } from "../config/schema.js";
 import type { Message, ToolUsePart, ToolResultPart } from "../types.js";
 import { Kernel } from "./agent.js";
-import { budgetTail } from "./context-budget.js";
+import { budgetTail, estimateTokens } from "./context-budget.js";
 import { buildProvider } from "../providers/index.js";
 import { buildRuntime } from "../runtime/factory.js";
 import { selectBuiltins } from "../tools/registry.js";
@@ -220,23 +222,55 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
         /* unstringifiable — skip */
       }
     }
-    let histChars = 0;
-    for (const m of messages) {
-      for (const p of m.content) {
-        histChars += p.type === "text" ? (p.text ?? "").length : 64;
-      }
-    }
+    // Reuse the kernel's own estimateTokens so tool_use (name + JSON input) and tool_result
+    // (full content) parts are counted properly. The original flat-64-per-non-text under-counted
+    // history by ~10x in tool-heavy sessions (the dominant chunk in this agent's prompts).
+    let historyTokens = 0;
+    for (const m of messages) historyTokens += estimateTokens(m.content);
     log.info(
       {
         agent: agent.name,
         system: tok(sysChars),
         builtinTools: { count: builtinTools.length, est: tok(builtinChars) },
         mcp: { servers: mcpServers.size, tools: mcpToolCount, est: tok(mcpChars) },
-        history: { msgs: messages.length, est: tok(histChars) },
-        estTotal: tok(sysChars + builtinChars + mcpChars + histChars),
+        history: { msgs: messages.length, est: historyTokens },
+        estTotal: tok(sysChars + builtinChars + mcpChars) + historyTokens,
       },
       "context breakdown (estimated tokens, ~4 chars/token)",
     );
+
+    // Authoritative dump of EVERYTHING we're handing the model — system prompt, every tool
+    // definition (built-in + MCP), and the full messages array. Overwritten each turn (latest
+    // only, bounded disk) and only the path is logged so docker compose logs stay readable.
+    // Inspect with: `docker compose exec dae-worker sh -lc 'cat /tmp/dae-context-<agent>.json'`
+    // (or `| jq` for structure). This is the empirical answer to "what's actually being sent?"
+    // instead of an estimate.
+    const dumpPath = path.join(os.tmpdir(), `dae-context-${agent.name}.json`);
+    try {
+      const mcpToolDefs: Array<{ server: string; tools: unknown }> = [];
+      for (const [name, server] of mcpServers) {
+        mcpToolDefs.push({ server: name, tools: (server as { tools?: unknown }).tools ?? null });
+      }
+      await writeFile(
+        dumpPath,
+        JSON.stringify(
+          {
+            agent: agent.name,
+            historyLimitInConfig: config.sessions.historyLimit,
+            contextTokenBudgetInConfig: config.sessions.contextTokenBudget ?? null,
+            system,
+            builtinTools: builtinTools.map((t) => t.definition),
+            mcpTools: mcpToolDefs,
+            messages,
+          },
+          null,
+          2,
+        ),
+      );
+      log.info({ path: dumpPath }, "wrote full context to file (the actual prompt sent)");
+    } catch (err) {
+      log.warn({ err: (err as Error).message }, "context dump failed");
+    }
 
     const result = await kernel.runWithMessages(messages);
 
