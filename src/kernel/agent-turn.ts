@@ -202,6 +202,42 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       ...(agent.vision ? { vision: agent.vision } : {}),
     });
 
+    // Per-turn context-size breakdown — helps right-size what we send to the model. Image/file
+    // parts are bounded (vision tokens / sha256 refs) rather than counted by their byte length,
+    // so we estimate text-heavy components by char count (~4 chars/token) and non-text parts
+    // as a small flat 64.
+    const tok = (n: number) => Math.ceil(n / 4);
+    const sysChars = system.length;
+    const builtinChars = JSON.stringify(builtinTools).length;
+    let mcpToolCount = 0;
+    let mcpChars = 0;
+    for (const server of mcpServers.values()) {
+      const tools = (server as { tools?: unknown[] }).tools ?? [];
+      mcpToolCount += tools.length;
+      try {
+        mcpChars += JSON.stringify(tools).length;
+      } catch {
+        /* unstringifiable — skip */
+      }
+    }
+    let histChars = 0;
+    for (const m of messages) {
+      for (const p of m.content) {
+        histChars += p.type === "text" ? (p.text ?? "").length : 64;
+      }
+    }
+    log.info(
+      {
+        agent: agent.name,
+        system: tok(sysChars),
+        builtinTools: { count: builtinTools.length, est: tok(builtinChars) },
+        mcp: { servers: mcpServers.size, tools: mcpToolCount, est: tok(mcpChars) },
+        history: { msgs: messages.length, est: tok(histChars) },
+        estTotal: tok(sysChars + builtinChars + mcpChars + histChars),
+      },
+      "context breakdown (estimated tokens, ~4 chars/token)",
+    );
+
     const result = await kernel.runWithMessages(messages);
 
     // 9. Persist whatever the kernel produced beyond the existing tail. Skip a
