@@ -14,6 +14,7 @@
   "files": [
     "dist/",
     "examples/",
+    "runtime/",
     "README.md",
     "docker-compose.yml",
     "Dockerfile",

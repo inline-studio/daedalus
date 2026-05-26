@@ -27,6 +27,11 @@ import { log } from "../log.js";
 //   - config dir     → /etc/daedalus         (ro — config + .env)
 //   - dae-runtime    → /dae-runtime          (ro — injected node + daedalus)
 //
+// SSH: if the operator drops key material under <configDir>/ssh/ on the host,
+// the agent-turn.sh shim symlinks it into $HOME/.ssh at startup (see
+// runtime/setup-ssh.sh). Nothing dispatcher-side to do — it rides on the
+// existing config dir mount.
+//
 // Per-agent containers join the daedalus docker network so MCPs / OneCLI /
 // LiteLLM are reachable by container name (mempalace, onecli, …).
 export interface ContainerDispatcherOptions {
