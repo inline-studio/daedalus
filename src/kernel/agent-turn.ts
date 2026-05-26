@@ -2,7 +2,7 @@ import path from "node:path";
 import type { ArtemisConfig } from "../config/schema.js";
 import type { Message, ToolUsePart, ToolResultPart } from "../types.js";
 import { Kernel } from "./agent.js";
-import { budgetTail } from "./context-budget.js";
+import { budgetTail, estimateTokens } from "./context-budget.js";
 import { buildProvider } from "../providers/index.js";
 import { buildRuntime } from "../runtime/factory.js";
 import { selectBuiltins } from "../tools/registry.js";
@@ -220,20 +220,19 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
         /* unstringifiable — skip */
       }
     }
-    let histChars = 0;
-    for (const m of messages) {
-      for (const p of m.content) {
-        histChars += p.type === "text" ? (p.text ?? "").length : 64;
-      }
-    }
+    // Reuse the kernel's own estimateTokens so tool_use (name + JSON input) and tool_result
+    // (full content) parts are counted properly. The original flat-64-per-non-text under-counted
+    // history by ~10x in tool-heavy sessions (the dominant chunk in this agent's prompts).
+    let historyTokens = 0;
+    for (const m of messages) historyTokens += estimateTokens(m.content);
     log.info(
       {
         agent: agent.name,
         system: tok(sysChars),
         builtinTools: { count: builtinTools.length, est: tok(builtinChars) },
         mcp: { servers: mcpServers.size, tools: mcpToolCount, est: tok(mcpChars) },
-        history: { msgs: messages.length, est: tok(histChars) },
-        estTotal: tok(sysChars + builtinChars + mcpChars + histChars),
+        history: { msgs: messages.length, est: historyTokens },
+        estTotal: tok(sysChars + builtinChars + mcpChars) + historyTokens,
       },
       "context breakdown (estimated tokens, ~4 chars/token)",
     );
