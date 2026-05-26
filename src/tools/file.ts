@@ -1,7 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ToolImpl } from "./base.js";
-import { READ_DEFAULT_LINES, READ_MAX_LINES, READ_MAX_CHARS } from "./limits.js";
+import {
+  READ_DEFAULT_LINES,
+  READ_MAX_LINES,
+  READ_MAX_CHARS,
+  GLOB_DEFAULT_LIMIT,
+  GLOB_MAX_LIMIT,
+} from "./limits.js";
 
 // Path safety: writes/edits are blocked against the brain dir unless brainWritable.
 function assertWritable(target: string, ctx: { brainPath: string; brainWritable: boolean }): void {
@@ -88,6 +94,65 @@ export const writeTool: ToolImpl = {
     await fs.mkdir(path.dirname(p), { recursive: true });
     await fs.writeFile(p, String(input.content ?? ""), "utf8");
     return { content: `wrote ${p}` };
+  },
+};
+
+export const globTool: ToolImpl = {
+  definition: {
+    name: "glob",
+    description:
+      "Find files matching a glob pattern. Returns matching paths (sorted), one per line, " +
+      "relative to `cwd`. Supports `*` (any chars within a path segment), `**` (any depth), " +
+      "`?` (one char), `{a,b}` alternation, and `[abc]` character classes. " +
+      `Capped at ${GLOB_DEFAULT_LIMIT.toLocaleString()} matches by default (max ${GLOB_MAX_LIMIT.toLocaleString()}); ` +
+      "if you hit the cap, narrow the pattern. Use this to discover files, then `read` to look inside.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: "Glob pattern, e.g. '**/*.ts' or 'src/**/{foo,bar}.js'.",
+        },
+        cwd: {
+          type: "string",
+          description: "Directory to search from. Defaults to the process working directory.",
+        },
+        limit: {
+          type: "number",
+          description: `Max paths to return (1–${GLOB_MAX_LIMIT}). Default ${GLOB_DEFAULT_LIMIT}.`,
+        },
+      },
+      required: ["pattern"],
+      additionalProperties: false,
+    },
+  },
+  async invoke(input) {
+    const pattern = String(input.pattern ?? "").trim();
+    if (!pattern) return { content: "glob: 'pattern' is required", isError: true };
+    const cwd =
+      typeof input.cwd === "string" && input.cwd.trim() ? input.cwd : process.cwd();
+    const limit = clampInt(input.limit, 1, GLOB_MAX_LIMIT, GLOB_DEFAULT_LIMIT);
+    const matches: string[] = [];
+    let hitCap = false;
+    try {
+      for await (const p of fs.glob(pattern, { cwd })) {
+        matches.push(p);
+        if (matches.length >= limit) {
+          hitCap = true;
+          break;
+        }
+      }
+    } catch (err) {
+      return { content: `glob failed: ${(err as Error).message}`, isError: true };
+    }
+    if (matches.length === 0) {
+      return { content: `[no matches for '${pattern}' under ${cwd}]` };
+    }
+    matches.sort();
+    const footer = hitCap
+      ? `\n[hit limit of ${limit} matches — narrow the pattern]`
+      : "";
+    return { content: matches.join("\n") + footer };
   },
 };
 

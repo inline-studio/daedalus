@@ -15,6 +15,11 @@ export const READ_DEFAULT_LINES = 1_000; // lines returned when `limit` is omitt
 export const READ_MAX_LINES = 5_000; // ceiling on an explicit `limit`
 export const READ_MAX_CHARS = 60_000; // ≈15k tokens — hard safety cap on the returned slice
 
+// `glob` returns one path per line — typically tens of bytes each, but a runaway pattern
+// (`**/*` from /) could otherwise enumerate the universe. Cap matches not characters.
+export const GLOB_DEFAULT_LIMIT = 1_000; // matches returned when `limit` is omitted
+export const GLOB_MAX_LIMIT = 5_000; // ceiling on an explicit `limit`
+
 // Truncate `s` to `max` characters, appending a short marker when it was cut.
 export function capChars(s: string, max: number): string {
   if (s.length <= max) return s;

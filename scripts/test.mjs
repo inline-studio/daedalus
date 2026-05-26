@@ -26,6 +26,7 @@ const CI_SAFE = [
   "smoke-dispatcher",
   "smoke-empty-assistant",
   "smoke-export-mempalace",
+  "smoke-glob-tool",
   "smoke-graphiti-memory",
   "smoke-history-compaction",
   "smoke-install",

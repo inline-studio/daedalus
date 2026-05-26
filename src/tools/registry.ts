@@ -1,5 +1,5 @@
 import { bashTool } from "./bash.js";
-import { readTool, writeTool, editTool } from "./file.js";
+import { readTool, writeTool, editTool, globTool } from "./file.js";
 import { webFetchTool, webSearchTool } from "./web.js";
 import {
   scheduleMessageTool,
@@ -19,6 +19,7 @@ const STATIC_TOOLS: Record<string, ToolImpl> = {
   read: readTool,
   write: writeTool,
   edit: editTool,
+  glob: globTool,
 };
 
 const FACTORY_TOOLS: Record<string, ToolFactory> = {
