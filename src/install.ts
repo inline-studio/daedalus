@@ -754,29 +754,55 @@ async function ensureConfig(configFlag?: string): Promise<string | null> {
 
 // The compose stack files shipped in the npm package (next to dist/). `dae install`
 // copies these into the compose dir so a global install is self-contained. EVERY name here
-// MUST also be in package.json's `files` whitelist — otherwise it won't ship in the npm
-// tarball and `dae install` materialises a compose dir that references a missing build file
-// (e.g. graphiti's Dockerfile). smoke-package-files guards exactly that invariant.
+// MUST also be present in the published tarball — either explicitly in package.json's
+// `files` whitelist, or under a directory entry there (e.g. "runtime/" covers
+// "runtime/agent-turn.sh"). smoke-package-files guards exactly that invariant — without
+// it `dae install` materialises a compose dir that references a missing build input,
+// docker build fails on the COPY line, and the user is stuck (graphiti's Dockerfile
+// hit this once; the runtime/ shim scripts hit it again when PR #75 landed).
+//
+// Paths may include subdirectories — materializeComposeFiles creates the parent dir
+// before copying. .dockerignore is auto-derived from this list so the docker build
+// context allows exactly these inputs (plus the packed tarball glob).
 export const COMPOSE_FILES = [
   "docker-compose.yml",
   "Dockerfile",
   "Dockerfile.graphiti",
   "graphiti-entrypoint.sh",
   "graphiti.config.yaml",
+  // Per-agent container shim sourced from the Dockerfile (PR #75). Real files,
+  // not printf'd inline, so they're testable on the host (smoke-agent-shim).
+  "runtime/agent-turn.sh",
+  "runtime/setup-ssh.sh",
 ];
 
 // Restrict the docker build context to just the build inputs — never the compose
 // .env (secrets), config, brain, or memory data that may sit nearby.
+//
+// Derived from COMPOSE_FILES so a new entry there is automatically un-ignored.
+// Two extras: the packed CLI tarball (matches `daedalus-*.tgz` via glob — it's
+// produced by `npm pack` into this dir at install time), and any parent dirs
+// of nested COMPOSE_FILES entries (docker build needs to traverse into them).
 const DOCKERIGNORE = [
   "# Written by `dae install`. Keeps secrets/data out of the docker build context.",
   "*",
-  "!Dockerfile",
-  "!Dockerfile.graphiti",
-  "!graphiti-entrypoint.sh",
-  "!docker-compose.yml",
+  ...uniqueDockerignoreAllows(COMPOSE_FILES),
   "!daedalus-*.tgz",
   "",
 ].join("\n");
+
+// For each path, emit an allow for the file PLUS every parent directory along
+// the way, so `*` doesn't kill the directory before docker can descend into it.
+function uniqueDockerignoreAllows(paths: string[]): string[] {
+  const out = new Set<string>();
+  for (const p of paths) {
+    const parts = p.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      out.add("!" + parts.slice(0, i).join("/"));
+    }
+  }
+  return [...out];
+}
 
 // The package root (dist/install.js → ..), where the bundled compose files live.
 function bundleDir(): string {
@@ -793,7 +819,11 @@ async function materializeComposeFiles(targetDir: string): Promise<boolean> {
   for (const name of COMPOSE_FILES) {
     const from = path.join(src, name);
     if (!(await exists(from))) continue;
-    await fs.copyFile(from, path.join(targetDir, name));
+    const to = path.join(targetDir, name);
+    // Nested entries (e.g. "runtime/agent-turn.sh") need their parent dir
+    // created before copyFile will work.
+    await fs.mkdir(path.dirname(to), { recursive: true });
+    await fs.copyFile(from, to);
     if (name === "docker-compose.yml") copiedCompose = true;
   }
   await fs.writeFile(path.join(targetDir, ".dockerignore"), DOCKERIGNORE, "utf8");
