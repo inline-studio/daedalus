@@ -5,6 +5,7 @@ import type { ArtemisConfig } from "../config/schema.js";
 import type { Message, ToolUsePart, ToolResultPart } from "../types.js";
 import { Kernel } from "./agent.js";
 import { budgetTail, estimateTokens } from "./context-budget.js";
+import { compactCompletedLoops } from "./history-compaction.js";
 import { buildProvider } from "../providers/index.js";
 import { buildRuntime } from "../runtime/factory.js";
 import { selectBuiltins } from "../tools/registry.js";
@@ -162,8 +163,13 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     // window (we don't bake a context-size assumption into daedalus).
     const tail = sessions.tail(sessionId, config.sessions.historyLimit);
     const full = await prepareMessagesForTurn(tail);
+    // Compact older completed turn-loops: replace bulky tool_result bodies with stubs once
+    // the agent has emitted a final text summary for that loop. Keeps the N most recent loops
+    // at full fidelity. Persisted history is untouched — this is a replay-time view.
+    const keep = config.sessions.keepFullFidelityLoops;
+    const compacted = keep > 0 ? compactCompletedLoops(full, { keepFullFidelityLoops: keep }) : full;
     const budget = config.sessions.contextTokenBudget;
-    const messages = budget ? budgetTail(full, budget) : full;
+    const messages = budget ? budgetTail(compacted, budget) : compacted;
     if (budget && messages.length < full.length) {
       log.info(
         { from: full.length, to: messages.length, budget },
@@ -227,13 +233,20 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     // history by ~10x in tool-heavy sessions (the dominant chunk in this agent's prompts).
     let historyTokens = 0;
     for (const m of messages) historyTokens += estimateTokens(m.content);
+    // Track what compaction + budget trimming saved, so the impact is visible.
+    let fullTokens = 0;
+    for (const m of full) fullTokens += estimateTokens(m.content);
     log.info(
       {
         agent: agent.name,
         system: tok(sysChars),
         builtinTools: { count: builtinTools.length, est: tok(builtinChars) },
         mcp: { servers: mcpServers.size, tools: mcpToolCount, est: tok(mcpChars) },
-        history: { msgs: messages.length, est: historyTokens },
+        history: {
+          msgs: messages.length,
+          est: historyTokens,
+          ...(fullTokens > historyTokens ? { savedByCompaction: fullTokens - historyTokens } : {}),
+        },
         estTotal: tok(sysChars + builtinChars + mcpChars) + historyTokens,
       },
       "context breakdown (estimated tokens, ~4 chars/token)",
