@@ -19,7 +19,11 @@ export function buildLoadSkillTool(skills: LoadedSkill[]): ToolImpl {
         "Load the full instructions for one of your available skills (listed in the " +
         "Skills section of your system prompt). Returns the skill's complete body. Call " +
         "this BEFORE using a skill — the system prompt only lists the names + summaries, " +
-        `not the instructions. Available skills: ${names.length ? names.join(", ") : "(none)"}.`,
+        "not the instructions. " +
+        "Skills are CLIs / instruction sets YOU drive yourself: load_skill → bash. They are " +
+        "NOT subagents — don't try to invoke them with spawn_subagent (that's for AI peers " +
+        "like cypher). If a name is listed here, it's a skill; use load_skill + bash. " +
+        `Available skills: ${names.length ? names.join(", ") : "(none)"}.`,
       inputSchema: {
         type: "object",
         properties: {

@@ -39,9 +39,12 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
     definition: {
       name: "spawn_subagent",
       description:
-        `Delegate to a specialist agent. The user does NOT see this — present the result ` +
+        `Delegate to a specialist AI agent. The user does NOT see this — present the result ` +
         `as your own.\n\n` +
-        `Available: ${allowed.join(", ")}.\n\n` +
+        `Available: ${allowed.join(", ")}. ONLY names in that enum are subagents; anything ` +
+        `else (e.g. the names listed under "Skills" in your system prompt — agent-browser, ` +
+        `tpp, digitalocean-api, …) is a SKILL, not a subagent. Skills are CLIs / instruction ` +
+        `sets you drive yourself via load_skill + bash; passing one here is rejected.\n\n` +
         `Subagents have persistent memory across calls within this conversation: a follow-up ` +
         `spawn to the same agent picks up where you left off.\n\n` +
         `RESPONSE SHAPES:\n` +
