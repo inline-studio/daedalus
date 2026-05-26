@@ -1,4 +1,6 @@
 import path from "node:path";
+import { writeFile } from "node:fs/promises";
+import os from "node:os";
 import type { ArtemisConfig } from "../config/schema.js";
 import type { Message, ToolUsePart, ToolResultPart } from "../types.js";
 import { Kernel } from "./agent.js";
@@ -236,6 +238,39 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       },
       "context breakdown (estimated tokens, ~4 chars/token)",
     );
+
+    // Authoritative dump of EVERYTHING we're handing the model — system prompt, every tool
+    // definition (built-in + MCP), and the full messages array. Overwritten each turn (latest
+    // only, bounded disk) and only the path is logged so docker compose logs stay readable.
+    // Inspect with: `docker compose exec dae-worker sh -lc 'cat /tmp/dae-context-<agent>.json'`
+    // (or `| jq` for structure). This is the empirical answer to "what's actually being sent?"
+    // instead of an estimate.
+    const dumpPath = path.join(os.tmpdir(), `dae-context-${agent.name}.json`);
+    try {
+      const mcpToolDefs: Array<{ server: string; tools: unknown }> = [];
+      for (const [name, server] of mcpServers) {
+        mcpToolDefs.push({ server: name, tools: (server as { tools?: unknown }).tools ?? null });
+      }
+      await writeFile(
+        dumpPath,
+        JSON.stringify(
+          {
+            agent: agent.name,
+            historyLimitInConfig: config.sessions.historyLimit,
+            contextTokenBudgetInConfig: config.sessions.contextTokenBudget ?? null,
+            system,
+            builtinTools: builtinTools.map((t) => t.definition),
+            mcpTools: mcpToolDefs,
+            messages,
+          },
+          null,
+          2,
+        ),
+      );
+      log.info({ path: dumpPath }, "wrote full context to file (the actual prompt sent)");
+    } catch (err) {
+      log.warn({ err: (err as Error).message }, "context dump failed");
+    }
 
     const result = await kernel.runWithMessages(messages);
 
