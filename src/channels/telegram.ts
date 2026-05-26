@@ -1,5 +1,6 @@
 import type { Channel, ChannelContext, OutgoingMessage, IncomingAttachment } from "./base.js";
 import { log } from "../log.js";
+import { markdownToTelegramHtml, stripMarkdownForPlain } from "./format/telegram-html.js";
 
 // Telegram channel — long-polling inbound + Bot API outbound.
 //
@@ -45,15 +46,34 @@ export class TelegramChannel implements Channel {
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {
     // Text first (sendMessage handles long replies; captions are capped at 1024 chars,
     // so we don't fold the reply into an attachment caption).
+    //
+    // Rendering: Claude emits CommonMark (`**bold**`, `*italic*`, `` `code` `` …).
+    // We translate it into Telegram's restricted HTML and ask the Bot API to
+    // parse it as HTML. If Telegram rejects the message — typically a malformed
+    // tag we couldn't catch — we retry once with markers stripped, so the user
+    // at least sees the message instead of nothing.
     if (msg.text) {
-      const res = await fetch(`${this.apiBase}/sendMessage`, {
+      const html = markdownToTelegramHtml(msg.text);
+      let res = await fetch(`${this.apiBase}/sendMessage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: externalUserId, text: msg.text }),
+        body: JSON.stringify({ chat_id: externalUserId, text: html, parse_mode: "HTML" }),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        log.error({ status: res.status, body }, "telegram sendMessage failed");
+        log.warn(
+          { status: res.status, body },
+          "telegram sendMessage with HTML failed; retrying as plain text",
+        );
+        res = await fetch(`${this.apiBase}/sendMessage`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: externalUserId, text: stripMarkdownForPlain(msg.text) }),
+        });
+        if (!res.ok) {
+          const body2 = await res.text().catch(() => "");
+          log.error({ status: res.status, body: body2 }, "telegram sendMessage failed");
+        }
       }
     }
 
