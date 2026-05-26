@@ -20,6 +20,7 @@ const CI_SAFE = [
   "smoke-audio-ingest",
   "smoke-commands",
   "smoke-compaction",
+  "smoke-compose-materialize",
   "smoke-compose-profiles",
   "smoke-context-budget",
   "smoke-context-trim",
