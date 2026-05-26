@@ -44,6 +44,7 @@ const CI_SAFE = [
   "smoke-secret-prompt",
   "smoke-secrets",
   "smoke-suppress-warnings",
+  "smoke-telegram-format",
   "smoke-terminal-modes",
   "smoke-uninstall",
   "smoke-update-inferred",
