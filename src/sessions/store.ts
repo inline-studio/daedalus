@@ -222,6 +222,40 @@ export class SessionStore {
     };
   }
 
+  // Messages persisted strictly AFTER `sinceIso` (an ISO-8601 timestamp), in
+  // chronological order. Used by the web channel to replay anything an SSE
+  // client missed during a reconnect — the browser's Last-Event-ID header
+  // carries the createdAt of the last delivered message; this returns the
+  // ones it didn't see.
+  messagesSince(sessionId: string, sinceIso: string, limit = 200): PersistedMessage[] {
+    this.ensureFreshConnection();
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM messages
+           WHERE session_id = ? AND created_at > ?
+           ORDER BY created_at ASC
+           LIMIT ?`,
+      )
+      .all(sessionId, sinceIso, limit) as Array<{
+      id: string;
+      session_id: string;
+      role: Message["role"];
+      channel: string | null;
+      external_message_id: string | null;
+      content_json: string;
+      created_at: string;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      sessionId: r.session_id,
+      role: r.role,
+      channel: r.channel,
+      externalMessageId: r.external_message_id,
+      content: JSON.parse(r.content_json) as ContentPart[],
+      createdAt: r.created_at,
+    }));
+  }
+
   // Tail: returns up to `limit` most-recent messages in chronological order.
   tail(sessionId: string, limit = 100): PersistedMessage[] {
     this.ensureFreshConnection();

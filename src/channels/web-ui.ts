@@ -55,6 +55,11 @@ export const WEB_UI_HTML = `<!doctype html>
   .msg.user code, .msg.user pre { background: rgba(0,0,0,.25); border-color: rgba(255,255,255,.2); }
   .msg img { max-width: 100%; border-radius: 8px; margin-top: 6px; }
   .msg a.file { display: inline-block; margin-top: 6px; color: #58a6ff; }
+  .msg table { border-collapse: collapse; margin: 8px 0; display: block; overflow-x: auto; max-width: 100%; }
+  .msg th, .msg td { border: 1px solid #30363d; padding: 6px 10px; text-align: left; vertical-align: top; }
+  .msg th { background: #0d1117; font-weight: 600; }
+  .msg.user th { background: rgba(0,0,0,.25); }
+  .msg.user th, .msg.user td { border-color: rgba(255,255,255,.2); }
   .meta { font-size: 11px; color: #8b949e; margin: 0 4px; }
   footer { border-top: 1px solid #21262d; background: #161b22; padding: 10px 14px; }
   #chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
@@ -177,13 +182,59 @@ export const WEB_UI_HTML = `<!doctype html>
       var items = list.trim().split(/\\n/).map(function (li) { return "<li>" + li.replace(/^- /, "") + "</li>"; }).join("");
       return "\\n<ul>" + items + "</ul>";
     });
-    // paragraphs / line breaks for the rest
+    // paragraphs / line breaks for the rest. A paragraph block that LOOKS
+    // like a GFM table (first line is pipe-delimited, second line is a
+    // dash-and-pipe separator) becomes a real <table>; otherwise wraps in <p>.
     h = h.split(/\\n{2,}/).map(function (para) {
       if (/^\\s*<(h2|h3|ul|pre)/.test(para)) return para;
+      var tbl = renderTable(para);
+      if (tbl) return tbl;
       return "<p>" + para.replace(/\\n/g, "<br>") + "</p>";
     }).join("");
     h = h.replace(/\\u0000(\\d+)\\u0000/g, function (_, i) { return blocks[+i]; });
     return h;
+  }
+
+  // Render a GFM table block to a <table> element, or return null when the
+  // block isn't one. Called by md() per paragraph block — runs AFTER
+  // htmlEscape, so the input pipe chars are still raw.
+  // Expected shape:
+  //   | header1 | header2 |
+  //   |---------|---------|
+  //   | cell    | cell    |
+  // Separator row tolerates spaces and colon alignment markers; both leading
+  // and trailing pipes are required (matches what Claude emits).
+  function renderTable(block) {
+    var lines = block.split(/\\n/).map(function (l) { return l.trim(); }).filter(Boolean);
+    if (lines.length < 2) return null;
+    var hdr = lines[0], sep = lines[1];
+    if (!/^\\|.+\\|$/.test(hdr)) return null;
+    if (!/^\\|[\\s:|-]+\\|$/.test(sep)) return null;
+    // Header pipe count must equal separator pipe count, otherwise it's a
+    // false positive (e.g. a code-snippet-looking line followed by an
+    // unrelated dashes row).
+    if ((hdr.match(/\\|/g) || []).length !== (sep.match(/\\|/g) || []).length) return null;
+    function cells(line) {
+      return line.slice(1, -1).split("|").map(function (c) { return c.trim(); });
+    }
+    var headers = cells(hdr);
+    var bodyLines = lines.slice(2);
+    // Strict: every post-separator line must be a pipe row. Mixing prose into
+    // the block would otherwise be silently dropped when we replace the whole
+    // block with <table>. Bail out and let it render as a normal paragraph.
+    for (var i = 0; i < bodyLines.length; i++) {
+      if (!/^\\|.+\\|$/.test(bodyLines[i])) return null;
+    }
+    var thead = "<thead><tr>" + headers.map(function (h) { return "<th>" + h + "</th>"; }).join("") + "</tr></thead>";
+    var tbody = "<tbody>" + bodyLines.map(function (l) {
+      var c = cells(l);
+      // Pad/truncate to the header column count so a row with extra/missing
+      // pipes doesn't break alignment.
+      while (c.length < headers.length) c.push("");
+      if (c.length > headers.length) c = c.slice(0, headers.length);
+      return "<tr>" + c.map(function (x) { return "<td>" + x + "</td>"; }).join("") + "</tr>";
+    }).join("") + "</tbody>";
+    return "<table>" + thead + tbody + "</table>";
   }
 
   function attachmentHtml(a) {

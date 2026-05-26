@@ -154,7 +154,7 @@ export class WebChannel implements Channel {
 
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {
     const set = this.streams.get(externalUserId);
-    if (!set || set.size === 0) return; // user not connected; drop silently
+    if (!set || set.size === 0) return; // user not connected; dropped reply will be replayed on reconnect via Last-Event-ID
     const data = JSON.stringify({
       text: msg.text ?? "",
       parts: msg.parts ?? [],
@@ -165,8 +165,17 @@ export class WebChannel implements Channel {
         base64: a.data.toString("base64"),
       })),
     });
+    // Tag with an `id:` line so the browser's EventSource sets `Last-Event-ID`
+    // on the next reconnect. We use the server's send time, not the persisted
+    // message id, because `send()` doesn't know which persisted message it's
+    // emitting — but send time is monotonically after the message's createdAt
+    // (single-writer supervisor), so a "messages with createdAt > sendTime"
+    // filter on reconnect is a SUPERSET of "messages this stream missed,"
+    // never a subset. The handleSse replay uses that filter.
+    const sseId = new Date().toISOString();
+    const block = `id: ${sseId}\nevent: message\ndata: ${data}\n\n`;
     // Broadcast to every live connection for this user (all tabs/devices stay in sync).
-    for (const stream of set) stream.write(`event: message\ndata: ${data}\n\n`);
+    for (const stream of set) stream.write(block);
   }
 
   // Verify the session cookie and return the authenticated username, or null.
@@ -290,6 +299,40 @@ export class WebChannel implements Channel {
       "X-Accel-Buffering": "no",
     });
     res.write(`: connected\n\n`);
+
+    // Replay anything the browser missed during a reconnect gap.
+    //
+    // EventSource auto-reconnects after a transient drop (proxy timeout, network
+    // blip, supervisor restart). If the agent replied during that window,
+    // send() wrote to a dead stream and the message was lost — the user would
+    // only see it after a manual page refresh that hit /history.
+    //
+    // The browser sends `Last-Event-ID: <iso>` on reconnect, carrying the `id:`
+    // line of the most recent event it processed. We use that as a watermark
+    // into the session store and replay any messages persisted since.
+    //
+    // Replay is text-only — attachments live in the AttachmentStore (not in
+    // the persisted message content) and the live SSE path serialises them
+    // by re-reading bytes from disk; we don't reconstruct that here. Same
+    // limitation as the /history endpoint. A page refresh still shows them.
+    const lastEventId = req.headers["last-event-id"];
+    if (typeof lastEventId === "string" && lastEventId && this.sessions) {
+      try {
+        const userId = this.sessions.resolveUser(this.id, externalUserId);
+        const session = this.sessions.getOrCreateSession(userId, this.defaultAgent);
+        const missed = this.sessions.messagesSince(session.id, lastEventId, 200);
+        for (const m of missed) {
+          if (m.role !== "assistant") continue; // user msgs were rendered locally on send
+          const text = partsToText(m.content);
+          if (!text) continue;
+          const data = JSON.stringify({ text, parts: [], attachments: [] });
+          res.write(`id: ${m.createdAt}\nevent: message\ndata: ${data}\n\n`);
+        }
+      } catch (err) {
+        log.warn({ err, externalUserId }, "SSE replay-since failed; continuing live");
+      }
+    }
+
     // Add THIS connection to the user's set (don't replace — other tabs/reconnects coexist).
     let set = this.streams.get(externalUserId);
     if (!set) {
