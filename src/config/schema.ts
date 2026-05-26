@@ -172,6 +172,13 @@ export const SessionsConfigSchema = z.object({
   // that window is. Set this only to avoid the occasional reactive round-trip on a model
   // whose (small) context you already know. ~4 chars/token.
   contextTokenBudget: z.number().int().positive().optional(),
+  // Once an agent finishes a turn-loop (final text-only assistant message, no more tool_use),
+  // the trial-and-error that led to it has already been distilled into that final text — so
+  // the bulky tool_result bodies in the chain are redundant. At replay time we strip them
+  // from older loops, keeping the N most recent at full fidelity (so follow-ups that need
+  // detail still work). 0 disables the compaction; the persisted history is never mutated —
+  // this is purely a view applied before each turn. Default: 2 (current + previous loop).
+  keepFullFidelityLoops: z.number().int().min(0).default(2),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfigSchema>;
 
