@@ -56,6 +56,7 @@ const CI_SAFE = [
   "smoke-wizard-defaults",
   "smoke-wizard-shell",
   "smoke-time-awareness",
+  "smoke-transient-error",
   "smoke-tool-output-limits",
   "smoke-vision",
   "smoke-web-auth",
