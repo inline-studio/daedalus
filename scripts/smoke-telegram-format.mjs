@@ -130,5 +130,148 @@ eq(
   "The temp is now 25C — see docs",
 );
 
+// ─── 8. headings — # through ###### collapse to bold on their own line ──────
+{
+  eq("'# Heading' -> <b>", markdownToTelegramHtml("# Heading"), "<b>Heading</b>");
+  eq("'## H2' -> <b>", markdownToTelegramHtml("## H2"), "<b>H2</b>");
+  eq("'### H3' -> <b>", markdownToTelegramHtml("### H3"), "<b>H3</b>");
+  eq("'###### H6' -> <b>", markdownToTelegramHtml("###### H6"), "<b>H6</b>");
+  // Atx-style closing hashes get stripped.
+  eq("'## Heading ##' -> <b> (closing hashes stripped)", markdownToTelegramHtml("## Heading ##"), "<b>Heading</b>");
+  // A # in the middle of a line is NOT a heading.
+  contains("'foo # bar' is not a heading", markdownToTelegramHtml("foo # bar"), "foo # bar");
+  notContains("'foo # bar' doesn't get bolded", markdownToTelegramHtml("foo # bar"), "<b>");
+  // Heading in a multi-paragraph message keeps surrounding structure.
+  {
+    const out = markdownToTelegramHtml("Intro line.\n\n### My heading\n\nNext paragraph.");
+    contains("heading in context: bolded", out, "<b>My heading</b>");
+    contains("heading in context: prior text preserved", out, "Intro line.");
+    contains("heading in context: following text preserved", out, "Next paragraph.");
+  }
+  // Plain-text fallback also de-hashes.
+  eq("plain-text fallback strips heading hashes", stripMarkdownForPlain("## Heading"), "Heading");
+}
+
+// ─── 9. lists — `- ` / `* ` line-starts become bullets ──────────────────────
+{
+  const out = markdownToTelegramHtml("Pros:\n- One\n- Two\n- Three");
+  contains("- bullets become •", out, "• One");
+  contains("subsequent bullets too", out, "• Two\n• Three");
+  notContains("no '- ' line-start markers remain", out, "\n- ");
+
+  const out2 = markdownToTelegramHtml("* alpha\n* beta");
+  contains("'* ' bullets also become •", out2, "• alpha");
+  contains("'* ' bullets second line", out2, "• beta");
+
+  // List items can still contain inline emphasis.
+  const out3 = markdownToTelegramHtml("- **Quality**: IP moat\n- *Growth*: 5+ years");
+  contains("bullet + bold inside", out3, "• <b>Quality</b>: IP moat");
+  contains("bullet + italic inside", out3, "• <i>Growth</i>: 5+ years");
+
+  // Plain-text fallback also bulletifies.
+  eq("plain-text fallback uses •", stripMarkdownForPlain("- one\n- two"), "• one\n• two");
+}
+
+// ─── 10. GFM tables — per-row stanza, NOT raw pipes ─────────────────────────
+{
+  // The exact bug from Scott's screenshot: a stock-comparison table arrived
+  // at the user as a wall of `|` characters. After the fix it should render
+  // as bold row labels with italic "header: value" lines under each.
+  const tableMd = [
+    "| Stock | Yield | P/E | Dividend Stability |",
+    "|-------|-------|-----|--------------------|",
+    "| **Games Workshop** | ~3.2% | ~38 | ✓ Growing (5+ years) |",
+    "| BP | ~6.2% | ~8 | ⚠ Volatile |",
+  ].join("\n");
+  const out = markdownToTelegramHtml(tableMd);
+  notContains("no literal `| Stock` row leaks through", out, "| Stock |");
+  notContains("no separator `|---|` row leaks through", out, "|---");
+  contains("first column becomes bold row label", out, "<b>Games Workshop</b>");
+  contains("subsequent columns become 'Header: value'", out, "<i>Yield</i>: ~3.2%");
+  contains("emoji content survives", out, "✓ Growing (5+ years)");
+  contains("second row label is bold too", out, "<b>BP</b>");
+  contains("second row's value is rendered", out, "<i>Dividend Stability</i>: ⚠ Volatile");
+  // The bold INSIDE the first cell (`**Games Workshop**`) — formatCell
+  // re-applies inline emphasis per-cell, so it survives.
+  contains(
+    "inline markdown inside cells is honoured",
+    markdownToTelegramHtml("| A | B |\n|---|---|\n| **bold** | plain |"),
+    "<b>bold</b>",
+  );
+  // First-column cell that's ALREADY `**bold**` shouldn't double-wrap —
+  // `<b><b>X</b></b>` renders fine but is redundant noise.
+  {
+    const out = markdownToTelegramHtml("| A | B |\n|---|---|\n| **X** | y |");
+    notContains("first-column '**X**' doesn't become '<b><b>X</b></b>'", out, "<b><b>");
+    contains("first-column '**X**' still ends up bolded once", out, "<b>X</b>");
+  }
+
+  // Prose immediately after a table (no blank line) is permissive: the table
+  // regex stops at the first non-pipe line, so the table renders AND the
+  // prose follows as its own paragraph. Better than failing the whole block.
+  const mixed = "| a | b |\n|---|---|\n| 1 | 2 |\nrandom prose";
+  const mixedOut = markdownToTelegramHtml(mixed);
+  contains("table portion renders when followed by prose", mixedOut, "<b>1</b>");
+  contains("trailing prose is NOT silently dropped", mixedOut, "random prose");
+
+  // Surrounding text is preserved.
+  {
+    const surround = "Here are the results:\n\n| col | val |\n|-----|-----|\n| a | 1 |\n\nDone.";
+    const o = markdownToTelegramHtml(surround);
+    contains("text before the table is kept", o, "Here are the results:");
+    contains("text after the table is kept", o, "Done.");
+    contains("table row is rendered", o, "<b>a</b>");
+  }
+}
+
+// ─── 11. blockquotes — `> text` -> <blockquote> ─────────────────────────────
+{
+  // Trailing/leading newlines around the <blockquote> are by design — they
+  // keep the quote visually separated from surrounding paragraphs.
+  contains(
+    "single-line blockquote",
+    markdownToTelegramHtml("> hello"),
+    "<blockquote>hello</blockquote>",
+  );
+  const multi = markdownToTelegramHtml("> line one\n> line two");
+  contains("multi-line blockquote wraps the whole run", multi, "<blockquote>line one\nline two</blockquote>");
+}
+
+// ─── 12. integration — Scott's exact screenshot reply ───────────────────────
+// Combines headings + bold + a table + a list. The before-state was raw
+// `###` lines, raw pipe rows, and `-` bullets all sent to Telegram literally.
+{
+  const reply = [
+    "You're right — Games Workshop **did pay a £1.20/share final dividend** for 2025.",
+    "",
+    "### Key comparison vs your current holdings:",
+    "",
+    "| Stock | Yield | P/E | Dividend Stability |",
+    "|-------|-------|-----|--------------------|",
+    "| **Games Workshop** | ~3.2% | ~38 | ✓ Growing |",
+    "| BP | ~6.2% | ~8 | ⚠ Volatile |",
+    "",
+    "### Should you add it?",
+    "",
+    "**Pros:**",
+    "- Quality business: IP moat",
+    "- Dividend growth: 5+ years",
+    "",
+    "**Cons:**",
+    "- Higher P/E (38)",
+  ].join("\n");
+  const out = markdownToTelegramHtml(reply);
+  notContains("no raw `###` heading hashes leak", out, "### ");
+  notContains("no raw `| Stock` row leaks", out, "| Stock |");
+  notContains("no raw `- ` list bullet leaks", out, "\n- ");
+  contains("intro bold preserved", out, "<b>did pay a £1.20/share final dividend</b>");
+  contains("heading became bold", out, "<b>Key comparison vs your current holdings:</b>");
+  contains("table row label rendered", out, "<b>Games Workshop</b>");
+  contains("table column rendered", out, "<i>Yield</i>: ~3.2%");
+  contains("list bullets became •", out, "• Quality business: IP moat");
+  contains("second list rendered too", out, "• Higher P/E (38)");
+  contains("inline bold survives in list intros", out, "<b>Pros:</b>");
+}
+
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);
