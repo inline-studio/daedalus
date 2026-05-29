@@ -73,6 +73,16 @@ export const WEB_UI_HTML = `<!doctype html>
   .row label.attach { background: #21262d; border-color: #30363d; }
   .row button:disabled { opacity: .5; cursor: default; }
   .empty { color: #8b949e; text-align: center; margin: auto; }
+  /* "New messages below" pill — appears in the log when new messages arrive
+     while the user has scrolled up; clicking it jumps to the bottom. The
+     auto-scroll-to-bottom-on-every-message behaviour used to make it
+     impossible to read older history while the agent was actively replying. */
+  #new-pill { position: fixed; bottom: 92px; left: 50%; transform: translateX(-50%);
+              background: #1f6feb; color: #fff; border: 1px solid #388bfd; border-radius: 999px;
+              padding: 6px 14px; font: inherit; font-size: 13px; cursor: pointer;
+              box-shadow: 0 4px 12px rgba(0,0,0,.4); display: none; z-index: 10; }
+  #new-pill:hover { background: #388bfd; }
+  #new-pill.on { display: block; }
 </style>
 </head>
 <body>
@@ -90,6 +100,7 @@ export const WEB_UI_HTML = `<!doctype html>
     <span class="meta" id="uid"></span>
   </div>
   <div id="log"><div class="empty">No messages yet. Say hello.</div></div>
+  <button id="new-pill" type="button">↓ new messages</button>
   <footer>
     <div id="chips"></div>
     <div class="row">
@@ -244,27 +255,101 @@ export const WEB_UI_HTML = `<!doctype html>
     return '<a class="file" href="' + src + '" download="' + esc(a.filename || "file") + '">⬇ ' + esc(a.filename || "file") + "</a>";
   }
 
+  // Smart auto-scroll. The previous behaviour ("scroll to bottom on every new
+  // message") made it impossible to read older history while the agent was
+  // actively replying — every new tool-step yanked the user back down. Now:
+  // only scroll if the user was already AT the bottom (within 60px); otherwise
+  // leave their viewport alone and show the "↓ new messages" pill so they
+  // know there's new content waiting below.
+  var pill = $("new-pill");
+  var newSinceScrolled = 0;
+  function isAtBottom() {
+    return log.scrollTop + log.clientHeight >= log.scrollHeight - 60;
+  }
+  function jumpToBottom() {
+    log.scrollTop = log.scrollHeight;
+    newSinceScrolled = 0;
+    pill.classList.remove("on");
+    pill.textContent = "↓ new messages";
+  }
+  pill.addEventListener("click", jumpToBottom);
+  log.addEventListener("scroll", function () { if (isAtBottom()) jumpToBottom(); });
+
   function addMsg(role, text, attachments) {
     var empty = log.querySelector(".empty"); if (empty) empty.remove();
+    var wasAtBottom = isAtBottom();
     var div = document.createElement("div");
     div.className = "msg " + (role === "user" ? "user" : "assistant");
     var html = role === "user" ? "<p>" + esc(text || "").replace(/\\n/g, "<br>") + "</p>" : md(text || "");
     (attachments || []).forEach(function (a) { html += attachmentHtml(a); });
     div.innerHTML = html;
-    log.appendChild(div); log.scrollTop = log.scrollHeight;
+    log.appendChild(div);
+    // User's own messages always jump (they just hit Enter, they want to see it).
+    if (wasAtBottom || role === "user") {
+      jumpToBottom();
+    } else {
+      newSinceScrolled++;
+      pill.textContent = "↓ " + newSinceScrolled + " new message" + (newSinceScrolled === 1 ? "" : "s");
+      pill.classList.add("on");
+    }
     return div;
   }
+
+  // SSE wiring. Three reliability fixes layered here:
+  //
+  //   1. Last-Event-ID resume (server-side, see web.ts:send + handleSse): the
+  //      server tags every event with an id line; the browser auto-sends
+  //      Last-Event-ID on reconnect; the server replays anything we missed.
+  //      Handles the "browser dropped the connection" case.
+  //
+  //   2. Watchdog (this file, below): proxies (Caddy, nginx, Cloudflare) can
+  //      silently tear down a long-lived SSE socket while the BROWSER still
+  //      thinks it is open — onerror never fires, no auto-reconnect, messages
+  //      sent to the dead socket are lost. We track when we last received ANY
+  //      event (including heartbeats) and force a reconnect if the silence
+  //      exceeds 45s (2+ missed heartbeats). The force-reconnect triggers (1)
+  //      to replay anything missed during the dead window.
+  //
+  //   3. Heartbeat as a real event, not a comment: SSE comments do not
+  //      surface to JS, so we could not drive the watchdog from them. The
+  //      server now emits a named heartbeat event every 20s (with NO id
+  //      line, so it does not disturb Last-Event-ID).
+  var lastEventAt = Date.now();
+  function markActivity() { lastEventAt = Date.now(); }
 
   function connect() {
     if (es) es.close();
     var u = "/events?externalUserId=" + encodeURIComponent(uid) + (token ? "&token=" + encodeURIComponent(token) : "");
     es = new EventSource(u);
-    es.onopen = function () { statusEl.textContent = "connected"; };
+    es.onopen = function () { statusEl.textContent = "connected"; markActivity(); };
     es.onerror = function () { statusEl.textContent = "reconnecting…"; };
+    es.addEventListener("heartbeat", function () { markActivity(); });
     es.addEventListener("message", function (ev) {
-      try { var d = JSON.parse(ev.data); addMsg("assistant", d.text || "", d.attachments || []); maybeNotify(d.text || ""); } catch (e) {}
+      markActivity();
+      var d;
+      try { d = JSON.parse(ev.data); }
+      catch (e) {
+        // Surface the parse failure to the console instead of silently
+        // swallowing — without this, a single malformed payload made it look
+        // like the agent had simply stopped replying.
+        console.error("SSE message JSON parse failed", e, ev.data);
+        return;
+      }
+      addMsg("assistant", d.text || "", d.attachments || []);
+      maybeNotify(d.text || "");
     });
   }
+
+  // Watchdog: every 15s, check whether the connection has been silent too
+  // long. 45s = 2+ missed heartbeats. Force a reconnect on suspicion — the
+  // server's Last-Event-ID replay catches anything we missed.
+  setInterval(function () {
+    if (Date.now() - lastEventAt > 45_000) {
+      console.warn("SSE: no event for >45s — forcing reconnect");
+      statusEl.textContent = "reconnecting…";
+      connect();
+    }
+  }, 15_000);
 
   function loadHistory() {
     fetch("/history?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })

@@ -316,5 +316,65 @@ async function run(port, token) {
   }
 }
 
+// 7. Heartbeat is a NAMED event (not an SSE `: ping` comment) so the browser
+//    surfaces it to JS. The client-side watchdog uses it to detect a silent
+//    proxy-killed connection and force a reconnect — the bug Scott hit behind
+//    Caddy on casa where messages stopped arriving live but the connection
+//    badge stayed "connected". The event must NOT carry an `id:` line, or
+//    Last-Event-ID would advance past unreceived messages and the replay
+//    machinery would skip them.
+//
+//    We pass heartbeatMs: 50 so the smoke catches several heartbeats in
+//    ~200ms without waiting on the real 20s production cadence.
+{
+  const ch = new (await import("../dist/channels/web.js")).WebChannel({
+    defaultAgent: "orchestrator",
+    port: 8796,
+    sessions: fakeSessions,
+    heartbeatMs: 50,
+  });
+  await ch.start(ctx);
+  const base = "http://127.0.0.1:8796";
+
+  const openRawSse = (user) =>
+    new Promise((resolve) => {
+      const req = http.get(base + "/events?externalUserId=" + user, (res) => {
+        let buf = "";
+        res.on("data", (c) => (buf += c.toString()));
+        resolve({ req, get: () => buf });
+      });
+    });
+  const conn = await openRawSse("u-hb");
+  await new Promise((r) => setTimeout(r, 200)); // wait for a few heartbeats
+  const wire = conn.get();
+  ok(
+    "heartbeat fires on a recurring interval",
+    (wire.match(/event: heartbeat/g) ?? []).length >= 2,
+    `count: ${(wire.match(/event: heartbeat/g) ?? []).length}`,
+  );
+  ok(
+    "heartbeat is a NAMED event (not an SSE `: ping` comment)",
+    /event: heartbeat\ndata: \{\}/.test(wire) && !/^: ping/m.test(wire),
+  );
+  ok(
+    "heartbeat has NO id line (Last-Event-ID is preserved across heartbeats)",
+    !/id: [^\n]*\nevent: heartbeat/.test(wire),
+  );
+
+  // Sanity: a real message sent on the same connection DOES carry id (so
+  // Last-Event-ID resume still works); the heartbeat just doesn't shift the
+  // watermark backwards.
+  await ch.send("u-hb", { text: "real-message" });
+  await new Promise((r) => setTimeout(r, 100));
+  const wire2 = conn.get();
+  ok(
+    "real messages still carry id: lines (heartbeat addition didn't break replay)",
+    /id: [^\n]+\nevent: message\ndata: [^\n]*real-message/.test(wire2),
+  );
+
+  conn.req.destroy();
+  await ch.stop();
+}
+
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);

@@ -44,6 +44,7 @@ export class WebChannel implements Channel {
   private token: string | undefined;
   private auth: WebAuth | undefined;
   private sessions: SessionStore | undefined;
+  private heartbeatMs!: number;
 
   constructor(opts: {
     defaultAgent: string;
@@ -51,12 +52,16 @@ export class WebChannel implements Channel {
     token?: string;
     auth?: WebAuth;
     sessions?: SessionStore;
+    // SSE heartbeat interval in ms (default 20_000). Tests override this so
+    // they can verify the wire format without waiting 20s per assertion.
+    heartbeatMs?: number;
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
     this.token = opts.token;
     this.auth = opts.auth;
     this.sessions = opts.sessions;
+    this.heartbeatMs = opts.heartbeatMs ?? 20_000;
   }
 
   async start(ctx: ChannelContext): Promise<void> {
@@ -341,18 +346,26 @@ export class WebChannel implements Channel {
     }
     set.add(res);
 
-    // Heartbeat. An agent turn can take tens of seconds (large context on a CPU model), during
-    // which NO data flows on this stream. Without periodic traffic a proxy/keepalive timeout
-    // silently drops the idle connection — and then the eventual reply is written to a dead
-    // stream and lost. A comment line every 20s keeps it alive. unref() so it never holds the
-    // process open on its own.
+    // Heartbeat. An agent turn can take tens of seconds (large context on a CPU model),
+    // during which NO data flows on this stream. Without periodic traffic a proxy/keepalive
+    // timeout silently drops the idle connection — and then the eventual reply is written
+    // to a dead stream and lost.
+    //
+    // Emitted as a NAMED event (not an SSE `: ping` comment) so the browser's EventSource
+    // surfaces it to JS — the client uses it to drive a watchdog that force-reconnects if
+    // heartbeats stop arriving, which is the only way to recover from a proxy (e.g. Caddy
+    // mid-request idle-timeout) that has silently torn down the socket but left the
+    // browser thinking it's connected. Crucially the heartbeat has NO `id:` line, so it
+    // doesn't disturb Last-Event-ID — replay-on-reconnect (see above) still works.
+    //
+    // unref() so the timer never holds the process open on its own.
     const heartbeat = setInterval(() => {
       try {
-        res.write(`: ping\n\n`);
+        res.write(`event: heartbeat\ndata: {}\n\n`);
       } catch {
         /* stream gone — the close handler will clean up */
       }
-    }, 20_000);
+    }, this.heartbeatMs);
     if (typeof heartbeat.unref === "function") heartbeat.unref();
 
     const cleanup = () => {
