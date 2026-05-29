@@ -420,20 +420,57 @@ export class Kernel {
 // Worth retrying: rate limits, overload, gateway/5xx, and network blips (incl. the
 // OneCLI proxy hiccupping). NOT worth retrying: auth (401/403), bad request (400),
 // not found (404) — those won't fix themselves, so we surface them immediately.
-function isTransientLLMError(err: unknown): boolean {
-  const cause = (err as { cause?: unknown }).cause;
-  const status =
-    (err as { status?: number }).status ?? (cause as { status?: number } | undefined)?.status;
+//
+// IMPORTANT: the OpenAI SDK + undici wrap the actual transport error 3+ levels deep:
+//   ProviderError("Connection error.")
+//     -> Error("Connection error.")
+//        -> TypeError("fetch failed")
+//           -> SocketError("other side closed" / "ECONNRESET" / …)
+// The real signal lives at the bottom. Earlier versions of this function only
+// looked at err + err.cause (depth 2), so connection-error failures were
+// classified as non-transient and never retried — one network blip surfaced as
+// a hard failure to the user (the bug that motivated walking the full chain).
+export function isTransientLLMError(err: unknown): boolean {
+  // Flatten the entire .cause chain so the matcher sees every layer's message,
+  // name, and code — including the SocketError at the bottom.
+  const chain = collectCauseChain(err);
+  const status = chain
+    .map((e) => (e as { status?: number }).status)
+    .find((s): s is number => typeof s === "number");
   if (typeof status === "number") {
     return status === 408 || status === 425 || status === 429 || status >= 500;
   }
-  // No HTTP status → a transport/network error (DNS, reset, timeout, proxy blip).
-  const text = `${(err as Error).message ?? ""} ${(cause as Error | undefined)?.message ?? ""} ${
-    (cause as { code?: string } | undefined)?.code ?? ""
-  }`.toLowerCase();
-  return /(429|overload|rate.?limit|timeout|timed out|temporarily|unavailable|fetch failed|socket hang up|econnreset|etimedout|econnrefused|eai_again|und_err|\b5\d\d\b)/.test(
+  const text = chain
+    .map((e) => {
+      const m = (e as Error).message ?? "";
+      const n = (e as Error).name ?? "";
+      const c = (e as { code?: string }).code ?? "";
+      return `${n} ${m} ${c}`;
+    })
+    .join(" ")
+    .toLowerCase();
+  // Transport-error patterns: explicit timeout markers, the various "remote
+  // side hung up" phrasings (Node's undici emits "other side closed" / "socket
+  // hang up" / "premature close" depending on TLS state), plus the standard
+  // POSIX error codes. Numeric `5xx` catches "HTTP 503" style mentions when
+  // the status didn't get attached as a property.
+  return /(429|overload|rate.?limit|timeout|timed out|temporarily|unavailable|fetch failed|socket(?:error)? (?:hang up|closed)|other side closed|premature close|connection (?:reset|closed|refused|aborted|error)|econnreset|etimedout|econnrefused|econnaborted|epipe|eai_again|und_err|\b5\d\d\b)/.test(
     text,
   );
+}
+
+// Walk an error and every nested `.cause`, returning them in order (outermost
+// first). Caps at 8 to avoid pathological cycles.
+function collectCauseChain(err: unknown): unknown[] {
+  const out: unknown[] = [];
+  let cur: unknown = err;
+  const seen = new Set<unknown>();
+  while (cur && typeof cur === "object" && !seen.has(cur) && out.length < 8) {
+    seen.add(cur);
+    out.push(cur);
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return out;
 }
 
 // The provider rejected the request because it's too long for the model's context.
