@@ -391,17 +391,16 @@ async function run(port, token) {
   await ch.stop();
 }
 
-// 9. Tool-heavy session: /history must NOT lose the user's own text
-//    messages when there are many tool round-trips ahead of them in the
-//    persistence order. This is the bug Scott hit — his "create me a
-//    droplet" question was several hundred raw rows back in the messages
-//    table (each tool round-trip = 2 rows), and tail(50) didn't reach it.
+// 9. Tool-heavy session: /history must not lose user text messages when many
+//    tool round-trips occupy the raw-row window ahead of them. Each tool turn
+//    writes two rows (assistant message with tool_use, plus a "user" message
+//    holding the tool_results); only the assistant text is visible. With a
+//    small raw tail the user's own questions fall out of the window even
+//    though only a handful exist.
 //
-//    The fake session below mirrors that shape: ONE user text question,
-//    then 100 alternating assistant/tool_result rows. With a small raw
-//    tail the user message would fall out of the window. With the new
-//    RAW_TAIL of 1000, all 101 rows fetched and the user question
-//    survives the filter.
+//    The fake session below mirrors that shape: one user text question, then
+//    100 alternating assistant/tool_result rows. With RAW_TAIL=1000 all 201
+//    rows are fetched and the user question survives the filter.
 {
   const toolHeavySessions = {
     resolveUser: () => "user-th",
@@ -424,7 +423,7 @@ async function run(port, token) {
       }
       // Caller passes the raw-tail limit; mirror tail()'s behaviour and
       // return the LAST `limit` rows in chronological order. If `limit` is
-      // tiny (the old 50), Scott's user message is excluded.
+      // tiny (the old 50), the lone user text message is excluded.
       return rows.slice(-limit);
     },
   };
@@ -463,6 +462,48 @@ async function run(port, token) {
     `got ${hj.messages.length}`,
   );
   await ch.stop();
+}
+
+// 10. Layout + history-load invariants. A previous version stacked messages at
+//     the top of #log with empty space below (flex-direction:column without a
+//     justify-content rule), opposite of chat-app convention; AND the smart-
+//     scroll pill incorrectly read "↓ N new messages" for messages that were
+//     actually historical (bulk-loaded into the same code path as live SSE
+//     deliveries). These are source-level invariants checked by string-
+//     matching against WEB_UI_HTML — no browser harness involved.
+{
+  const { WEB_UI_HTML } = await import("../dist/channels/web-ui.js");
+
+  // 10a. #log anchors content to the bottom (chat-app convention). Without
+  //      this rule, a short conversation floats at the top of the chat area.
+  ok(
+    "#log uses justify-content: flex-end (anchors content to bottom)",
+    /#log\s*\{[^}]*justify-content:\s*flex-end/.test(WEB_UI_HTML),
+  );
+
+  // 10b. loadHistory bypasses the per-message smart-scroll work via a
+  //      bulkLoading flag, then snaps to the bottom once. The pill must NOT
+  //      get incremented for messages that are actually history.
+  ok(
+    "loadHistory uses bulkLoading flag to bypass smart-scroll",
+    /bulkLoading\s*=\s*true[\s\S]*addMsg[\s\S]*bulkLoading\s*=\s*false/.test(WEB_UI_HTML),
+  );
+  ok(
+    "loadHistory calls jumpToBottom() after the bulk-load",
+    /bulkLoading\s*=\s*false[^]*jumpToBottom\(\)/.test(WEB_UI_HTML),
+  );
+  ok(
+    "addMsg short-circuits to skip the scroll/pill work while bulkLoading",
+    /if\s*\(\s*bulkLoading\s*\)\s*return\s+div/.test(WEB_UI_HTML),
+  );
+
+  // 10c. loadHistory's catch block surfaces errors to the console. The
+  //      previous swallow made a missing-history report indistinguishable
+  //      from a server-side empty response.
+  ok(
+    "loadHistory's catch block surfaces errors via console.error",
+    WEB_UI_HTML.includes('console.error("loadHistory failed"'),
+  );
 }
 
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);

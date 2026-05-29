@@ -44,7 +44,18 @@ export const WEB_UI_HTML = `<!doctype html>
   #settings.on { display: flex; flex-wrap: wrap; align-items: center; }
   #settings input { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; }
   #settings label { font-size: 13px; color: #9da7b3; }
-  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  /* Chat-app convention: messages anchored to the BOTTOM. Without
+     justify-content: flex-end, a short conversation stacks at the top of #log
+     with empty space underneath — the latest message floats mid-page,
+     "where did everything go" — and there's no scrollbar because content
+     fits the container. flex-end fills from the bottom up, which both
+     matches user expectation AND keeps the scroll-on-overflow behaviour. */
+  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex;
+         flex-direction: column; justify-content: flex-end; gap: 12px; }
+  /* When a child grows the flex container, justify-content can clip the
+     top of the first item. min-height on each .msg avoids that and keeps
+     scrolling correct in tall conversations. */
+  #log > * { flex-shrink: 0; }
   .msg { max-width: 760px; width: fit-content; padding: 10px 14px; border-radius: 12px; white-space: normal; word-wrap: break-word; }
   .msg.user { align-self: flex-end; background: #1f6feb; color: #fff; border-bottom-right-radius: 4px; }
   .msg.assistant { align-self: flex-start; background: #161b22; border: 1px solid #21262d; border-bottom-left-radius: 4px; }
@@ -275,6 +286,12 @@ export const WEB_UI_HTML = `<!doctype html>
   pill.addEventListener("click", jumpToBottom);
   log.addEventListener("scroll", function () { if (isAtBottom()) jumpToBottom(); });
 
+  // True while loadHistory is bulk-loading. The smart-scroll heuristic
+  // ("is user at bottom?") doesn't make sense for the initial page load —
+  // there's no user there yet to be "at" anywhere. Bypass the heuristic and
+  // skip the per-message scroll work; the caller (loadHistory) does a single
+  // jumpToBottom() at the end of the batch.
+  var bulkLoading = false;
   function addMsg(role, text, attachments) {
     var empty = log.querySelector(".empty"); if (empty) empty.remove();
     var wasAtBottom = isAtBottom();
@@ -284,6 +301,7 @@ export const WEB_UI_HTML = `<!doctype html>
     (attachments || []).forEach(function (a) { html += attachmentHtml(a); });
     div.innerHTML = html;
     log.appendChild(div);
+    if (bulkLoading) return div; // caller will scroll once at the end
     // User's own messages always jump (they just hit Enter, they want to see it).
     if (wasAtBottom || role === "user") {
       jumpToBottom();
@@ -354,8 +372,16 @@ export const WEB_UI_HTML = `<!doctype html>
   function loadHistory() {
     fetch("/history?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
       .then(function (r) { if (on401(r)) return { messages: [] }; return r.ok ? r.json() : { messages: [] }; })
-      .then(function (j) { (j.messages || []).forEach(function (m) { addMsg(m.role, m.text || "", m.attachments || []); }); })
-      .catch(function () {});
+      .then(function (j) {
+        // Bulk-load: bypass the smart-scroll per-message work and the "↓ N new
+        // messages" pill (these are HISTORY, not new) — then snap to the
+        // bottom once at the end so the user sees the most recent reply.
+        bulkLoading = true;
+        try { (j.messages || []).forEach(function (m) { addMsg(m.role, m.text || "", m.attachments || []); }); }
+        finally { bulkLoading = false; }
+        jumpToBottom();
+      })
+      .catch(function (err) { console.error("loadHistory failed", err); });
   }
 
   function fileToAttachment(file) {
