@@ -284,7 +284,20 @@ export const WEB_UI_HTML = `<!doctype html>
     pill.textContent = "↓ new messages";
   }
   pill.addEventListener("click", jumpToBottom);
-  log.addEventListener("scroll", function () { if (isAtBottom()) jumpToBottom(); });
+  // Scroll listener: ONLY update the "↓ new messages" pill state when the user
+  // returns to the bottom. The previous version called jumpToBottom() here,
+  // which snapped the scroll position back to the bottom on any upward scroll
+  // within the 60px isAtBottom threshold — a light upward scroll was yanked
+  // back, only a hard scroll would actually move. The auto-scroll-on-new-
+  // message logic lives in addMsg; this listener has no business touching
+  // scrollTop.
+  log.addEventListener("scroll", function () {
+    if (isAtBottom()) {
+      newSinceScrolled = 0;
+      pill.classList.remove("on");
+      pill.textContent = "↓ new messages";
+    }
+  });
 
   // True while loadHistory is bulk-loading. The smart-scroll heuristic
   // ("is user at bottom?") doesn't make sense for the initial page load —
