@@ -506,5 +506,49 @@ async function run(port, token) {
   );
 }
 
+// 11. The scroll listener must NOT force scroll position to the bottom. A
+//     prior version called jumpToBottom() whenever isAtBottom() was true,
+//     which meant a light upward scroll within the 60px isAtBottom threshold
+//     was immediately snapped back. Only a hard scroll could move past it.
+//     The listener should only update pill state.
+{
+  const { WEB_UI_HTML } = await import("../dist/channels/web-ui.js");
+  // Capture just the listener body (`function () { … }`), not everything up to
+  // addMsg — comments in adjoining blocks may legitimately mention
+  // jumpToBottom and confuse the "no snap-back" check.
+  const start = WEB_UI_HTML.indexOf('log.addEventListener("scroll"');
+  const bodyStart = WEB_UI_HTML.indexOf("function () {", start);
+  // End of the listener body: walk to the matching `});`.
+  let bodyEnd = -1;
+  if (bodyStart > 0) {
+    let depth = 0;
+    for (let i = bodyStart; i < WEB_UI_HTML.length; i++) {
+      const c = WEB_UI_HTML[i];
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) { bodyEnd = i + 1; break; }
+      }
+    }
+  }
+  const block = bodyStart >= 0 && bodyEnd > bodyStart ? WEB_UI_HTML.slice(bodyStart, bodyEnd) : "";
+  ok(
+    "scroll listener exists",
+    /log\.addEventListener\("scroll"/.test(WEB_UI_HTML.slice(start, start + 80)),
+  );
+  ok(
+    "scroll listener body extracted (matched braces)",
+    block.length > 0,
+  );
+  ok(
+    "scroll listener body does NOT call jumpToBottom (no snap-back on light upward scroll)",
+    block.length > 0 && !block.includes("jumpToBottom"),
+  );
+  ok(
+    "scroll listener still dismisses the pill when the user returns to the bottom",
+    /isAtBottom\(\)[\s\S]*newSinceScrolled\s*=\s*0[\s\S]*pill\.classList\.remove/.test(block),
+  );
+}
+
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);
