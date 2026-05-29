@@ -391,5 +391,79 @@ async function run(port, token) {
   await ch.stop();
 }
 
+// 9. Tool-heavy session: /history must NOT lose the user's own text
+//    messages when there are many tool round-trips ahead of them in the
+//    persistence order. This is the bug Scott hit — his "create me a
+//    droplet" question was several hundred raw rows back in the messages
+//    table (each tool round-trip = 2 rows), and tail(50) didn't reach it.
+//
+//    The fake session below mirrors that shape: ONE user text question,
+//    then 100 alternating assistant/tool_result rows. With a small raw
+//    tail the user message would fall out of the window. With the new
+//    RAW_TAIL of 1000, all 101 rows fetched and the user question
+//    survives the filter.
+{
+  const toolHeavySessions = {
+    resolveUser: () => "user-th",
+    getOrCreateSession: () => ({ id: "sess-th", userId: "user-th", agentName: "orchestrator" }),
+    tail: (_id, limit) => {
+      const rows = [];
+      rows.push({ role: "user", content: [{ type: "text", text: "create me a droplet" }] });
+      for (let i = 0; i < 100; i++) {
+        rows.push({
+          role: "assistant",
+          content: [
+            { type: "text", text: `step ${i + 1}` },
+            { type: "tool_use", id: "t" + i, name: "bash", input: {} },
+          ],
+        });
+        rows.push({
+          role: "user",
+          content: [{ type: "tool_result", toolUseId: "t" + i, content: "ok" }],
+        });
+      }
+      // Caller passes the raw-tail limit; mirror tail()'s behaviour and
+      // return the LAST `limit` rows in chronological order. If `limit` is
+      // tiny (the old 50), Scott's user message is excluded.
+      return rows.slice(-limit);
+    },
+  };
+  const ch = new (await import("../dist/channels/web.js")).WebChannel({
+    defaultAgent: "orchestrator",
+    port: 8797,
+    sessions: toolHeavySessions,
+  });
+  await ch.start(ctx);
+  const base = "http://127.0.0.1:8797";
+  const hist = await fetch(base + "/history?externalUserId=u-th");
+  const hj = await hist.json();
+
+  ok(
+    "/history returns visible messages from a 200-row tool-heavy session",
+    hist.status === 200 && hj.messages.length >= 100,
+    `got ${hj.messages.length} messages`,
+  );
+  ok(
+    "/history includes the user's own text question (was missing pre-fix)",
+    hj.messages.some((m) => m.role === "user" && m.text === "create me a droplet"),
+    JSON.stringify(hj.messages.slice(0, 3)),
+  );
+  ok(
+    "/history includes assistant text from the tool-heavy turns",
+    hj.messages.some((m) => m.role === "assistant" && /step 1\b/.test(m.text)) &&
+      hj.messages.some((m) => m.role === "assistant" && /step 100/.test(m.text)),
+  );
+  ok(
+    "/history filters out tool_result-only rows (no empty-text messages)",
+    hj.messages.every((m) => typeof m.text === "string" && m.text.length > 0),
+  );
+  ok(
+    "/history caps the visible response (so it doesn't grow unbounded)",
+    hj.messages.length <= 200,
+    `got ${hj.messages.length}`,
+  );
+  await ch.stop();
+}
+
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);

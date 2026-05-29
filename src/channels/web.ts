@@ -396,11 +396,29 @@ export class WebChannel implements Channel {
       try {
         const userId = this.sessions.resolveUser(this.id, externalUserId);
         const session = this.sessions.getOrCreateSession(userId, this.defaultAgent);
+        // Tool-using turns put TWO rows into the messages table per turn: the
+        // assistant message (text + tool_use parts) AND a synthetic "user"
+        // message holding the tool_results (no text, filtered out below).
+        // A 10-step droplet-creation turn writes ~21 rows of which only ~11
+        // are visible.
+        //
+        // The previous tail(50) limit was therefore much too small: in a
+        // session that's had a handful of tool-heavy conversations, the user's
+        // own text messages get pushed clean out of the 50-row window. Scott
+        // saw exactly this — /history returned 10 assistant messages and zero
+        // of his own questions, because his questions were >50 rows back.
+        //
+        // Pull a much larger raw window, filter to visibles, then cap. 1000
+        // raw rows comfortably covers any realistic tool-heavy session; the
+        // 200-visible cap bounds the response size (~50-200KB worst case).
+        const RAW_TAIL = 1000;
+        const VISIBLE_CAP = 200;
         messages = this.sessions
-          .tail(session.id, 50)
+          .tail(session.id, RAW_TAIL)
           .filter((m) => m.role === "user" || m.role === "assistant")
           .map((m) => ({ role: m.role as string, text: partsToText(m.content) }))
-          .filter((m) => m.text.length > 0);
+          .filter((m) => m.text.length > 0)
+          .slice(-VISIBLE_CAP);
       } catch (err) {
         log.warn({ err }, "web channel: history read failed");
       }
