@@ -9,6 +9,7 @@ import { MessageBus } from "./channels/bus.js";
 import { buildChannels } from "./channels/registry.js";
 import type { OutgoingMessage, OutgoingAttachment } from "./channels/base.js";
 import { ingestIncomingMessage } from "./kernel/ingest.js";
+import { humanizeTurnError } from "./kernel/error-message.js";
 import { buildDispatcher } from "./dispatch/factory.js";
 import { PersistentContainerDispatcher } from "./dispatch/persistent.js";
 import type { AgentDispatcher } from "./dispatch/base.js";
@@ -111,9 +112,16 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         "turn complete",
       );
     } catch (err) {
-      log.error({ err, agent: agentName }, "turn failed");
+      // The operator gets the full stack via log.error. The USER (over telegram/web/
+      // wherever) gets a humanised explanation — see kernel/error-message.ts. The raw
+      // message is incomprehensible noise to anyone not reading the source.
+      const classified = humanizeTurnError(err);
+      log.error(
+        { err, agent: agentName, category: classified.category },
+        "turn failed",
+      );
       await ch
-        .send(msg.externalUserId, { text: `Error: ${(err as Error).message}` })
+        .send(msg.externalUserId, { text: classified.userMessage })
         .catch(() => undefined);
     }
   });
