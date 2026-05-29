@@ -74,7 +74,7 @@ export class WebChannel implements Channel {
         // --- Login mode: unauthenticated login routes, served before the gate ---
         if (loginMode) {
           if (req.method === "GET" && (pathname === "/login" || pathname === "/login.html")) {
-            res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            res.writeHead(200, htmlHeaders());
             res.end(WEB_LOGIN_HTML);
             return;
           }
@@ -101,7 +101,7 @@ export class WebChannel implements Channel {
             res.end();
             return;
           }
-          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.writeHead(200, htmlHeaders());
           res.end(this.renderShell());
           return;
         }
@@ -408,6 +408,29 @@ export class WebChannel implements Channel {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ messages }));
   }
+}
+
+// Response headers for the shell HTML (chat UI + login page).
+//
+// The shell embeds every CSS rule and every line of client JS inline, so a
+// `dae update` only takes effect once the browser fetches a fresh copy.
+// Without a Cache-Control header browsers fall back to heuristic caching —
+// often hours, sometimes days — which means a user is left on the OLD JS
+// even after the supervisor was rebuilt with a new version. (Scott hit this
+// after PR #82: server had the new code, his browser still had the old.)
+//
+// `no-cache, no-store, must-revalidate` is overkill for an HTML response but
+// the right kind of overkill: the file is ~30KB, refetching costs nothing,
+// and Cloudflare / corporate proxies along the way all honour at least one
+// of those directives. `Pragma: no-cache` + `Expires: 0` cover ancient HTTP/1
+// proxies belt-and-braces.
+function htmlHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+  };
 }
 
 // Flatten a message's content parts to plain text for the history view (the live SSE

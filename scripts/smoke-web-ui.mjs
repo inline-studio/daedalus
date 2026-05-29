@@ -39,6 +39,21 @@ async function run(port, token) {
   const html = await home.text();
   ok("GET / serves HTML shell", home.status === 200 && /<!doctype html>/i.test(html) && html.includes("/events"));
   ok("shell includes an inline SVG favicon", /<link rel="icon"[^>]*data:image\/svg\+xml/.test(html));
+  // Cache-busting headers — without these the browser caches the inline
+  // JS/CSS shell aggressively, so a `dae update` never reaches the user
+  // until they hard-refresh. Scott hit exactly this after PR #82 deployed.
+  {
+    const cc = home.headers.get("cache-control") ?? "";
+    ok(
+      "shell sends Cache-Control: no-store (so a `dae update` lands without hard-refresh)",
+      /no-store/.test(cc) && /no-cache/.test(cc),
+      cc,
+    );
+    ok(
+      "shell sends Pragma: no-cache (HTTP/1.0 belt-and-braces)",
+      home.headers.get("pragma") === "no-cache",
+    );
+  }
 
   const hist = await fetch(base + "/history?externalUserId=u1");
   const hj = await hist.json();
