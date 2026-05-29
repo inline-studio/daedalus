@@ -16,6 +16,7 @@
     "examples/",
     "runtime/",
     "README.md",
+    "CHANGELOG.md",
     "docker-compose.yml",
     "Dockerfile",
     "Dockerfile.graphiti",

@@ -509,6 +509,7 @@ detail:
 - [`docs/channels.md`](docs/channels.md) — Telegram, inbound / outbound attachments
 - [`docs/mcp.md`](docs/mcp.md) — MCP server configuration
 - [`docs/docker-mode.md`](docs/docker-mode.md) — dispatch architecture, per-agent mounts, SSH key auto-mount
+- [`CHANGELOG.md`](CHANGELOG.md) — recent user-facing changes, by release
 
 ---
 
