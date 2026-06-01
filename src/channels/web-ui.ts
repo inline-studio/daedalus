@@ -44,17 +44,21 @@ export const WEB_UI_HTML = `<!doctype html>
   #settings.on { display: flex; flex-wrap: wrap; align-items: center; }
   #settings input { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; }
   #settings label { font-size: 13px; color: #9da7b3; }
-  /* Chat-app convention: messages anchored to the BOTTOM. Without
-     justify-content: flex-end, a short conversation stacks at the top of #log
-     with empty space underneath — the latest message floats mid-page,
-     "where did everything go" — and there's no scrollbar because content
-     fits the container. flex-end fills from the bottom up, which both
-     matches user expectation AND keeps the scroll-on-overflow behaviour. */
+  /* Chat-app convention: messages anchored to the BOTTOM. A previous
+     iteration used justify-content: flex-end here, which works when content
+     fits the container but has a long-standing Chromium bug when content
+     OVERFLOWS — the top of the content becomes unreachable and the scrollbar
+     never appears. (Brave on macOS reproduces this reliably.)
+     The robust pattern is margin-top: auto on the first child: it absorbs
+     extra space when the conversation is short (anchors to bottom), and
+     collapses to 0 when the content overflows (native scroll works as the
+     browser expects). The flex column + overflow-y: auto stay the same. */
   #log { flex: 1; overflow-y: auto; padding: 16px; display: flex;
-         flex-direction: column; justify-content: flex-end; gap: 12px; }
-  /* When a child grows the flex container, justify-content can clip the
-     top of the first item. min-height on each .msg avoids that and keeps
-     scrolling correct in tall conversations. */
+         flex-direction: column; gap: 12px; }
+  #log > :first-child { margin-top: auto; }
+  /* Flex children can be shrunk by default, which would let the browser
+     compress tall message bubbles instead of letting #log scroll. Lock
+     their intrinsic size so scroll behaviour is predictable. */
   #log > * { flex-shrink: 0; }
   .msg { max-width: 760px; width: fit-content; padding: 10px 14px; border-radius: 12px; white-space: normal; word-wrap: break-word; }
   .msg.user { align-self: flex-end; background: #1f6feb; color: #fff; border-bottom-right-radius: 4px; }

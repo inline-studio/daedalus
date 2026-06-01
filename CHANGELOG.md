@@ -11,7 +11,15 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
-_(empty — collecting changes for the next sync)_
+### Fixed
+
+- **Webchat: missing scrollbar in long conversations.** The previous layout
+  used `justify-content: flex-end` on the scroll container to anchor
+  messages to the bottom. That works when content fits, but a long-standing
+  Chromium bug (reproduced in Brave) makes the top of overflowing content
+  unreachable — no scrollbar appears at all. Replaced with the
+  `margin-top: auto` pattern on the first child: same anchored-to-bottom
+  behaviour when underfilled, native scrolling when overflowing. ([#88])
 
 ---
 
@@ -163,3 +171,4 @@ Significant changes that shipped before this changelog was started:
 [#84]: https://github.com/inline-studio/daedalus/pull/84
 [#85]: https://github.com/inline-studio/daedalus/pull/85
 [#86]: https://github.com/inline-studio/daedalus/pull/86
+[#88]: https://github.com/inline-studio/daedalus/pull/88

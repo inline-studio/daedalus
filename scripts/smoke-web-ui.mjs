@@ -474,11 +474,19 @@ async function run(port, token) {
 {
   const { WEB_UI_HTML } = await import("../dist/channels/web-ui.js");
 
-  // 10a. #log anchors content to the bottom (chat-app convention). Without
-  //      this rule, a short conversation floats at the top of the chat area.
+  // 10a. #log anchors content to the bottom via `margin-top: auto` on the
+  //      first child. (A prior version used `justify-content: flex-end` on
+  //      the parent, which works when content fits but has a Chromium bug
+  //      where overflowing content can't be scrolled to — Brave reproduces
+  //      it reliably. The margin-top:auto pattern collapses to 0 when
+  //      content overflows, so native scroll behaves as expected.)
   ok(
-    "#log uses justify-content: flex-end (anchors content to bottom)",
-    /#log\s*\{[^}]*justify-content:\s*flex-end/.test(WEB_UI_HTML),
+    "#log anchors content via margin-top:auto on the first child",
+    /#log\s*>\s*:first-child\s*\{\s*margin-top:\s*auto/.test(WEB_UI_HTML),
+  );
+  ok(
+    "#log does NOT use justify-content: flex-end (overflow-scroll bug in Chromium)",
+    !/#log\s*\{[^}]*justify-content:\s*flex-end/.test(WEB_UI_HTML),
   );
 
   // 10b. loadHistory bypasses the per-message smart-scroll work via a
