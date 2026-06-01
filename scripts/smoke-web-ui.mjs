@@ -623,5 +623,35 @@ async function run(port, token) {
   );
 }
 
+// 13. User messages render through md() too. Previously the user branch
+//     in addMsg HTML-escaped + wrapped in <p>, so typed markdown surfaced
+//     as literal asterisks. Both roles should now share the rendering path
+//     (the role still controls bubble styling — blue vs dark — via the
+//     .msg.user/.msg.assistant classnames, not the content).
+{
+  const { WEB_UI_HTML } = await import("../dist/channels/web-ui.js");
+  const fnStart = WEB_UI_HTML.indexOf("function addMsg(role, text, attachments)");
+  ok("addMsg() exists", fnStart >= 0);
+  if (fnStart >= 0) {
+    // Slice to just the function body, brace-matched.
+    const open = WEB_UI_HTML.indexOf("{", fnStart);
+    let depth = 0, close = -1;
+    for (let i = open; i < WEB_UI_HTML.length; i++) {
+      const c = WEB_UI_HTML[i];
+      if (c === "{") depth++;
+      else if (c === "}") { depth--; if (depth === 0) { close = i + 1; break; } }
+    }
+    const body = open >= 0 && close > open ? WEB_UI_HTML.slice(open, close) : "";
+    ok(
+      "addMsg() routes both roles through md() (user markdown renders)",
+      /var\s+html\s*=\s*md\(/.test(body),
+    );
+    ok(
+      "addMsg() no longer hand-escapes only for the user role",
+      !/role\s*===\s*["']user["']\s*\?\s*["']<p>["']/.test(body),
+    );
+  }
+}
+
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);
