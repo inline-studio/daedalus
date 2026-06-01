@@ -145,6 +145,51 @@ export class Kernel {
       messages.push({ role: "user", content: toolResults });
     }
 
+    // We fell out of the loop without a clean stop — i.e. the model was still calling
+    // tools when it hit the turn cap, so it never produced a closing message and
+    // `finalText` is still "". Returning that empty string surfaces to the user as a
+    // blank reply (an empty bubble in the channel) even though real work happened. Spend
+    // one more completion WITHOUT tools, nudging the model to report what it accomplished,
+    // so the user always gets a real answer instead of silence.
+    if (stopReason === "tool_use" && !finalText.trim()) {
+      log.warn(
+        { agent: this.opts.toolContext.agentName, turns, maxTurns: this.opts.maxTurns },
+        "hit max turns mid-tool-use — forcing a tool-less wrap-up so the reply isn't empty",
+      );
+      stopReason = "max_turns";
+      this.notices.push(
+        `⏱️ I reached my step limit (${this.opts.maxTurns} turns) before fully finishing this task. ` +
+          `Here's where I got to — ask me to continue if anything's still incomplete.`,
+      );
+      // The trailing message is the tool_results for the final turn's tool calls. Append the
+      // wrap-up instruction to it rather than pushing a second user message (providers reject
+      // two user turns in a row). This keeps role alternation valid and is safe to persist.
+      const last = messages[messages.length - 1];
+      if (last && last.role === "user") {
+        last.content.push({
+          type: "text",
+          text:
+            "You've reached your step limit and can't call any more tools. In your final " +
+            "message, report to the user what you accomplished and the concrete results " +
+            "(e.g. names, IDs, IPs, paths), plus anything still outstanding.",
+        });
+      }
+      try {
+        const wrap = await this.completeFittingContext(messages, signal, { tools: [] });
+        messages.push(wrap.message);
+        finalText = collectText(wrap.message.content);
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, "max-turns wrap-up completion failed");
+      }
+      // Last resort: the wrap-up itself produced nothing usable. Never return an empty reply.
+      if (!finalText.trim()) {
+        finalText =
+          `I reached my step limit (${this.opts.maxTurns} turns) while still working, so I ` +
+          `couldn't post a final summary. The steps I ran before stopping did execute — ask me ` +
+          `to continue and I'll pick up where I left off.`;
+      }
+    }
+
     return {
       messages,
       finalText,
@@ -170,6 +215,7 @@ export class Kernel {
   private async completeFittingContext(
     messages: Message[],
     signal?: AbortSignal,
+    opts?: { tools?: ToolDefinition[] },
   ): Promise<CompletionResult> {
     let view = messages;
     let triedCompact = false;
@@ -180,7 +226,9 @@ export class Kernel {
       const req: CompletionRequest = {
         system: this.opts.system,
         messages: sendView,
-        tools: this.allToolDefs,
+        // Defaults to the agent's full toolset; callers can force a tool-less completion
+        // (e.g. the max-turns wrap-up) by passing an empty list.
+        tools: opts?.tools ?? this.allToolDefs,
         model,
         maxTokens: this.opts.maxTokens,
         ...(this.opts.temperature !== undefined ? { temperature: this.opts.temperature } : {}),
