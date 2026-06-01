@@ -11,6 +11,17 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Added
+
+- **Webchat: Copy button on code blocks.** Every `<pre><code>` block in
+  an assistant reply now has a small "Copy" button in the top-right corner.
+  Click → text goes to the clipboard, button briefly reads "Copied!" then
+  resets. Inline `` `code` `` stays as-is (too small for a button to be
+  worth the noise). Wired via event delegation on `#log` so it works for
+  bulk-loaded history and live SSE messages alike. Falls back to a hidden
+  `<textarea>` + `execCommand("copy")` on plain-HTTP origins where
+  `navigator.clipboard` isn't available. ([#89])
+
 ### Fixed
 
 - **Webchat: missing scrollbar in long conversations.** The previous layout
@@ -172,3 +183,4 @@ Significant changes that shipped before this changelog was started:
 [#85]: https://github.com/inline-studio/daedalus/pull/85
 [#86]: https://github.com/inline-studio/daedalus/pull/86
 [#88]: https://github.com/inline-studio/daedalus/pull/88
+[#89]: https://github.com/inline-studio/daedalus/pull/89

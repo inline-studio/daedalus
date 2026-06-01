@@ -558,5 +558,70 @@ async function run(port, token) {
   );
 }
 
+// 12. Copy button on code blocks. md() should emit a <button class="copy-btn">
+//     inside every <pre>; #log should have a delegated click handler that
+//     copies the contained <code> text to the clipboard.
+{
+  const { WEB_UI_HTML } = await import("../dist/channels/web-ui.js");
+
+  // (a) The CSS for the button is present.
+  ok(
+    "CSS: .copy-btn is styled (positioned, has hover state)",
+    /\.copy-btn\s*\{[^}]*position:\s*absolute/.test(WEB_UI_HTML),
+  );
+  ok(
+    "CSS: .msg pre is position: relative (so the absolute button is anchored to it)",
+    /\.msg pre\s*\{[^}]*position:\s*relative/.test(WEB_UI_HTML),
+  );
+
+  // (b) md() emits the Copy button inside every <pre> block. Re-extract the
+  //     function the same way smoke #6 does and exercise it with a code
+  //     fence input.
+  const start = WEB_UI_HTML.indexOf("function md(src)");
+  const end = WEB_UI_HTML.indexOf("function attachmentHtml");
+  ok("md() extractable", start >= 0 && end > start);
+  if (start >= 0 && end > start) {
+    const prelude =
+      "function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }";
+    const api = new Function(
+      `${prelude} ${WEB_UI_HTML.slice(start, end)} return { md: md };`,
+    )();
+    const out = api.md("```\nconsole.log(1)\n```");
+    ok(
+      "md() emits Copy button inside <pre>",
+      /<pre>[\s\S]*class="copy-btn"[\s\S]*<code>/.test(out),
+    );
+    ok(
+      "md() preserves the code body alongside the button",
+      out.includes("console.log(1)"),
+    );
+    // Inline `code` must NOT get a button — it's only worth one for the
+    // multi-line block form.
+    const inlineOut = api.md("use `cd /tmp` to change");
+    ok(
+      "md() does NOT add a copy button to inline <code>",
+      inlineOut.includes("<code>cd /tmp</code>") && !inlineOut.includes("copy-btn"),
+    );
+  }
+
+  // (c) The delegated click handler exists on #log and walks up to a <pre>.
+  ok(
+    "click handler delegated on #log finds .copy-btn",
+    /log\.addEventListener\("click"[\s\S]{0,400}closest\(["']\.copy-btn["']\)/.test(WEB_UI_HTML),
+  );
+  ok(
+    "click handler reads the <code>.textContent",
+    /pre\.querySelector\(["']code["']\)/.test(WEB_UI_HTML) && WEB_UI_HTML.includes(".textContent"),
+  );
+  ok(
+    "click handler uses navigator.clipboard.writeText (modern path)",
+    /navigator\.clipboard\.writeText/.test(WEB_UI_HTML),
+  );
+  ok(
+    "click handler has an execCommand fallback for non-HTTPS contexts",
+    /execCommand\(["']copy["']\)/.test(WEB_UI_HTML),
+  );
+}
+
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);
