@@ -361,7 +361,15 @@ export const WEB_UI_HTML = `<!doctype html>
     var wasAtBottom = isAtBottom();
     var div = document.createElement("div");
     div.className = "msg " + (role === "user" ? "user" : "assistant");
-    var html = role === "user" ? "<p>" + esc(text || "").replace(/\\n/g, "<br>") + "</p>" : md(text || "");
+    // Render user messages through md() too. Previously user bubbles were
+    // HTML-escaped and wrapped in a single <p>, so typed markdown showed up
+    // as literal asterisks/hashes/backticks. md() does its own escaping and
+    // gives user-typed code blocks, tables, lists, links, and emphasis the
+    // same rendering as assistant replies. (The role only controls the
+    // bubble styling — blue vs dark — not the content path.) The text sent
+    // to the agent is whatever was typed; this is purely client-side
+    // display.
+    var html = md(text || "");
     (attachments || []).forEach(function (a) { html += attachmentHtml(a); });
     div.innerHTML = html;
     log.appendChild(div);

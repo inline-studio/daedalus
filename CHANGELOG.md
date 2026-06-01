@@ -22,6 +22,16 @@ Each entry references the PR that introduced the change.
   `<textarea>` + `execCommand("copy")` on plain-HTTP origins where
   `navigator.clipboard` isn't available. ([#89])
 
+- **Webchat: user messages render as Markdown.** Previously the user
+  branch in `addMsg` HTML-escaped and wrapped in a `<p>`, so typed
+  markdown surfaced as literal asterisks / hashes / backticks. Both
+  message roles now share the same `md()` render path — user-typed
+  code fences (with the Copy button), tables, lists, links, and
+  emphasis all format the same way assistant replies do. The role
+  still controls the bubble's blue/dark styling via the `.msg.user` /
+  `.msg.assistant` class, not the content. Server-side persisted text
+  is unchanged — this is purely a client-side display change. ([#90])
+
 ### Fixed
 
 - **Webchat: missing scrollbar in long conversations.** The previous layout
@@ -184,3 +194,4 @@ Significant changes that shipped before this changelog was started:
 [#86]: https://github.com/inline-studio/daedalus/pull/86
 [#88]: https://github.com/inline-studio/daedalus/pull/88
 [#89]: https://github.com/inline-studio/daedalus/pull/89
+[#90]: https://github.com/inline-studio/daedalus/pull/90
