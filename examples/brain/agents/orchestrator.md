@@ -2,7 +2,10 @@
 description: Top-level coordinating agent that delegates to specialists.
 provider: anthropic
 model: claude-opus-4-7
-maxTurns: 30
+# Hands-on multi-step work (provisioning a server, a long refactor) easily exceeds a few
+# dozen tool-calling turns. Keep this generous; the kernel now wraps up gracefully if the
+# cap is ever hit, so the cost of a high ceiling is bounded.
+maxTurns: 80
 maxTokens: 4096
 souls: [careful]
 personas: [orchestrator]
