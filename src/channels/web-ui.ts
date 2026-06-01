@@ -64,9 +64,17 @@ export const WEB_UI_HTML = `<!doctype html>
   .msg.user { align-self: flex-end; background: #1f6feb; color: #fff; border-bottom-right-radius: 4px; }
   .msg.assistant { align-self: flex-start; background: #161b22; border: 1px solid #21262d; border-bottom-left-radius: 4px; }
   .msg p { margin: 0 0 8px; } .msg p:last-child { margin-bottom: 0; }
-  .msg pre { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px; overflow-x: auto; }
+  .msg pre { position: relative; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px; padding-right: 60px; overflow-x: auto; }
   .msg code { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 1px 4px; font-size: 13px; }
   .msg pre code { background: none; border: none; padding: 0; }
+  /* Copy button on every <pre><code> block. Always visible (not hover-only)
+     so it works on touch too. padding-right above leaves room for it. */
+  .copy-btn { position: absolute; top: 6px; right: 6px;
+              background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+              border-radius: 6px; padding: 2px 8px; font-size: 12px;
+              font-family: inherit; cursor: pointer; line-height: 1.4; }
+  .copy-btn:hover { background: #30363d; }
+  .copy-btn.copied { background: #238636; border-color: #2ea043; color: #fff; }
   .msg.user code, .msg.user pre { background: rgba(0,0,0,.25); border-color: rgba(255,255,255,.2); }
   .msg img { max-width: 100%; border-radius: 8px; margin-top: 6px; }
   .msg a.file { display: inline-block; margin-top: 6px; color: #58a6ff; }
@@ -197,7 +205,7 @@ export const WEB_UI_HTML = `<!doctype html>
     var blocks = [];
     var h = esc(src == null ? "" : src);
     h = h.replace(/\\\`\\\`\\\`([\\s\\S]*?)\\\`\\\`\\\`/g, function (_, c) {
-      blocks.push("<pre><code>" + c.replace(/^\\n/, "") + "</code></pre>"); return "\\u0000" + (blocks.length - 1) + "\\u0000";
+      blocks.push("<pre><button class=\\"copy-btn\\" type=\\"button\\">Copy</button><code>" + c.replace(/^\\n/, "") + "</code></pre>"); return "\\u0000" + (blocks.length - 1) + "\\u0000";
     });
     h = h.replace(/\\\`([^\\\`]+)\\\`/g, "<code>$1</code>");
     h = h.replace(/^### (.*)$/gm, "<h3>$1</h3>").replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h2>$1</h2>");
@@ -300,6 +308,45 @@ export const WEB_UI_HTML = `<!doctype html>
       newSinceScrolled = 0;
       pill.classList.remove("on");
       pill.textContent = "↓ new messages";
+    }
+  });
+
+  // Copy-button delegation. The md() function emits a Copy button inside
+  // every <pre> block; rather than wiring a listener per button on render
+  // (and remembering to do it for bulk-loaded history too), we listen once
+  // on #log and walk up from the click target. Works for all <pre> blocks
+  // past, present, and future.
+  log.addEventListener("click", function (e) {
+    var btn = e.target && e.target.closest && e.target.closest(".copy-btn");
+    if (!btn) return;
+    var pre = btn.closest("pre");
+    if (!pre) return;
+    var code = pre.querySelector("code");
+    var text = (code || pre).textContent || "";
+    // navigator.clipboard is HTTPS-only; on plain http (localhost dev) it's
+    // still available, but on a custom-domain HTTP setup it'll be undefined.
+    // Fall back to a hidden textarea + execCommand("copy") for that case.
+    var done = function (ok) {
+      btn.textContent = ok ? "Copied!" : "Failed";
+      btn.classList.toggle("copied", ok);
+      setTimeout(function () {
+        btn.textContent = "Copy";
+        btn.classList.remove("copied");
+      }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+    } else {
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        done(ok);
+      } catch (_err) { done(false); }
     }
   });
 
