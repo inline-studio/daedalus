@@ -7,7 +7,13 @@ import { TelegramChannel } from "./telegram.js";
 import { WhatsappChannel } from "./whatsapp.js";
 
 // `sessions` is threaded in so the web channel can serve session history (GET /history).
-export function buildChannels(config: ChannelsConfig, sessions?: SessionStore): Channel[] {
+// `identityName` is the orchestrator's user-facing name (config.identity.name) — the web
+// channel uses it to label the assistant in the "copy conversation" transcript.
+export function buildChannels(
+  config: ChannelsConfig,
+  sessions?: SessionStore,
+  identityName?: string,
+): Channel[] {
   const out: Channel[] = [];
   if (config.cli?.enabled) {
     out.push(new CliChannel({ defaultAgent: config.cli.defaultAgent }));
@@ -27,6 +33,8 @@ export function buildChannels(config: ChannelsConfig, sessions?: SessionStore): 
         ...(w.token ? { token: w.token } : {}),
         ...(auth ? { auth } : {}),
         ...(sessions ? { sessions } : {}),
+        ...(identityName ? { assistantName: identityName } : {}),
+        ...(w.userName ? { userName: w.userName } : {}),
       }),
     );
   }

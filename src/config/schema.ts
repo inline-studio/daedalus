@@ -198,6 +198,10 @@ export const ChannelsConfigSchema = z.object({
       username: z.string().optional(),
       passwordHash: z.string().optional(),
       sessionSecret: z.string().optional(),
+      // Display name for the human in the "copy conversation" transcript (the attributed,
+      // Telegram-style `[date] Name: …` export). Falls back to the logged-in username
+      // (login mode) or "You". Set this to e.g. your full name for nicer debug pastes.
+      userName: z.string().optional(),
     })
     .optional(),
   telegram: z

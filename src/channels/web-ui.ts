@@ -44,6 +44,20 @@ export const WEB_UI_HTML = `<!doctype html>
   #settings.on { display: flex; flex-wrap: wrap; align-items: center; }
   #settings input { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; }
   #settings label { font-size: 13px; color: #9da7b3; }
+  /* Selection action bar (Telegram-style). Hidden until the user enters select mode; then it
+     shows the count, Select all/none, Copy, and Cancel. While selecting, message bubbles are
+     tappable to toggle and the selected ones get a blue ring. */
+  #selbar { display: none; padding: 8px 14px; border-bottom: 1px solid #21262d; background: #161b22;
+            align-items: center; gap: 10px; }
+  #selbar.on { display: flex; }
+  #selbar button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+                   padding: 5px 10px; cursor: pointer; font-size: 13px; }
+  #selbar button:hover { background: #30363d; }
+  #selbar #sel-copy { background: #238636; border-color: #2ea043; color: #fff; }
+  #selbar #sel-copy:disabled { opacity: .5; cursor: default; }
+  body.selecting .msg { cursor: pointer; }
+  /* The ring sits inside the bubble's box so it doesn't get clipped by the log's overflow. */
+  .msg.selected { box-shadow: inset 0 0 0 2px #58a6ff; }
   /* Chat-app convention: messages anchored to the BOTTOM. A previous
      iteration used justify-content: flex-end here, which works when content
      fits the container but has a long-standing Chromium bug when content
@@ -112,10 +126,18 @@ export const WEB_UI_HTML = `<!doctype html>
   <header>
     <b>Daedalus</b><span class="meta" id="status">connecting…</span>
     <span class="sp"></span>
+    <button id="select" title="Select messages to copy (with who-said-what + timestamps)">☑️ select</button>
     <button id="notify" title="Notify me when Artemis replies and this tab isn't focused">🔔 off</button>
     <button id="gear">settings</button>
     <button id="logout" style="display:none">logout</button>
   </header>
+  <div id="selbar">
+    <button id="sel-cancel" type="button">Cancel</button>
+    <span class="meta" id="sel-count">0 selected</span>
+    <span class="sp"></span>
+    <button id="sel-all" type="button">Select all</button>
+    <button id="sel-copy" type="button">📋 Copy</button>
+  </div>
   <div id="settings">
     <label>Bearer token (if your server requires one)</label>
     <input id="token" type="password" placeholder="leave blank if none" style="min-width:240px" />
@@ -142,6 +164,13 @@ export const WEB_UI_HTML = `<!doctype html>
   var es = null;
   // Injected by the server: "login" (cookie auth — no token UI), "token", or "open".
   var MODE = "__DAE_WEB_MODE__";
+  // Speaker labels for the "copy chat" transcript, injected by the server (identity name +
+  // the resolved human label). The chat bubbles don't use these — only the export does.
+  var ASSISTANT_NAME = "__DAE_ASSISTANT_NAME__";
+  var USER_NAME = "__DAE_USER_NAME__";
+  // Running record of the visible conversation: [{role, text, at}] in display order. Fed by
+  // addMsg (history, live replies, and the user's own sends) and consumed by "copy chat".
+  var convo = [];
   var notifyOn = LS.getItem("dae_notify") === "1";
   var iconEl = document.querySelector("link[rel=icon]");
   var FAVICON = iconEl ? iconEl.href : "";
@@ -172,7 +201,7 @@ export const WEB_UI_HTML = `<!doctype html>
     if (!notifyOn || !("Notification" in window) || Notification.permission !== "granted") return;
     if (!document.hidden) return; // tab is focused — no need to nag
     try {
-      var n = new Notification("Artemis replied", { body: (text || "").slice(0, 140), icon: FAVICON });
+      var n = new Notification(ASSISTANT_NAME + " replied", { body: (text || "").slice(0, 140), icon: FAVICON });
       n.onclick = function () { window.focus(); n.close(); };
     } catch (e) {}
   }
@@ -311,43 +340,174 @@ export const WEB_UI_HTML = `<!doctype html>
     }
   });
 
-  // Copy-button delegation. The md() function emits a Copy button inside
-  // every <pre> block; rather than wiring a listener per button on render
-  // (and remembering to do it for bulk-loaded history too), we listen once
-  // on #log and walk up from the click target. Works for all <pre> blocks
-  // past, present, and future.
+  // Copy text to the clipboard, resolving true/false. navigator.clipboard is HTTPS-only;
+  // on plain http (localhost dev) it's still available, but on a custom-domain HTTP setup
+  // it'll be undefined — so fall back to a hidden textarea + execCommand("copy"). Shared by
+  // the per-code-block Copy buttons and the "copy chat" transcript export.
+  function copyToClipboard(text) {
+    return new Promise(function (resolve) {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { resolve(true); }, function () { resolve(false); });
+      } else {
+        try {
+          var ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed"; ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          var ok = document.execCommand("copy");
+          document.body.removeChild(ta);
+          resolve(ok);
+        } catch (_err) { resolve(false); }
+      }
+    });
+  }
+
+  // Attributed-transcript formatting. Each visible message becomes one line:
+  //   [DD/MM/YYYY HH:MM] Name: message
+  // fmtTs renders the message's timestamp (history createdAt / SSE event id / send time) in
+  // local time, tolerating a missing or garbled value rather than printing "NaN".
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  function fmtTs(iso) {
+    var d = iso ? new Date(iso) : new Date();
+    if (isNaN(d.getTime())) d = new Date(); // tolerate a missing/garbled timestamp
+    return pad2(d.getDate()) + "/" + pad2(d.getMonth() + 1) + "/" + d.getFullYear() +
+           " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+  }
+  function lineFor(m) {
+    var who = m.role === "user" ? USER_NAME : ASSISTANT_NAME;
+    return "[" + fmtTs(m.at) + "] " + who + ": " + (m.text || "");
+  }
+
+  // --- Selection mode (Telegram-style) ---------------------------------------------------
+  // Enter via the header "select" button; tap message bubbles to tick them; the action bar
+  // offers Select all/none, Copy (the attributed transcript of the ticked messages), and
+  // Cancel. Each .msg carries a data-idx into the convo array, so a selection maps straight
+  // to the recorded {role, text, at} without re-parsing the rendered HTML.
+  var selecting = false;
+  var selected = new Set();
+  function msgEls() { return log.querySelectorAll(".msg"); }
+  function updateSelBar() {
+    $("sel-count").textContent = selected.size + " selected";
+    $("sel-copy").disabled = selected.size === 0;
+    var total = msgEls().length;
+    $("sel-all").textContent = total > 0 && selected.size >= total ? "Select none" : "Select all";
+  }
+  function enterSelect() {
+    selecting = true;
+    document.body.classList.add("selecting");
+    $("selbar").classList.add("on");
+    updateSelBar();
+  }
+  function exitSelect() {
+    selecting = false;
+    selected.clear();
+    document.body.classList.remove("selecting");
+    $("selbar").classList.remove("on");
+    Array.prototype.forEach.call(log.querySelectorAll(".msg.selected"), function (el) { el.classList.remove("selected"); });
+  }
+  function toggleMsg(div) {
+    var raw = div.getAttribute("data-idx");
+    if (raw == null) return;
+    var idx = +raw;
+    if (selected.has(idx)) { selected.delete(idx); div.classList.remove("selected"); }
+    else { selected.add(idx); div.classList.add("selected"); }
+    updateSelBar();
+  }
+  $("select").addEventListener("click", function () { if (selecting) exitSelect(); else enterSelect(); });
+  $("sel-cancel").addEventListener("click", exitSelect);
+  $("sel-all").addEventListener("click", function () {
+    var els = msgEls();
+    if (selected.size >= els.length) {
+      selected.clear();
+      Array.prototype.forEach.call(els, function (el) { el.classList.remove("selected"); });
+    } else {
+      Array.prototype.forEach.call(els, function (el) {
+        var raw = el.getAttribute("data-idx");
+        if (raw != null) { selected.add(+raw); el.classList.add("selected"); }
+      });
+    }
+    updateSelBar();
+  });
+  $("sel-copy").addEventListener("click", function () {
+    if (!selected.size) return;
+    var idxs = Array.from(selected).sort(function (a, b) { return a - b; });
+    var text = idxs.map(function (i) { return convo[i] ? lineFor(convo[i]) : ""; }).filter(Boolean).join("\n");
+    var btn = $("sel-copy");
+    copyToClipboard(text).then(function (ok) {
+      btn.textContent = ok ? "✓ Copied" : "✗ Failed";
+      setTimeout(function () { btn.textContent = "📋 Copy"; exitSelect(); }, 800);
+    });
+  });
+
+  // --- Native drag-select copy ----------------------------------------------------------
+  // The zero-friction path (what Telegram desktop does): just click-drag to highlight text,
+  // then Cmd/Ctrl+C. If the highlight stays within ONE bubble we leave the browser's native
+  // copy alone (you get exactly the substring you highlighted). If it spans TWO OR MORE
+  // bubbles we take over the copy and write the attributed transcript instead — full
+  // [ts] Name: text lines for every bubble the selection touches — so a rough drag across a
+  // few messages yields a clean, complete paste rather than run-together text with no
+  // attribution. No mode to enter; works alongside the explicit "select" button.
+
+  // Does the selection overlap this element's contents? Uses boundary-point comparison
+  // (overlap iff selection.start < el.end AND selection.end > el.start), which is portable
+  // across browsers — unlike the non-standard Range.intersectsNode / Selection.containsNode.
+  function selectionHits(sel, el) {
+    var er = document.createRange();
+    er.selectNodeContents(el);
+    for (var i = 0; i < sel.rangeCount; i++) {
+      var r = sel.getRangeAt(i);
+      if (r.compareBoundaryPoints(Range.END_TO_START, er) < 0 &&
+          r.compareBoundaryPoints(Range.START_TO_END, er) > 0) return true;
+    }
+    return false;
+  }
+  function selectedMsgIndices(sel) {
+    var els = msgEls(), out = [];
+    for (var i = 0; i < els.length; i++) {
+      if (selectionHits(sel, els[i])) {
+        var raw = els[i].getAttribute("data-idx");
+        if (raw != null) out.push(+raw);
+      }
+    }
+    out.sort(function (a, b) { return a - b; });
+    return out;
+  }
+  document.addEventListener("copy", function (e) {
+    var sel = window.getSelection && window.getSelection();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return; // nothing highlighted — native copy
+    var idxs = selectedMsgIndices(sel);
+    if (idxs.length < 2) return; // within a single bubble (or outside the log) — leave native copy
+    var text = idxs.map(function (i) { return convo[i] ? lineFor(convo[i]) : ""; }).filter(Boolean).join("\n");
+    if (!text || !e.clipboardData || !e.clipboardData.setData) return;
+    e.clipboardData.setData("text/plain", text);
+    e.preventDefault();
+  });
+
+  // Single delegated #log click handler. In selection mode a tap on a bubble toggles its
+  // selection (and we suppress link navigation); the per-code-block Copy button keeps its
+  // own behaviour in both modes. The md() function emits that Copy button inside every
+  // <pre>; delegating here covers bulk-loaded history and future messages alike.
   log.addEventListener("click", function (e) {
-    var btn = e.target && e.target.closest && e.target.closest(".copy-btn");
-    if (!btn) return;
-    var pre = btn.closest("pre");
+    var onCopyBtn = e.target && e.target.closest && e.target.closest(".copy-btn");
+    if (selecting && !onCopyBtn) {
+      var msgEl = e.target && e.target.closest && e.target.closest(".msg");
+      if (msgEl) { e.preventDefault(); toggleMsg(msgEl); }
+      return;
+    }
+    if (!onCopyBtn) return;
+    var pre = onCopyBtn.closest("pre");
     if (!pre) return;
     var code = pre.querySelector("code");
     var text = (code || pre).textContent || "";
-    // navigator.clipboard is HTTPS-only; on plain http (localhost dev) it's
-    // still available, but on a custom-domain HTTP setup it'll be undefined.
-    // Fall back to a hidden textarea + execCommand("copy") for that case.
-    var done = function (ok) {
-      btn.textContent = ok ? "Copied!" : "Failed";
-      btn.classList.toggle("copied", ok);
+    copyToClipboard(text).then(function (ok) {
+      onCopyBtn.textContent = ok ? "Copied!" : "Failed";
+      onCopyBtn.classList.toggle("copied", ok);
       setTimeout(function () {
-        btn.textContent = "Copy";
-        btn.classList.remove("copied");
+        onCopyBtn.textContent = "Copy";
+        onCopyBtn.classList.remove("copied");
       }, 1500);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
-    } else {
-      try {
-        var ta = document.createElement("textarea");
-        ta.value = text;
-        ta.style.position = "fixed"; ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        var ok = document.execCommand("copy");
-        document.body.removeChild(ta);
-        done(ok);
-      } catch (_err) { done(false); }
-    }
+    });
   });
 
   // True while loadHistory is bulk-loading. The smart-scroll heuristic
@@ -356,11 +516,18 @@ export const WEB_UI_HTML = `<!doctype html>
   // skip the per-message scroll work; the caller (loadHistory) does a single
   // jumpToBottom() at the end of the batch.
   var bulkLoading = false;
-  function addMsg(role, text, attachments) {
+  function addMsg(role, text, attachments, at) {
     var empty = log.querySelector(".empty"); if (empty) empty.remove();
+    // Record for the copy/select transcript before any early-return below, so bulk-loaded
+    // history is captured too. at is the server timestamp when known (history createdAt or
+    // the SSE event id); fall back to now for the user's own just-sent message.
+    convo.push({ role: role === "user" ? "user" : "assistant", text: text || "", at: at || new Date().toISOString() });
+    var convoIdx = convo.length - 1;
     var wasAtBottom = isAtBottom();
     var div = document.createElement("div");
     div.className = "msg " + (role === "user" ? "user" : "assistant");
+    // Map the bubble back to its convo entry so selection mode can build the transcript.
+    div.setAttribute("data-idx", String(convoIdx));
     // Render user messages through md() too. Previously user bubbles were
     // HTML-escaped and wrapped in a single <p>, so typed markdown showed up
     // as literal asterisks/hashes/backticks. md() does its own escaping and
@@ -425,7 +592,9 @@ export const WEB_UI_HTML = `<!doctype html>
         console.error("SSE message JSON parse failed", e, ev.data);
         return;
       }
-      addMsg("assistant", d.text || "", d.attachments || []);
+      // ev.lastEventId carries the event's id line — the server's ISO send time (or the
+      // persisted createdAt for replayed messages) — so the transcript timestamp is accurate.
+      addMsg("assistant", d.text || "", d.attachments || [], ev.lastEventId);
       maybeNotify(d.text || "");
     });
   }
@@ -449,7 +618,7 @@ export const WEB_UI_HTML = `<!doctype html>
         // messages" pill (these are HISTORY, not new) — then snap to the
         // bottom once at the end so the user sees the most recent reply.
         bulkLoading = true;
-        try { (j.messages || []).forEach(function (m) { addMsg(m.role, m.text || "", m.attachments || []); }); }
+        try { (j.messages || []).forEach(function (m) { addMsg(m.role, m.text || "", m.attachments || [], m.at); }); }
         finally { bulkLoading = false; }
         jumpToBottom();
       })
@@ -494,7 +663,7 @@ export const WEB_UI_HTML = `<!doctype html>
     var body = { externalUserId: uid };
     if (text) body.text = text;
     if (atts.length) body.attachments = atts;
-    addMsg("user", text, atts);
+    addMsg("user", text, atts, new Date().toISOString());
     $("text").value = ""; pending = []; renderChips(); autosize();
     fetch("/messages", { method: "POST", headers: authHeaders(), body: JSON.stringify(body) })
       .then(function (r) { if (on401(r)) return; if (!r.ok) statusEl.textContent = "send failed (" + r.status + ")"; })
