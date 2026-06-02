@@ -432,7 +432,7 @@ export const WEB_UI_HTML = `<!doctype html>
   $("sel-copy").addEventListener("click", function () {
     if (!selected.size) return;
     var idxs = Array.from(selected).sort(function (a, b) { return a - b; });
-    var text = idxs.map(function (i) { return convo[i] ? lineFor(convo[i]) : ""; }).filter(Boolean).join("\n");
+    var text = idxs.map(function (i) { return convo[i] ? lineFor(convo[i]) : ""; }).filter(Boolean).join("\\n");
     var btn = $("sel-copy");
     copyToClipboard(text).then(function (ok) {
       btn.textContent = ok ? "✓ Copied" : "✗ Failed";
@@ -478,7 +478,7 @@ export const WEB_UI_HTML = `<!doctype html>
     if (!sel || sel.isCollapsed || !sel.rangeCount) return; // nothing highlighted — native copy
     var idxs = selectedMsgIndices(sel);
     if (idxs.length < 2) return; // within a single bubble (or outside the log) — leave native copy
-    var text = idxs.map(function (i) { return convo[i] ? lineFor(convo[i]) : ""; }).filter(Boolean).join("\n");
+    var text = idxs.map(function (i) { return convo[i] ? lineFor(convo[i]) : ""; }).filter(Boolean).join("\\n");
     if (!text || !e.clipboardData || !e.clipboardData.setData) return;
     e.clipboardData.setData("text/plain", text);
     e.preventDefault();
