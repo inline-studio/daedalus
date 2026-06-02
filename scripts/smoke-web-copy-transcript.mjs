@@ -137,6 +137,39 @@ const ctx = { publish: async () => {} };
   );
 }
 
+// --- 5c. drag across >1 bubble auto-converts to message selection (the Telegram behaviour) ---
+{
+  ok("a drag-end (mouseup) handler is installed", /document\.addEventListener\("mouseup"/.test(WEB_UI_HTML));
+  ok(
+    "drag spanning >=2 bubbles enters select mode and ticks the touched bubbles",
+    /if \(!selecting\) enterSelect\(\);/.test(WEB_UI_HTML) &&
+      /selected\.add\(i\)[\s\S]{0,160}classList\.add\("selected"\)/.test(WEB_UI_HTML),
+  );
+  ok(
+    "the trailing post-drag click is suppressed (so the bubble isn't toggled back off)",
+    /suppressClickUntil = Date\.now\(\)/.test(WEB_UI_HTML) &&
+      /Date\.now\(\) < suppressClickUntil/.test(WEB_UI_HTML),
+  );
+  ok(
+    "Cmd/Ctrl+C in select mode copies the ticked transcript, but not from an input/textarea",
+    /selecting && selected\.size && !inEditable/.test(WEB_UI_HTML),
+  );
+  // A visible tick badge (not just the ring, which is invisible on the blue user bubbles).
+  ok(
+    "selected bubbles get a checkmark badge",
+    /\.msg\.selected::after\s*\{[^}]*content:\s*"✓"/.test(WEB_UI_HTML),
+  );
+  ok(
+    "the tick sits in the gutter on both sides (user left, assistant right)",
+    /\.msg\.user\.selected::after\s*\{[^}]*left:/.test(WEB_UI_HTML) &&
+      /\.msg\.assistant\.selected::after\s*\{[^}]*right:/.test(WEB_UI_HTML),
+  );
+  ok(
+    "the bubble is position:relative so the badge anchors to it",
+    /\.msg \{[^}]*position:\s*relative/.test(WEB_UI_HTML),
+  );
+}
+
 // --- 6. fmtTs produces the DD/MM/YYYY HH:MM shape and tolerates bad input ---
 {
   const s = WEB_UI_HTML.indexOf("function pad2(");

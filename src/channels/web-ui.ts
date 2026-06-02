@@ -58,6 +58,18 @@ export const WEB_UI_HTML = `<!doctype html>
   body.selecting .msg { cursor: pointer; }
   /* The ring sits inside the bubble's box so it doesn't get clipped by the log's overflow. */
   .msg.selected { box-shadow: inset 0 0 0 2px #58a6ff; }
+  /* Telegram-style tick badge on a selected bubble — the ring alone is hard to see on the
+     blue user bubbles, so a green check circle makes selection unambiguous on any bubble
+     colour. Anchored to the bubble's top-leading corner, just outside it; the page-coloured
+     border lifts it off the bubble. (.msg is position:relative so this anchors to it.) */
+  .msg.selected::after { content: "✓"; position: absolute; top: -8px; width: 20px; height: 20px;
+                         display: flex; align-items: center; justify-content: center;
+                         background: #238636; color: #fff; border: 2px solid #0d1117;
+                         border-radius: 50%; font-size: 12px; line-height: 1; z-index: 2; }
+  /* User bubbles are right-aligned → badge on their left; assistant bubbles left-aligned →
+     badge on their right, so it always sits in the gutter, never over the text. */
+  .msg.user.selected::after { left: -8px; }
+  .msg.assistant.selected::after { right: -8px; }
   /* Chat-app convention: messages anchored to the BOTTOM. A previous
      iteration used justify-content: flex-end here, which works when content
      fits the container but has a long-standing Chromium bug when content
@@ -74,7 +86,7 @@ export const WEB_UI_HTML = `<!doctype html>
      compress tall message bubbles instead of letting #log scroll. Lock
      their intrinsic size so scroll behaviour is predictable. */
   #log > * { flex-shrink: 0; }
-  .msg { max-width: 760px; width: fit-content; padding: 10px 14px; border-radius: 12px; white-space: normal; word-wrap: break-word; }
+  .msg { position: relative; max-width: 760px; width: fit-content; padding: 10px 14px; border-radius: 12px; white-space: normal; word-wrap: break-word; }
   .msg.user { align-self: flex-end; background: #1f6feb; color: #fff; border-bottom-right-radius: 4px; }
   .msg.assistant { align-self: flex-start; background: #161b22; border: 1px solid #21262d; border-bottom-left-radius: 4px; }
   .msg p { margin: 0 0 8px; } .msg p:last-child { margin-bottom: 0; }
@@ -440,14 +452,14 @@ export const WEB_UI_HTML = `<!doctype html>
     });
   });
 
-  // --- Native drag-select copy ----------------------------------------------------------
-  // The zero-friction path (what Telegram desktop does): just click-drag to highlight text,
-  // then Cmd/Ctrl+C. If the highlight stays within ONE bubble we leave the browser's native
-  // copy alone (you get exactly the substring you highlighted). If it spans TWO OR MORE
-  // bubbles we take over the copy and write the attributed transcript instead — full
-  // [ts] Name: text lines for every bubble the selection touches — so a rough drag across a
-  // few messages yields a clean, complete paste rather than run-together text with no
-  // attribution. No mode to enter; works alongside the explicit "select" button.
+  // --- Native drag-select → auto message-selection --------------------------------------
+  // The zero-friction path (what Telegram desktop does): click-drag to highlight text across
+  // bubbles. If the drag stays within ONE bubble it's left as a normal text selection (native
+  // copy gives you exactly the substring). The moment it spans TWO OR MORE bubbles we convert
+  // it to message selection — enter select mode and tick every touched bubble (blue rings +
+  // the action bar) — so it's visually obvious what's selected. From there Cmd/Ctrl+C OR the
+  // green Copy button yields the attributed transcript ([ts] Name: text per bubble). Works
+  // alongside the explicit "select" button.
 
   // Does the selection overlap this element's contents? Uses boundary-point comparison
   // (overlap iff selection.start < el.end AND selection.end > el.start), which is portable
@@ -473,11 +485,42 @@ export const WEB_UI_HTML = `<!doctype html>
     out.sort(function (a, b) { return a - b; });
     return out;
   }
-  document.addEventListener("copy", function (e) {
+
+  // On drag-END: if the highlight spans >1 bubble, convert it to message selection. Acting on
+  // mouseup (not selectionchange) means we don't disrupt the drag in progress; the text
+  // highlight is left intact so Cmd/Ctrl+C below still works too.
+  var suppressClickUntil = 0;
+  document.addEventListener("mouseup", function () {
     var sel = window.getSelection && window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.rangeCount) return; // nothing highlighted — native copy
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
     var idxs = selectedMsgIndices(sel);
-    if (idxs.length < 2) return; // within a single bubble (or outside the log) — leave native copy
+    if (idxs.length < 2) return;
+    if (!selecting) enterSelect();
+    idxs.forEach(function (i) {
+      selected.add(i);
+      var el = log.querySelector('.msg[data-idx="' + i + '"]');
+      if (el) el.classList.add("selected");
+    });
+    updateSelBar();
+    // A click often fires right after a drag; in select mode that would immediately toggle a
+    // bubble back off. Swallow just that one trailing click.
+    suppressClickUntil = Date.now() + 80;
+  });
+
+  document.addEventListener("copy", function (e) {
+    // In select mode with ticked messages, Cmd/Ctrl+C copies the attributed transcript of the
+    // selection (covers both the auto-selected drag and the explicit "select" button).
+    var ae = document.activeElement;
+    var inEditable = ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable);
+    var idxs;
+    if (selecting && selected.size && !inEditable) {
+      idxs = Array.from(selected).sort(function (a, b) { return a - b; });
+    } else {
+      var sel = window.getSelection && window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return; // nothing highlighted — native copy
+      idxs = selectedMsgIndices(sel);
+      if (idxs.length < 2) return; // within a single bubble (or outside the log) — leave native copy
+    }
     var text = idxs.map(function (i) { return convo[i] ? lineFor(convo[i]) : ""; }).filter(Boolean).join("\\n");
     if (!text || !e.clipboardData || !e.clipboardData.setData) return;
     e.clipboardData.setData("text/plain", text);
@@ -489,6 +532,9 @@ export const WEB_UI_HTML = `<!doctype html>
   // own behaviour in both modes. The md() function emits that Copy button inside every
   // <pre>; delegating here covers bulk-loaded history and future messages alike.
   log.addEventListener("click", function (e) {
+    // Swallow the click that trails a drag-select-to-message-selection (see mouseup above),
+    // so the just-selected bubble under the cursor isn't immediately toggled back off.
+    if (Date.now() < suppressClickUntil) { suppressClickUntil = 0; return; }
     var onCopyBtn = e.target && e.target.closest && e.target.closest(".copy-btn");
     if (selecting && !onCopyBtn) {
       var msgEl = e.target && e.target.closest && e.target.closest(".msg");
