@@ -58,6 +58,18 @@ export const WEB_UI_HTML = `<!doctype html>
   body.selecting .msg { cursor: pointer; }
   /* The ring sits inside the bubble's box so it doesn't get clipped by the log's overflow. */
   .msg.selected { box-shadow: inset 0 0 0 2px #58a6ff; }
+  /* Telegram-style tick badge on a selected bubble — the ring alone is hard to see on the
+     blue user bubbles, so a green check circle makes selection unambiguous on any bubble
+     colour. Anchored to the bubble's top-leading corner, just outside it; the page-coloured
+     border lifts it off the bubble. (.msg is position:relative so this anchors to it.) */
+  .msg.selected::after { content: "✓"; position: absolute; top: -8px; width: 20px; height: 20px;
+                         display: flex; align-items: center; justify-content: center;
+                         background: #238636; color: #fff; border: 2px solid #0d1117;
+                         border-radius: 50%; font-size: 12px; line-height: 1; z-index: 2; }
+  /* User bubbles are right-aligned → badge on their left; assistant bubbles left-aligned →
+     badge on their right, so it always sits in the gutter, never over the text. */
+  .msg.user.selected::after { left: -8px; }
+  .msg.assistant.selected::after { right: -8px; }
   /* Chat-app convention: messages anchored to the BOTTOM. A previous
      iteration used justify-content: flex-end here, which works when content
      fits the container but has a long-standing Chromium bug when content
@@ -74,7 +86,7 @@ export const WEB_UI_HTML = `<!doctype html>
      compress tall message bubbles instead of letting #log scroll. Lock
      their intrinsic size so scroll behaviour is predictable. */
   #log > * { flex-shrink: 0; }
-  .msg { max-width: 760px; width: fit-content; padding: 10px 14px; border-radius: 12px; white-space: normal; word-wrap: break-word; }
+  .msg { position: relative; max-width: 760px; width: fit-content; padding: 10px 14px; border-radius: 12px; white-space: normal; word-wrap: break-word; }
   .msg.user { align-self: flex-end; background: #1f6feb; color: #fff; border-bottom-right-radius: 4px; }
   .msg.assistant { align-self: flex-start; background: #161b22; border: 1px solid #21262d; border-bottom-left-radius: 4px; }
   .msg p { margin: 0 0 8px; } .msg p:last-child { margin-bottom: 0; }
