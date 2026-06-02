@@ -653,5 +653,35 @@ async function run(port, token) {
   }
 }
 
+// 14. The ENTIRE inline <script> must be valid JS once the template literal is evaluated.
+//     tsc only validates the surrounding TypeScript, NOT the JS inside the backtick string —
+//     and a `\n` written in that template literal becomes a REAL newline in the emitted
+//     string, which breaks a JS string literal ("Invalid or unexpected token") and kills the
+//     whole script, so the page loads but silently never connects (the deployed regression
+//     behind this guard). Parse the realized runtime string with new Function — the
+//     authoritative check the fragment-level evals above can't provide.
+{
+  const { WEB_UI_HTML, WEB_LOGIN_HTML } = await import("../dist/channels/web-ui.js");
+  const parseInlineScript = (html, label) => {
+    const s = html.indexOf("<script>") + "<script>".length;
+    const e = html.lastIndexOf("</script>");
+    const body = html
+      .slice(s, e)
+      .replace("__DAE_WEB_MODE__", "login")
+      .replace("__DAE_ASSISTANT_NAME__", "Artemis")
+      .replace("__DAE_USER_NAME__", "You");
+    let err = "";
+    try { new Function(body); } catch (e2) { err = e2.message; }
+    ok(`${label}: inline <script> parses as valid JS (template literal evaluated)`, err === "", err);
+  };
+  parseInlineScript(WEB_UI_HTML, "chat shell");
+  parseInlineScript(WEB_LOGIN_HTML, "login page");
+  // Guard the exact footgun: a JS string built in the template must escape its newline.
+  ok(
+    "transcript join uses an escaped \\n (not a raw line break)",
+    /\.join\("\\n"\)/.test(WEB_UI_HTML),
+  );
+}
+
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);
