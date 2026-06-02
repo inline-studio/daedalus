@@ -290,9 +290,12 @@ the stack (so FalkorDB flushes its snapshot), copy that directory to the new hos
 and the indices all travel in the snapshot — **no reindex needed**; recall works as soon as the
 embeddings endpoint is reachable again.
 
-> Auto-save, proactive recall, and the scheduled "dream" consolidation are added by
-> daedalus *around* this store (see the roadmap) — Graphiti provides the storage,
-> extraction, and graph search; daedalus orchestrates when to write, recall, and consolidate.
+> Daedalus orchestrates *around* this store — Graphiti provides the storage, extraction,
+> and graph search; daedalus decides when to write, recall, and consolidate.
+> **Auto-save is implemented** (`memory.autoSave`, on by default when graphiti is enabled): a
+> curator pass after each top-level turn distils durable facts and writes them via the
+> backend's add tool, so memory isn't left entirely to the model remembering to call the
+> tools. Proactive recall and the scheduled "dream" consolidation are still on the roadmap.
 
 ## The web chat UI
 
