@@ -440,14 +440,14 @@ export const WEB_UI_HTML = `<!doctype html>
     });
   });
 
-  // --- Native drag-select copy ----------------------------------------------------------
-  // The zero-friction path (what Telegram desktop does): just click-drag to highlight text,
-  // then Cmd/Ctrl+C. If the highlight stays within ONE bubble we leave the browser's native
-  // copy alone (you get exactly the substring you highlighted). If it spans TWO OR MORE
-  // bubbles we take over the copy and write the attributed transcript instead — full
-  // [ts] Name: text lines for every bubble the selection touches — so a rough drag across a
-  // few messages yields a clean, complete paste rather than run-together text with no
-  // attribution. No mode to enter; works alongside the explicit "select" button.
+  // --- Native drag-select → auto message-selection --------------------------------------
+  // The zero-friction path (what Telegram desktop does): click-drag to highlight text across
+  // bubbles. If the drag stays within ONE bubble it's left as a normal text selection (native
+  // copy gives you exactly the substring). The moment it spans TWO OR MORE bubbles we convert
+  // it to message selection — enter select mode and tick every touched bubble (blue rings +
+  // the action bar) — so it's visually obvious what's selected. From there Cmd/Ctrl+C OR the
+  // green Copy button yields the attributed transcript ([ts] Name: text per bubble). Works
+  // alongside the explicit "select" button.
 
   // Does the selection overlap this element's contents? Uses boundary-point comparison
   // (overlap iff selection.start < el.end AND selection.end > el.start), which is portable
@@ -473,11 +473,42 @@ export const WEB_UI_HTML = `<!doctype html>
     out.sort(function (a, b) { return a - b; });
     return out;
   }
-  document.addEventListener("copy", function (e) {
+
+  // On drag-END: if the highlight spans >1 bubble, convert it to message selection. Acting on
+  // mouseup (not selectionchange) means we don't disrupt the drag in progress; the text
+  // highlight is left intact so Cmd/Ctrl+C below still works too.
+  var suppressClickUntil = 0;
+  document.addEventListener("mouseup", function () {
     var sel = window.getSelection && window.getSelection();
-    if (!sel || sel.isCollapsed || !sel.rangeCount) return; // nothing highlighted — native copy
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return;
     var idxs = selectedMsgIndices(sel);
-    if (idxs.length < 2) return; // within a single bubble (or outside the log) — leave native copy
+    if (idxs.length < 2) return;
+    if (!selecting) enterSelect();
+    idxs.forEach(function (i) {
+      selected.add(i);
+      var el = log.querySelector('.msg[data-idx="' + i + '"]');
+      if (el) el.classList.add("selected");
+    });
+    updateSelBar();
+    // A click often fires right after a drag; in select mode that would immediately toggle a
+    // bubble back off. Swallow just that one trailing click.
+    suppressClickUntil = Date.now() + 80;
+  });
+
+  document.addEventListener("copy", function (e) {
+    // In select mode with ticked messages, Cmd/Ctrl+C copies the attributed transcript of the
+    // selection (covers both the auto-selected drag and the explicit "select" button).
+    var ae = document.activeElement;
+    var inEditable = ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable);
+    var idxs;
+    if (selecting && selected.size && !inEditable) {
+      idxs = Array.from(selected).sort(function (a, b) { return a - b; });
+    } else {
+      var sel = window.getSelection && window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return; // nothing highlighted — native copy
+      idxs = selectedMsgIndices(sel);
+      if (idxs.length < 2) return; // within a single bubble (or outside the log) — leave native copy
+    }
     var text = idxs.map(function (i) { return convo[i] ? lineFor(convo[i]) : ""; }).filter(Boolean).join("\\n");
     if (!text || !e.clipboardData || !e.clipboardData.setData) return;
     e.clipboardData.setData("text/plain", text);
@@ -489,6 +520,9 @@ export const WEB_UI_HTML = `<!doctype html>
   // own behaviour in both modes. The md() function emits that Copy button inside every
   // <pre>; delegating here covers bulk-loaded history and future messages alike.
   log.addEventListener("click", function (e) {
+    // Swallow the click that trails a drag-select-to-message-selection (see mouseup above),
+    // so the just-selected bubble under the cursor isn't immediately toggled back off.
+    if (Date.now() < suppressClickUntil) { suppressClickUntil = 0; return; }
     var onCopyBtn = e.target && e.target.closest && e.target.closest(".copy-btn");
     if (selecting && !onCopyBtn) {
       var msgEl = e.target && e.target.closest && e.target.closest(".msg");
