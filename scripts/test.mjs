@@ -18,6 +18,7 @@ const CI_SAFE = [
   "smoke-agent-shim",
   "smoke-attachment-path",
   "smoke-audio-ingest",
+  "smoke-auto-save-memory",
   "smoke-commands",
   "smoke-compaction",
   "smoke-compose-materialize",

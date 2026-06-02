@@ -18,6 +18,7 @@ import { loadAgent } from "../brain/agents.js";
 import { resolveProviderKey } from "../providers/resolve.js";
 import { buildSecretsBackend } from "../secrets/store/factory.js";
 import { connectAgentMcp, McpPool } from "../mcp/agent-mcp.js";
+import { autoSaveMemory } from "../memory/auto-save.js";
 import { SessionStore, type PersistedMessage } from "../sessions/store.js";
 import { ScheduleStore } from "../sessions/schedule-store.js";
 import { AttachmentStore } from "../attachments/store.js";
@@ -295,6 +296,33 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     for (const m of newMessages) {
       if (isEmptyAssistantMessage(m)) continue;
       sessions.appendMessage({ sessionId, role: m.role, content: m.content });
+    }
+
+    // 9b. Deterministic memory auto-save. After a TOP-LEVEL turn completes (not a subagent,
+    // and not while a question is pending), distil any durable facts from the turn and write
+    // them to the memory backend. This runs WHILE the memory MCP is still connected (before
+    // the teardown below) and is fully best-effort — it never affects the reply we return.
+    // Subagents are excluded: their findings flow up to the orchestrator's turn, which is
+    // where the user-facing memory-worthy outcome actually lands.
+    if (
+      config.memory.autoSave.enabled &&
+      !isSubagent &&
+      !result.pendingQuestion &&
+      mcpServers.has("memory")
+    ) {
+      try {
+        await autoSaveMemory({
+          provider,
+          model: config.memory.autoSave.model ?? agent.model,
+          mcpServers,
+          // The trigger + everything the kernel produced this turn.
+          messages: result.messages.slice(messages.length - 1),
+          agentName: agent.name,
+          maxFactsPerTurn: config.memory.autoSave.maxFactsPerTurn,
+        });
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, "auto-save: unexpected failure (ignored)");
+      }
     }
 
     // Tear down MCP connections we opened. When running under the warm worker the

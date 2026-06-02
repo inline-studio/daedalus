@@ -119,6 +119,25 @@ export const MemoryConfigSchema = z.object({
       path: z.string().optional(),
     })
     .default({ enabled: false, schedule: "0 */6 * * *" }),
+  // Deterministic auto-save. After each TOP-LEVEL (user-facing) turn, a small extraction
+  // call distils any durable facts — stated preferences, decisions, commitments, stable
+  // personal/project facts, concrete outcomes — from the turn and writes each to the memory
+  // backend via its add tool. This is the "curator" stage in front of Graphiti's own
+  // ingestion LLM: it decides IF and WHAT is worth remembering so the graph isn't polluted
+  // with ephemeral chatter; Graphiti then structures each saved episode into entities/edges.
+  // Active only when a memory MCP server is connected (i.e. graphiti.enabled). Subagent turns
+  // are never auto-saved (their findings flow up to the orchestrator's turn).
+  autoSave: z
+    .object({
+      enabled: z.boolean().default(true),
+      // Optional model override for the extraction call, used with the AGENT'S provider.
+      // Leave unset to reuse the agent's own model. Point it at a cheaper/faster model on
+      // the same gateway (e.g. a small spark model) to keep the per-turn overhead low.
+      model: z.string().optional(),
+      // Upper bound on facts saved per turn — a backstop against a runaway extraction.
+      maxFactsPerTurn: z.number().int().positive().default(8),
+    })
+    .default({ enabled: true, maxFactsPerTurn: 8 }),
 });
 export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
 
