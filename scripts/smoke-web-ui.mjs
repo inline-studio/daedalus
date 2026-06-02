@@ -630,7 +630,7 @@ async function run(port, token) {
 //     .msg.user/.msg.assistant classnames, not the content).
 {
   const { WEB_UI_HTML } = await import("../dist/channels/web-ui.js");
-  const fnStart = WEB_UI_HTML.indexOf("function addMsg(role, text, attachments)");
+  const fnStart = WEB_UI_HTML.indexOf("function addMsg(role, text, attachments, at)");
   ok("addMsg() exists", fnStart >= 0);
   if (fnStart >= 0) {
     // Slice to just the function body, brace-matched.

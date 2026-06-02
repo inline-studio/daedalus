@@ -45,6 +45,9 @@ export class WebChannel implements Channel {
   private auth: WebAuth | undefined;
   private sessions: SessionStore | undefined;
   private heartbeatMs!: number;
+  // Labels for the "copy conversation" transcript (the attributed Telegram-style export).
+  private assistantName: string;
+  private userName: string | undefined;
 
   constructor(opts: {
     defaultAgent: string;
@@ -55,6 +58,12 @@ export class WebChannel implements Channel {
     // SSE heartbeat interval in ms (default 20_000). Tests override this so
     // they can verify the wire format without waiting 20s per assertion.
     heartbeatMs?: number;
+    // The assistant's user-facing name (config.identity.name). Used to label assistant
+    // lines in the copy-conversation transcript. Defaults to "Artemis".
+    assistantName?: string;
+    // Optional display name for the human in that transcript. Falls back to the logged-in
+    // username (login mode) or "You".
+    userName?: string;
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -62,6 +71,8 @@ export class WebChannel implements Channel {
     this.auth = opts.auth;
     this.sessions = opts.sessions;
     this.heartbeatMs = opts.heartbeatMs ?? 20_000;
+    this.assistantName = opts.assistantName ?? "Artemis";
+    this.userName = opts.userName;
   }
 
   async start(ctx: ChannelContext): Promise<void> {
@@ -102,7 +113,7 @@ export class WebChannel implements Channel {
             return;
           }
           res.writeHead(200, htmlHeaders());
-          res.end(this.renderShell());
+          res.end(this.renderShell(loginUser));
           return;
         }
 
@@ -230,11 +241,18 @@ export class WebChannel implements Channel {
     res.end(JSON.stringify({ ok: true }));
   }
 
-  // Inject the active auth mode into the served shell so the UI can hide the token field
-  // (login mode) and show a Logout button.
-  private renderShell(): string {
+  // Inject the active auth mode + the transcript speaker labels into the served shell. The UI
+  // uses the mode to hide the token field (login mode) and show a Logout button; the names
+  // label the "copy conversation" export. The user label resolves: configured userName →
+  // logged-in username (login mode) → "You". Function replacers avoid `$&`-style surprises
+  // if a name contains a dollar sign, and jsStringLiteral keeps the values safe inside the
+  // double-quoted JS string they land in.
+  private renderShell(loginUser?: string | null): string {
     const mode = this.auth ? "login" : this.token ? "token" : "open";
-    return WEB_UI_HTML.replace("__DAE_WEB_MODE__", mode);
+    const user = this.userName ?? loginUser ?? "You";
+    return WEB_UI_HTML.replace("__DAE_WEB_MODE__", () => mode)
+      .replace("__DAE_ASSISTANT_NAME__", () => jsStringLiteral(this.assistantName))
+      .replace("__DAE_USER_NAME__", () => jsStringLiteral(user));
   }
 
   private async handlePost(
@@ -391,7 +409,7 @@ export class WebChannel implements Channel {
       res.end("externalUserId required");
       return;
     }
-    let messages: Array<{ role: string; text: string }> = [];
+    let messages: Array<{ role: string; text: string; at?: string }> = [];
     if (this.sessions) {
       try {
         const userId = this.sessions.resolveUser(this.id, externalUserId);
@@ -416,7 +434,9 @@ export class WebChannel implements Channel {
         messages = this.sessions
           .tail(session.id, RAW_TAIL)
           .filter((m) => m.role === "user" || m.role === "assistant")
-          .map((m) => ({ role: m.role as string, text: partsToText(m.content) }))
+          // Carry createdAt through as `at` so the client can render the attributed,
+          // timestamped "copy conversation" transcript. The chat bubbles ignore it.
+          .map((m) => ({ role: m.role as string, text: partsToText(m.content), at: m.createdAt }))
           .filter((m) => m.text.length > 0)
           .slice(-VISIBLE_CAP);
       } catch (err) {
@@ -449,6 +469,17 @@ function htmlHeaders(): Record<string, string> {
     Pragma: "no-cache",
     Expires: "0",
   };
+}
+
+// Escape a string for safe embedding inside a double-quoted JS string literal in the
+// served HTML shell (the `var ASSISTANT_NAME = "…"` injection). Collapses newlines and
+// neutralises `<` so a crafted name can't break out of the <script> or the string.
+function jsStringLiteral(s: string): string {
+  return String(s)
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r?\n/g, " ")
+    .replace(/</g, "\\u003c");
 }
 
 // Flatten a message's content parts to plain text for the history view (the live SSE
