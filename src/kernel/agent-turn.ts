@@ -19,6 +19,7 @@ import { resolveProviderKey } from "../providers/resolve.js";
 import { buildSecretsBackend } from "../secrets/store/factory.js";
 import { connectAgentMcp, McpPool } from "../mcp/agent-mcp.js";
 import { autoSaveMemory } from "../memory/auto-save.js";
+import { generateConversationTitle } from "../sessions/title.js";
 import { SessionStore, type PersistedMessage } from "../sessions/store.js";
 import { ScheduleStore } from "../sessions/schedule-store.js";
 import { AttachmentStore } from "../attachments/store.js";
@@ -322,6 +323,32 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
         });
       } catch (err) {
         log.warn({ err: (err as Error).message }, "auto-save: unexpected failure (ignored)");
+      }
+    }
+
+    // 9c. Model-generated conversation title (web conversations). After the FIRST exchange in a
+    // brand-new, non-default conversation, ask the model for a short topical title and replace
+    // the provisional first-message snippet. Gated to the first exchange (no prior assistant
+    // message) so it runs exactly once per conversation, and skipped for the default ("Main")
+    // session (whose web label is fixed and which other channels share). Best-effort: a failure
+    // leaves the provisional title untouched and never affects the reply.
+    if (config.sessions.autoTitle && !isSubagent && !result.pendingQuestion) {
+      try {
+        const priorAssistantCount = messages.filter((m) => m.role === "assistant").length;
+        if (priorAssistantCount === 0) {
+          const def = sessions.getOrCreateSession(userId, agentName);
+          if (sessionId !== def.id) {
+            const title = await generateConversationTitle({
+              provider,
+              model: agent.model,
+              // The triggering user message + everything the kernel produced this turn.
+              messages: result.messages.slice(messages.length - 1),
+            });
+            if (title) sessions.setSessionTitle(sessionId, title);
+          }
+        }
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, "conversation-title: unexpected failure (ignored)");
       }
     }
 

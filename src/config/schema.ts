@@ -198,6 +198,10 @@ export const SessionsConfigSchema = z.object({
   // detail still work). 0 disables the compaction; the persisted history is never mutated —
   // this is purely a view applied before each turn. Default: 2 (current + previous loop).
   keepFullFidelityLoops: z.number().int().min(0).default(2),
+  // Web conversations only: after the first exchange in a NEW (non-default) conversation, ask
+  // the model for a short title for it (shown in the web UI's conversation list), replacing the
+  // provisional first-message snippet. Best-effort and non-fatal. Set false to keep the snippet.
+  autoTitle: z.boolean().default(true),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfigSchema>;
 

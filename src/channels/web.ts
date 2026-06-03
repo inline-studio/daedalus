@@ -571,6 +571,20 @@ export class WebChannel implements Channel {
       const body = await readJson(req).catch(() => ({}) as Record<string, unknown>);
       const title =
         typeof body.title === "string" && body.title.trim() ? body.title.trim().slice(0, 80) : undefined;
+      // Guardrail: don't pile up empty conversations. If the user already has an unused
+      // (zero-message) non-default conversation, hand that one back instead of creating
+      // another — this is what makes repeated "New chat" clicks reuse the one blank chat.
+      // (Skipped when an explicit title is supplied, i.e. a deliberate named conversation.)
+      if (!title) {
+        const def = sessions.getOrCreateSession(userId, this.defaultAgent);
+        const reusable = sessions
+          .listSessions(userId, this.defaultAgent)
+          .find((s) => s.id !== def.id && sessions.countMessages(s.id) === 0);
+        if (reusable) {
+          json(200, toEntry(reusable));
+          return;
+        }
+      }
       const created = sessions.createSession(userId, this.defaultAgent, title);
       json(200, toEntry(created));
       return;
