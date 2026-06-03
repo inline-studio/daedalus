@@ -69,7 +69,13 @@ export class SessionStore {
         /* old fd may already be invalid; ignore */
       }
     }
-    this.db = new DatabaseSync(this.dbPath);
+    // FK enforcement OFF. node:sqlite turns foreign keys ON by default, but this store has
+    // always managed referential integrity by hand (e.g. deleteSession removes a session's
+    // messages before the session row; there are no ON DELETE actions to honour). Enforcement
+    // was therefore incidental — and actively harmful during a table rebuild, where dropping a
+    // parent table mid-migration trips the constraint. Turning it off keeps rebuilds simple and
+    // makes any historical dangling reference harmless.
+    this.db = new DatabaseSync(this.dbPath, { enableForeignKeyConstraints: false });
     this.migrate();
     try {
       const st = fs.statSync(this.dbPath);
@@ -139,34 +145,97 @@ export class SessionStore {
     this.migrateSessionsMultiConversation();
   }
 
-  // Upgrade a legacy `sessions` table to the multi-conversation schema.
+  // Run a multi-statement DDL block atomically: either it all applies or none of it does.
+  // node:sqlite's exec() runs statements sequentially with NO implicit transaction, so a
+  // failure partway would leave a half-rebuilt schema (exactly what broke an earlier version
+  // of this migration). The explicit BEGIN/COMMIT — with ROLLBACK on error — prevents that.
+  private execAtomic(sql: string): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.exec(sql);
+      this.db.exec("COMMIT");
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        /* nothing to roll back */
+      }
+      throw err;
+    }
+  }
+
+  // Upgrade a legacy `sessions` table to the multi-conversation schema, and self-heal a DB left
+  // half-migrated by the first (buggy) version of this migration.
   //
-  // The original table had `UNIQUE (user_id, agent_name)` — exactly one session per
-  // (user, agent) — and no `title` column. To allow several web conversations per
-  // (user, agent) we must drop that UNIQUE constraint, which SQLite can only do by
-  // rebuilding the table. The CREATE above is a no-op on an existing DB (table already
-  // present with the old shape), so we detect the old shape by the absence of `title`
-  // and rebuild: rename → create fresh → copy rows → drop. Message ids are preserved,
-  // so messages.session_id references stay valid. Idempotent: skips once `title` exists.
+  // The original table had `UNIQUE (user_id, agent_name)` and no `title` column. Supporting
+  // several web conversations per (user, agent) means dropping that UNIQUE constraint, which
+  // SQLite can only do by rebuilding the table.
+  //
+  // IMPORTANT — table-rebuild order. The first cut renamed the PARENT (`sessions` →
+  // `sessions_legacy`) first; modern SQLite rewrites child foreign keys on rename, so
+  // `messages` started referencing `sessions_legacy`, and the following DROP tripped the FK
+  // check (foreign keys are ON by default in node:sqlite). We now (a) run with FK enforcement
+  // off, and (b) use the SQLite-recommended order — create the new table, copy, DROP the old,
+  // then RENAME the new into place — so child references keep pointing at "sessions".
+  //
+  // Self-heal covers DBs already damaged by the old code: a leftover `sessions_legacy` table
+  // and/or a `messages` table whose FK was rewritten to `sessions_legacy`.
   private migrateSessionsMultiConversation(): void {
+    // 1. Drop any leftover `sessions_legacy` from a previously-failed rebuild. Its rows were
+    //    already copied into `sessions` before the old migration died, so this loses nothing.
+    this.db.exec(`DROP TABLE IF EXISTS sessions_legacy`);
+
+    // 2. If the old migration rewrote `messages`'s foreign key to point at `sessions_legacy`,
+    //    rebuild `messages` so it references `sessions` again (purely a schema repair; rows are
+    //    preserved). Detected by inspecting the stored CREATE statement.
+    const messagesSql =
+      (
+        this.db
+          .prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'`)
+          .get() as { sql?: string } | undefined
+      )?.sql ?? "";
+    if (/sessions_legacy/.test(messagesSql)) {
+      this.execAtomic(`
+        CREATE TABLE messages_new (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES sessions(id),
+          role TEXT NOT NULL,
+          channel TEXT,
+          external_message_id TEXT,
+          content_json TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        INSERT INTO messages_new (id, session_id, role, channel, external_message_id, content_json, created_at)
+          SELECT id, session_id, role, channel, external_message_id, content_json, created_at FROM messages;
+        DROP TABLE messages;
+        ALTER TABLE messages_new RENAME TO messages;
+        CREATE INDEX IF NOT EXISTS idx_messages_session_created
+          ON messages(session_id, created_at);
+      `);
+    }
+
+    // 3. If `sessions` still has the legacy shape (no `title` column), rebuild it WITHOUT the
+    //    UNIQUE(user_id, agent_name) constraint and WITH `title`. Correct order so `messages`'s
+    //    FK keeps referencing "sessions".
     const cols = this.db.prepare(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;
-    if (cols.some((c) => c.name === "title")) return; // already migrated / fresh DB
-    this.db.exec(`
-      ALTER TABLE sessions RENAME TO sessions_legacy;
-      CREATE TABLE sessions (
-        id TEXT PRIMARY KEY,
-        user_id TEXT NOT NULL REFERENCES users(id),
-        agent_name TEXT NOT NULL,
-        title TEXT,
-        created_at TEXT NOT NULL,
-        last_active_at TEXT NOT NULL
-      );
-      INSERT INTO sessions (id, user_id, agent_name, title, created_at, last_active_at)
-        SELECT id, user_id, agent_name, NULL, created_at, last_active_at FROM sessions_legacy;
-      DROP TABLE sessions_legacy;
-      CREATE INDEX IF NOT EXISTS idx_sessions_user_agent
-        ON sessions(user_id, agent_name, last_active_at);
-    `);
+    if (!cols.some((c) => c.name === "title")) {
+      this.execAtomic(`
+        CREATE TABLE sessions_new (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL REFERENCES users(id),
+          agent_name TEXT NOT NULL,
+          title TEXT,
+          created_at TEXT NOT NULL,
+          last_active_at TEXT NOT NULL
+        );
+        INSERT INTO sessions_new (id, user_id, agent_name, title, created_at, last_active_at)
+          SELECT id, user_id, agent_name, NULL, created_at, last_active_at FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_new RENAME TO sessions;
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_agent
+          ON sessions(user_id, agent_name, last_active_at);
+      `);
+    }
   }
 
   private rowToSession(row: {

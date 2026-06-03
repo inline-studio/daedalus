@@ -141,17 +141,19 @@ const AGENT = "orchestrator";
 // ---------------------------------------------------------------------------------------
 {
   const dbPath = path.join(tmp, "legacy.db");
-  // Hand-build the pre-conversations schema and seed a user + session + message.
+  // Hand-build the REAL pre-conversations schema — including the foreign keys the production DB
+  // actually has (`REFERENCES users(id)`, `REFERENCES sessions(id)`). The first cut of this test
+  // omitted them, which is exactly why it missed that the migration broke writes on real DBs.
   const raw = new DatabaseSync(dbPath);
   raw.exec(`
     CREATE TABLE users (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
-    CREATE TABLE user_identities (user_id TEXT NOT NULL, channel TEXT NOT NULL, external_id TEXT NOT NULL, PRIMARY KEY (channel, external_id));
+    CREATE TABLE user_identities (user_id TEXT NOT NULL REFERENCES users(id), channel TEXT NOT NULL, external_id TEXT NOT NULL, PRIMARY KEY (channel, external_id));
     CREATE TABLE sessions (
-      id TEXT PRIMARY KEY, user_id TEXT NOT NULL, agent_name TEXT NOT NULL,
+      id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), agent_name TEXT NOT NULL,
       created_at TEXT NOT NULL, last_active_at TEXT NOT NULL, UNIQUE (user_id, agent_name)
     );
     CREATE TABLE messages (
-      id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, channel TEXT,
+      id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id), role TEXT NOT NULL, channel TEXT,
       external_message_id TEXT, content_json TEXT NOT NULL, created_at TEXT NOT NULL
     );
     INSERT INTO users VALUES ('u-legacy', '2020-01-01T00:00:00.000Z');
@@ -169,6 +171,18 @@ const AGENT = "orchestrator";
   const tail = store.tail("s-legacy", 10);
   ok("MIGRATION: legacy message survived the rebuild", tail.length === 1 && tail[0].content[0].text === "old reply");
 
+  // THE REGRESSION GUARD: a write must succeed after migrating a DB that had the messages FK.
+  // (The broken migration left messages referencing a dropped table, so every append threw
+  // "FOREIGN KEY constraint failed" — which surfaced as "Something went wrong" on every turn.)
+  let appendOk = false;
+  try {
+    store.appendMessage({ sessionId: "s-legacy", role: "user", content: [{ type: "text", text: "after migrate" }] });
+    appendOk = true;
+  } catch (e) {
+    console.log("   appendMessage error:", e.message);
+  }
+  ok("MIGRATION: appendMessage works after migrating a DB with the messages FK", appendOk);
+
   // The UNIQUE constraint must be gone — a second session for the same (user, agent) succeeds.
   let secondOk = false;
   try {
@@ -185,6 +199,47 @@ const AGENT = "orchestrator";
   const store2 = new SessionStore(dbPath);
   ok("MIGRATION: idempotent reopen keeps both sessions", store2.listSessions("u-legacy", "orchestrator").length === 2);
   store2.close();
+}
+
+// ---------------------------------------------------------------------------------------
+// Part 2b — SELF-HEAL: a DB left half-migrated/damaged by the first (buggy) migration is
+// repaired on open. That damaged shape: `sessions` already rebuilt (has `title`), a leftover
+// `sessions_legacy` table, and `messages` whose FK was rewritten to `sessions_legacy`.
+// ---------------------------------------------------------------------------------------
+{
+  const dbPath = path.join(tmp, "damaged.db");
+  const raw = new DatabaseSync(dbPath, { enableForeignKeyConstraints: false });
+  raw.exec(`
+    CREATE TABLE users (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+    CREATE TABLE user_identities (user_id TEXT NOT NULL, channel TEXT NOT NULL, external_id TEXT NOT NULL, PRIMARY KEY (channel, external_id));
+    CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, agent_name TEXT NOT NULL, title TEXT, created_at TEXT NOT NULL, last_active_at TEXT NOT NULL);
+    CREATE TABLE sessions_legacy (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, agent_name TEXT NOT NULL, created_at TEXT NOT NULL, last_active_at TEXT NOT NULL, UNIQUE (user_id, agent_name));
+    CREATE TABLE messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions_legacy(id), role TEXT NOT NULL, channel TEXT, external_message_id TEXT, content_json TEXT NOT NULL, created_at TEXT NOT NULL);
+    INSERT INTO users VALUES ('u-d', '2020-01-01T00:00:00.000Z');
+    INSERT INTO sessions VALUES ('s-d', 'u-d', 'orchestrator', NULL, '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z');
+    INSERT INTO sessions_legacy VALUES ('s-d', 'u-d', 'orchestrator', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z');
+    INSERT INTO messages VALUES ('m-d', 's-d', 'assistant', 'web', NULL, '[{"type":"text","text":"survivor"}]', '2020-01-01T00:00:00.000Z');
+  `);
+  raw.close();
+
+  const store = new SessionStore(dbPath); // opening should self-heal
+  let appendOk = false;
+  try {
+    store.appendMessage({ sessionId: "s-d", role: "user", content: [{ type: "text", text: "heals" }] });
+    appendOk = true;
+  } catch (e) {
+    console.log("   appendMessage error:", e.message);
+  }
+  ok("SELF-HEAL: appendMessage works after opening a damaged DB", appendOk);
+  ok("SELF-HEAL: original message preserved", store.tail("s-d", 10).some((m) => m.content[0].text === "survivor"));
+  store.close();
+
+  const insp = new DatabaseSync(dbPath, { enableForeignKeyConstraints: false });
+  const tables = insp.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((t) => t.name);
+  const msgSql = (insp.prepare("SELECT sql FROM sqlite_master WHERE name='messages'").get() || {}).sql || "";
+  ok("SELF-HEAL: leftover sessions_legacy table removed", !tables.includes("sessions_legacy"), tables.join(","));
+  ok("SELF-HEAL: messages FK repaired to reference sessions", /references\s+sessions\b/i.test(msgSql) && !/sessions_legacy/.test(msgSql));
+  insp.close();
 }
 
 // ---------------------------------------------------------------------------------------
