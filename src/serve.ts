@@ -62,6 +62,11 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     const ch = bus.channelFor(msg.channel);
     if (!ch) return;
     const agentName = msg.addressedTo ?? ch.defaultAgent;
+    // The conversation (session) this turn ran in, captured after ingest so the reply — and
+    // any error message from a later failure — is delivered back to the right web conversation
+    // rather than broadcast to all of the user's open conversations. Undefined until ingest
+    // resolves it (an ingest failure has no conversation context; that reply just broadcasts).
+    let conversationId: string | undefined;
     try {
       const ingested = await ingestIncomingMessage({
         agentName,
@@ -71,6 +76,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         transcriber,
         config,
       });
+      conversationId = ingested.sessionId;
       const result = await dispatcher.dispatch({
         agentName,
         sessionId: ingested.sessionId,
@@ -81,12 +87,14 @@ export async function serve(config: ArtemisConfig): Promise<void> {
       // own short messages first, so the user knows what happened before the reply lands.
       if (result.notices?.length) {
         for (const n of result.notices) {
-          await ch.send(msg.externalUserId, { text: n }).catch(() => undefined);
+          await ch
+            .send(msg.externalUserId, { text: n, ...(conversationId ? { conversationId } : {}) })
+            .catch(() => undefined);
         }
       }
       const reply =
         result.status === "pending_question" ? result.question : result.finalText;
-      const outgoing: OutgoingMessage = { text: reply };
+      const outgoing: OutgoingMessage = { text: reply, ...(conversationId ? { conversationId } : {}) };
       // Resolve any reply attachments (refs into the shared AttachmentStore) to bytes so
       // the channel can upload them. The agent stored them on the same /data volume.
       if (result.status === "complete" && result.attachments?.length) {
@@ -121,7 +129,10 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         "turn failed",
       );
       await ch
-        .send(msg.externalUserId, { text: classified.userMessage })
+        .send(msg.externalUserId, {
+          text: classified.userMessage,
+          ...(conversationId ? { conversationId } : {}),
+        })
         .catch(() => undefined);
     }
   });

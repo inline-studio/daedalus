@@ -32,7 +32,41 @@ export const WEB_UI_HTML = `<!doctype html>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-         background: #0d1117; color: #e6edf3; height: 100dvh; display: flex; flex-direction: column; }
+         background: #0d1117; color: #e6edf3; height: 100dvh; display: flex; flex-direction: row; }
+  /* Conversation sidebar (Claude.ai-style separate sessions). A column with a "New chat"
+     button on top and the scrollable conversation list below. On narrow screens it slides
+     over the chat instead of taking a column (see the media query). */
+  #sidebar { width: 260px; flex-shrink: 0; display: flex; flex-direction: column;
+             background: #0b0e13; border-right: 1px solid #21262d; }
+  #sidebar .sb-head { padding: 10px; border-bottom: 1px solid #21262d; }
+  #new-convo { width: 100%; background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+               border-radius: 8px; padding: 9px 12px; cursor: pointer; font: inherit; }
+  #new-convo:hover { background: #30363d; }
+  #convo-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .convo { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px;
+           cursor: pointer; color: #c9d1d9; }
+  .convo:hover { background: #161b22; }
+  .convo.active { background: #1f6feb22; color: #e6edf3; }
+  .convo .title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
+  .convo .del { color: #8b949e; border: none; background: none; cursor: pointer; font-size: 13px;
+                padding: 0 4px; visibility: hidden; }
+  .convo:hover .del { visibility: visible; }
+  .convo .del:hover { color: #f85149; }
+  /* The chat column: header + log + composer, to the right of the sidebar. min-width:0 lets
+     it shrink instead of overflowing the flex row. */
+  #main { flex: 1; min-width: 0; height: 100dvh; display: flex; flex-direction: column; }
+  /* Hamburger toggles the sidebar on narrow screens; hidden on wide ones. */
+  #sb-toggle { display: none; }
+  @media (max-width: 720px) {
+    #sb-toggle { display: inline-block; }
+    #sidebar { position: fixed; z-index: 30; top: 0; left: 0; height: 100dvh;
+               transform: translateX(-100%); transition: transform .18s ease;
+               box-shadow: 2px 0 12px rgba(0,0,0,.5); }
+    body.sb-open #sidebar { transform: translateX(0); }
+    /* Dim the chat behind the open drawer; tap it to close. */
+    #sb-scrim { display: none; position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.5); }
+    body.sb-open #sb-scrim { display: block; }
+  }
   header { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
            border-bottom: 1px solid #21262d; background: #161b22; }
   header b { font-weight: 600; }
@@ -135,7 +169,14 @@ export const WEB_UI_HTML = `<!doctype html>
 </style>
 </head>
 <body>
+  <div id="sb-scrim"></div>
+  <aside id="sidebar">
+    <div class="sb-head"><button id="new-convo" type="button">＋ New chat</button></div>
+    <div id="convo-list"></div>
+  </aside>
+  <div id="main">
   <header>
+    <button id="sb-toggle" title="Conversations">☰</button>
     <b>Daedalus</b><span class="meta" id="status">connecting…</span>
     <span class="sp"></span>
     <button id="select" title="Select messages to copy (with who-said-what + timestamps)">☑️ select</button>
@@ -166,6 +207,7 @@ export const WEB_UI_HTML = `<!doctype html>
       <button id="send">Send</button>
     </div>
   </footer>
+  </div>
 <script>
 (function () {
   var LS = window.localStorage;
@@ -174,6 +216,13 @@ export const WEB_UI_HTML = `<!doctype html>
   var token = LS.getItem("dae_token") || "";
   var pending = []; // [{kind, mediaType, filename, base64}]
   var es = null;
+  // Separate conversations (Claude.ai-style). convId is the active conversation (session id);
+  // defaultConvId is the "Main" conversation shared with other channels. conversations holds
+  // the sidebar list ([{id, title, createdAt, lastActiveAt}]). The active id is remembered in
+  // localStorage so a reload reopens the same conversation.
+  var convId = LS.getItem("dae_conv") || "";
+  var defaultConvId = "";
+  var conversations = [];
   // Injected by the server: "login" (cookie auth — no token UI), "token", or "open".
   var MODE = "__DAE_WEB_MODE__";
   // Speaker labels for the "copy chat" transcript, injected by the server (identity name +
@@ -622,7 +671,9 @@ export const WEB_UI_HTML = `<!doctype html>
 
   function connect() {
     if (es) es.close();
-    var u = "/events?externalUserId=" + encodeURIComponent(uid) + (token ? "&token=" + encodeURIComponent(token) : "");
+    var u = "/events?externalUserId=" + encodeURIComponent(uid) +
+            (convId ? "&conversationId=" + encodeURIComponent(convId) : "") +
+            (token ? "&token=" + encodeURIComponent(token) : "");
     es = new EventSource(u);
     es.onopen = function () { statusEl.textContent = "connected"; markActivity(); };
     es.onerror = function () { statusEl.textContent = "reconnecting…"; };
@@ -638,6 +689,10 @@ export const WEB_UI_HTML = `<!doctype html>
         console.error("SSE message JSON parse failed", e, ev.data);
         return;
       }
+      // Defensive: the stream is already per-conversation, but if a reply for a different
+      // conversation ever reaches us (e.g. via the legacy bare-key broadcast during a deploy),
+      // don't render it into the conversation the user is currently looking at.
+      if (d.conversationId && convId && d.conversationId !== convId) return;
       // ev.lastEventId carries the event's id line — the server's ISO send time (or the
       // persisted createdAt for replayed messages) — so the transcript timestamp is accurate.
       addMsg("assistant", d.text || "", d.attachments || [], ev.lastEventId);
@@ -657,7 +712,9 @@ export const WEB_UI_HTML = `<!doctype html>
   }, 15_000);
 
   function loadHistory() {
-    fetch("/history?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
+    var u = "/history?externalUserId=" + encodeURIComponent(uid) +
+            (convId ? "&conversationId=" + encodeURIComponent(convId) : "");
+    fetch(u, { headers: authHeaders() })
       .then(function (r) { if (on401(r)) return { messages: [] }; return r.ok ? r.json() : { messages: [] }; })
       .then(function (j) {
         // Bulk-load: bypass the smart-scroll per-message work and the "↓ N new
@@ -707,8 +764,12 @@ export const WEB_UI_HTML = `<!doctype html>
     if (!text && !pending.length) return;
     var atts = pending.slice();
     var body = { externalUserId: uid };
+    if (convId) body.conversationId = convId;
     if (text) body.text = text;
     if (atts.length) body.attachments = atts;
+    // Optimistically name a still-unnamed conversation from its first message, mirroring the
+    // server's auto-title, so the sidebar updates instantly instead of after a round-trip.
+    if (text) maybeTitleCurrent(text);
     addMsg("user", text, atts, new Date().toISOString());
     $("text").value = ""; pending = []; renderChips(); autosize();
     fetch("/messages", { method: "POST", headers: authHeaders(), body: JSON.stringify(body) })
@@ -724,8 +785,134 @@ export const WEB_UI_HTML = `<!doctype html>
   $("gear").addEventListener("click", function () { $("settings").classList.toggle("on"); $("uid").textContent = "id: " + uid; $("token").value = token; });
   $("save").addEventListener("click", function () { token = $("token").value.trim(); LS.setItem("dae_token", token); $("settings").classList.remove("on"); connect(); });
 
-  loadHistory();
-  connect();
+  // --- Conversations (separate sessions) --------------------------------------------------
+  // The sidebar lists the user's conversations with this assistant. "Main" (defaultConvId) is
+  // the conversation shared with other channels (Telegram etc.) and can't be deleted; every
+  // other entry is an isolated, fresh-context web conversation. Switching one swaps the whole
+  // view: clear the log, load that conversation's history, and reconnect the SSE stream to it.
+
+  // The display label for a conversation: always "Main" for the default, the auto/explicit
+  // title otherwise, falling back to "New chat" until the first message names it.
+  function convLabel(c) { return c.id === defaultConvId ? "Main" : (c.title || "New chat"); }
+
+  function renderConversations() {
+    var listEl = $("convo-list");
+    listEl.innerHTML = "";
+    conversations.forEach(function (c) {
+      var row = document.createElement("div");
+      row.className = "convo" + (c.id === convId ? " active" : "");
+      row.setAttribute("data-id", c.id);
+      var t = document.createElement("span");
+      t.className = "title";
+      t.textContent = convLabel(c);
+      row.appendChild(t);
+      // The Main conversation is protected server-side; don't offer a delete control for it.
+      if (c.id !== defaultConvId) {
+        var del = document.createElement("button");
+        del.className = "del"; del.type = "button"; del.title = "Delete conversation";
+        del.textContent = "✕";
+        del.setAttribute("data-del", c.id);
+        row.appendChild(del);
+      }
+      listEl.appendChild(row);
+    });
+  }
+
+  // Reset the chat view to empty (used when switching/deleting conversations).
+  function clearLog() {
+    convo = [];
+    if (selecting) exitSelect();
+    log.innerHTML = '<div class="empty">No messages yet. Say hello.</div>';
+    newSinceScrolled = 0;
+    pill.classList.remove("on");
+  }
+
+  function openSidebar() { document.body.classList.add("sb-open"); }
+  function closeSidebar() { document.body.classList.remove("sb-open"); }
+
+  function loadConversations(cb) {
+    fetch("/conversations?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
+      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (j) {
+          conversations = j.conversations || [];
+          defaultConvId = j.defaultId || "";
+          // Reopen the remembered conversation if it still exists; otherwise fall back to Main.
+          var exists = conversations.some(function (c) { return c.id === convId; });
+          if (!convId || !exists) { convId = defaultConvId; LS.setItem("dae_conv", convId); }
+          renderConversations();
+        }
+        if (cb) cb();
+      })
+      .catch(function (err) { console.error("loadConversations failed", err); if (cb) cb(); });
+  }
+
+  function selectConversation(id) {
+    if (!id) return;
+    if (id === convId) { closeSidebar(); return; }
+    convId = id; LS.setItem("dae_conv", convId);
+    renderConversations();
+    clearLog();
+    loadHistory();
+    connect();
+    closeSidebar();
+  }
+
+  function newConversation() {
+    fetch("/conversations", { method: "POST", headers: authHeaders(), body: "{}" })
+      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (c) {
+        if (!c || !c.id) { statusEl.textContent = "couldn't start a new chat"; return; }
+        conversations.unshift(c);
+        selectConversation(c.id);
+      })
+      .catch(function () { statusEl.textContent = "couldn't start a new chat"; });
+  }
+
+  function deleteConversation(id) {
+    var match = conversations.filter(function (x) { return x.id === id; })[0];
+    var label = match ? convLabel(match) : "this conversation";
+    if (!window.confirm('Delete "' + label + '"? This cannot be undone.')) return;
+    fetch("/conversations?externalUserId=" + encodeURIComponent(uid) + "&id=" + encodeURIComponent(id),
+          { method: "DELETE", headers: authHeaders() })
+      .then(function (r) {
+        if (on401(r)) return;
+        if (!r.ok) { statusEl.textContent = "delete failed (" + r.status + ")"; return; }
+        conversations = conversations.filter(function (x) { return x.id !== id; });
+        // If we deleted the conversation we were viewing, drop back to Main.
+        if (id === convId) {
+          convId = defaultConvId; LS.setItem("dae_conv", convId);
+          clearLog(); loadHistory(); connect();
+        }
+        renderConversations();
+      })
+      .catch(function () { statusEl.textContent = "delete failed"; });
+  }
+
+  // Optimistic local title for an unnamed conversation (mirrors the server's auto-title from
+  // the first user message) so the sidebar label updates the instant you hit send.
+  function maybeTitleCurrent(text) {
+    var c = conversations.filter(function (x) { return x.id === convId; })[0];
+    if (!c || c.id === defaultConvId || c.title) return;
+    var first = text.split("\\n").map(function (l) { return l.trim(); }).filter(Boolean)[0] || "";
+    var t = first.replace(/\\s+/g, " ").trim();
+    if (!t) return;
+    c.title = t.length > 50 ? t.slice(0, 49) + "…" : t;
+    renderConversations();
+  }
+
+  $("sb-toggle").addEventListener("click", function () { document.body.classList.toggle("sb-open"); });
+  $("sb-scrim").addEventListener("click", closeSidebar);
+  $("new-convo").addEventListener("click", newConversation);
+  $("convo-list").addEventListener("click", function (e) {
+    var del = e.target && e.target.closest && e.target.closest(".del");
+    if (del) { e.stopPropagation(); deleteConversation(del.getAttribute("data-del")); return; }
+    var row = e.target && e.target.closest && e.target.closest(".convo");
+    if (row) selectConversation(row.getAttribute("data-id"));
+  });
+
+  // Load the conversation list first, then open the active one's history + live stream.
+  loadConversations(function () { loadHistory(); connect(); });
 })();
 </script>
 </body>

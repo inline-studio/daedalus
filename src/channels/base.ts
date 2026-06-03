@@ -11,6 +11,12 @@ export interface IncomingMessage {
   channel: string; // channel id, e.g. "telegram", "web", "cli"
   externalUserId: string; // platform-side user id; mapped to a unified user_id via SessionStore
   externalMessageId?: string;
+  // Web-only: which conversation (session id) this message belongs to. The web UI lets a user
+  // keep several separate conversations with the same agent, each its own isolated context.
+  // When set, the message is appended to that session instead of the default/"Main" one (after
+  // the channel verifies the session belongs to the resolved user). Other channels leave this
+  // unset and always use the default session.
+  conversationId?: string;
   // Routing override: if set, the named agent handles this message instead of the channel default.
   addressedTo?: string;
   text?: string;
@@ -43,6 +49,10 @@ export interface OutgoingMessage {
   attachments?: OutgoingAttachment[];
   // If unset, the channel will route to the user's last inbound channel.
   toExternalUserId?: string;
+  // Web-only: which conversation (session id) this reply belongs to, so the web channel
+  // delivers it to the right open conversation/tab rather than broadcasting to all of the
+  // user's connections. Other channels ignore it.
+  conversationId?: string;
 }
 
 export interface ChannelContext {

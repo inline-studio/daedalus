@@ -29,6 +29,10 @@ export interface PersistedSession {
   id: string;
   userId: string;
   agentName: string;
+  // Human label for the conversation, shown in the web UI's conversation list. Null for the
+  // default/"Main" session and until a freshly-created conversation gets its first message
+  // (we auto-title from that). Non-web channels never set or read it.
+  title: string | null;
   createdAt: string;
   lastActiveAt: string;
 }
@@ -114,9 +118,9 @@ export class SessionStore {
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id),
         agent_name TEXT NOT NULL,
+        title TEXT,
         created_at TEXT NOT NULL,
-        last_active_at TEXT NOT NULL,
-        UNIQUE (user_id, agent_name)
+        last_active_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
@@ -129,7 +133,58 @@ export class SessionStore {
       );
       CREATE INDEX IF NOT EXISTS idx_messages_session_created
         ON messages(session_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_sessions_user_agent
+        ON sessions(user_id, agent_name, last_active_at);
     `);
+    this.migrateSessionsMultiConversation();
+  }
+
+  // Upgrade a legacy `sessions` table to the multi-conversation schema.
+  //
+  // The original table had `UNIQUE (user_id, agent_name)` — exactly one session per
+  // (user, agent) — and no `title` column. To allow several web conversations per
+  // (user, agent) we must drop that UNIQUE constraint, which SQLite can only do by
+  // rebuilding the table. The CREATE above is a no-op on an existing DB (table already
+  // present with the old shape), so we detect the old shape by the absence of `title`
+  // and rebuild: rename → create fresh → copy rows → drop. Message ids are preserved,
+  // so messages.session_id references stay valid. Idempotent: skips once `title` exists.
+  private migrateSessionsMultiConversation(): void {
+    const cols = this.db.prepare(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;
+    if (cols.some((c) => c.name === "title")) return; // already migrated / fresh DB
+    this.db.exec(`
+      ALTER TABLE sessions RENAME TO sessions_legacy;
+      CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id),
+        agent_name TEXT NOT NULL,
+        title TEXT,
+        created_at TEXT NOT NULL,
+        last_active_at TEXT NOT NULL
+      );
+      INSERT INTO sessions (id, user_id, agent_name, title, created_at, last_active_at)
+        SELECT id, user_id, agent_name, NULL, created_at, last_active_at FROM sessions_legacy;
+      DROP TABLE sessions_legacy;
+      CREATE INDEX IF NOT EXISTS idx_sessions_user_agent
+        ON sessions(user_id, agent_name, last_active_at);
+    `);
+  }
+
+  private rowToSession(row: {
+    id: string;
+    user_id: string;
+    agent_name: string;
+    title: string | null;
+    created_at: string;
+    last_active_at: string;
+  }): PersistedSession {
+    return {
+      id: row.id,
+      userId: row.user_id,
+      agentName: row.agent_name,
+      title: row.title,
+      createdAt: row.created_at,
+      lastActiveAt: row.last_active_at,
+    };
   }
 
   // Resolve a channel/external_id pair to a user_id, creating a user lazily.
@@ -159,31 +214,78 @@ export class SessionStore {
       .run(userId, channel, externalId);
   }
 
-  // Get-or-create the (user, agent) session.
+  // Get-or-create the DEFAULT ("Main") session for a (user, agent).
+  //
+  // Since a (user, agent) can now own several sessions (web conversations), "the" session
+  // is ambiguous — we define the default as the OLDEST one. That's the session that existed
+  // before multi-conversation support, so existing histories keep resolving to it, and every
+  // non-web channel (Telegram/WhatsApp/CLI/scheduler) continues to read & write here.
   getOrCreateSession(userId: string, agentName: string): PersistedSession {
     this.ensureFreshConnection();
     const row = this.db
-      .prepare(`SELECT * FROM sessions WHERE user_id = ? AND agent_name = ?`)
-      .get(userId, agentName) as
-      | { id: string; user_id: string; agent_name: string; created_at: string; last_active_at: string }
-      | undefined;
-    if (row) {
-      return {
-        id: row.id,
-        userId: row.user_id,
-        agentName: row.agent_name,
-        createdAt: row.created_at,
-        lastActiveAt: row.last_active_at,
-      };
-    }
+      .prepare(
+        `SELECT * FROM sessions WHERE user_id = ? AND agent_name = ? ORDER BY created_at ASC LIMIT 1`,
+      )
+      .get(userId, agentName) as Parameters<typeof this.rowToSession>[0] | undefined;
+    if (row) return this.rowToSession(row);
+    return this.createSession(userId, agentName);
+  }
+
+  // Create a NEW session for a (user, agent). Used by the web channel to start a separate
+  // conversation with its own isolated context. `title` is optional (auto-filled from the
+  // first message later); the default/"Main" session is created title-less.
+  createSession(userId: string, agentName: string, title?: string): PersistedSession {
+    this.ensureFreshConnection();
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     this.db
       .prepare(
-        `INSERT INTO sessions (id, user_id, agent_name, created_at, last_active_at) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (id, user_id, agent_name, title, created_at, last_active_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, userId, agentName, now, now);
-    return { id, userId, agentName, createdAt: now, lastActiveAt: now };
+      .run(id, userId, agentName, title ?? null, now, now);
+    return { id, userId, agentName, title: title ?? null, createdAt: now, lastActiveAt: now };
+  }
+
+  // Look up a single session by id (returns null if it doesn't exist). Callers that act on
+  // a client-supplied conversation id MUST also check `userId` matches before trusting it —
+  // see the web channel's ownership checks.
+  getSessionById(sessionId: string): PersistedSession | null {
+    this.ensureFreshConnection();
+    const row = this.db
+      .prepare(`SELECT * FROM sessions WHERE id = ?`)
+      .get(sessionId) as Parameters<typeof this.rowToSession>[0] | undefined;
+    return row ? this.rowToSession(row) : null;
+  }
+
+  // All sessions for a (user, agent), most-recently-active first. Powers the web UI's
+  // conversation list.
+  listSessions(userId: string, agentName: string): PersistedSession[] {
+    this.ensureFreshConnection();
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM sessions WHERE user_id = ? AND agent_name = ? ORDER BY last_active_at DESC`,
+      )
+      .all(userId, agentName) as Array<Parameters<typeof this.rowToSession>[0]>;
+    return rows.map((r) => this.rowToSession(r));
+  }
+
+  // Set a conversation's title (idempotent overwrite). Used to auto-name a new conversation
+  // from its first user message and for an explicit rename later.
+  setSessionTitle(sessionId: string, title: string): void {
+    this.ensureFreshConnection();
+    this.db.prepare(`UPDATE sessions SET title = ? WHERE id = ?`).run(title, sessionId);
+  }
+
+  // Delete a conversation and all of its messages. Returns false if the session doesn't
+  // exist. The caller is responsible for ownership checks.
+  deleteSession(sessionId: string): boolean {
+    this.ensureFreshConnection();
+    const existing = this.db.prepare(`SELECT id FROM sessions WHERE id = ?`).get(sessionId);
+    if (!existing) return false;
+    this.db.prepare(`DELETE FROM messages WHERE session_id = ?`).run(sessionId);
+    this.db.prepare(`DELETE FROM sessions WHERE id = ?`).run(sessionId);
+    return true;
   }
 
   appendMessage(args: {

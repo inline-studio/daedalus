@@ -47,7 +47,12 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
   const { agentName, incoming, sessions, attachments, transcriber } = args;
 
   const userId = sessions.resolveUser(incoming.channel, incoming.externalUserId);
-  const session = sessions.getOrCreateSession(userId, agentName);
+  // Web conversations: when the message names a specific conversation, append to that session
+  // instead of the default/"Main" one — but only after confirming it belongs to this user and
+  // agent (defence in depth; the web channel validates too). Anything that fails the check
+  // falls back to the default session rather than erroring, so a stale client id can't wedge a
+  // turn. Other channels never set conversationId and always get the default session.
+  const session = resolveSession(sessions, userId, agentName, incoming.conversationId);
 
   // Session-resume gap (latest prior message → now). Used to slip a small marker
   // into the next user message so the model knows time has passed.
@@ -146,11 +151,49 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
     ...(incoming.externalMessageId ? { externalMessageId: incoming.externalMessageId } : {}),
   });
 
+  // Auto-title a brand-new, still-untitled conversation from its first user message, so the
+  // web UI's conversation list shows something meaningful instead of "New chat". priorTail
+  // being empty means this was the first message in the session, which also keeps us from
+  // ever retitling an existing ("Main") session that predates conversation titles.
+  if (session.title === null && priorTail.length === 0 && incoming.text) {
+    const title = titleFromText(incoming.text);
+    if (title) sessions.setSessionTitle(session.id, title);
+  }
+
   return {
     sessionId: session.id,
     userId,
     resumedAskUser: false, // top-level channel inbounds don't resume ask_user
   };
+}
+
+// Pick the session a message lands in. With a conversationId, use that session iff it exists
+// and belongs to this (user, agent); otherwise fall back to the default/"Main" session. The
+// fallback (rather than throwing) means a stale/forged id degrades to the main conversation
+// instead of failing the turn.
+function resolveSession(
+  sessions: SessionStore,
+  userId: string,
+  agentName: string,
+  conversationId: string | undefined,
+) {
+  if (conversationId) {
+    const explicit = sessions.getSessionById(conversationId);
+    if (explicit && explicit.userId === userId && explicit.agentName === agentName) {
+      return explicit;
+    }
+  }
+  return sessions.getOrCreateSession(userId, agentName);
+}
+
+// Derive a short conversation title from the first user message: first non-empty line,
+// collapsed whitespace, truncated to ~50 chars with an ellipsis. Returns "" if there's
+// nothing usable (caller leaves the title null in that case).
+function titleFromText(text: string): string {
+  const firstLine = text.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  const collapsed = firstLine.replace(/\s+/g, " ").trim();
+  if (!collapsed) return "";
+  return collapsed.length > 50 ? collapsed.slice(0, 49).trimEnd() + "…" : collapsed;
 }
 
 async function fetchUrl(url: string): Promise<Buffer | null> {
