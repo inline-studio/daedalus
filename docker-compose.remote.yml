@@ -1,0 +1,18 @@
+# Overlay merged on top of docker-compose.yml by `dae install` ONLY when you opt into
+# remote memory access (graphiti.remote.enabled). It publishes the Graphiti MCP port to a
+# host port so a reverse proxy (e.g. Caddy) can add TLS + auth in front of it. Without this
+# overlay the graphiti service is internal-only — reachable solely on the daedalus network.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.remote.yml up -d
+#
+# GRAPHITI_REMOTE_BIND defaults to 127.0.0.1 (loopback) — the right choice when your reverse
+# proxy runs on the SAME host (it connects to 127.0.0.1:<port>). Set it to 0.0.0.0 in the
+# compose .env only if the proxy runs on another host/container.
+#
+# SECURITY: Graphiti has NO built-in authentication. Anything that can reach this port can
+# read and write your memory graph. Your reverse proxy MUST enforce the bearer token
+# (GRAPHITI_REMOTE_TOKEN) — never publish this straight to a public interface unfronted.
+services:
+  graphiti:
+    ports:
+      - "${GRAPHITI_REMOTE_BIND:-127.0.0.1}:${GRAPHITI_REMOTE_PORT:-8000}:8000"

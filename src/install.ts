@@ -78,6 +78,10 @@ export async function runInstall(
   // The runner's .env.local holds locally-verified secrets (telegram token, web-login creds) —
   // read it so re-runs preserve them ("leave blank to keep").
   const envLocalPrev = await readEnvFile(envLocalPath);
+  // Remote memory access: a previously-minted bearer token (kept stable across re-runs) and
+  // the prior remote decision/bind from the config (re-applied by `dae update` without asking).
+  const prevRemoteToken = prev.GRAPHITI_REMOTE_TOKEN ?? "";
+  const priorRemote = config.graphiti?.remote;
 
   // 2. Resolve the deployment intent — supplied (dae update, no prompts) or asked. Keys are
   // stored in OneCLI (never on disk); a blank/undefined key means "keep what's already in
@@ -91,6 +95,7 @@ export async function runInstall(
   let wantWhisper = false;
   let tgToken = "";
   let braveKey = "";
+  let wantRemoteMemory = false;
 
   // A prior install wrote the compose .env; its presence means "already set up". Decide how
   // to resolve the intent: apply supplied answers (update), reuse the existing setup (re-run
@@ -109,6 +114,10 @@ export async function runInstall(
     wantWhisper = a.wantWhisper;
     tgToken = a.telegramToken ?? "";
     braveKey = a.braveKey ?? "";
+    // Remote memory isn't part of InstallAnswers (dae update infers from the config, not
+    // from re-asking) — carry the existing decision straight through so `dae update` keeps
+    // the published port + token exactly as they were.
+    wantRemoteMemory = Boolean(priorRemote?.enabled);
     if (mode === "reuse") {
       console.log(
         "\nReusing your existing configuration (stored keys kept; only a genuinely-missing\n" +
@@ -147,6 +156,17 @@ export async function runInstall(
       "Run a local Whisper container for voice-note transcription?",
       !fresh && localWhisperEnabled(config),
     );
+
+    // Remote memory access. Only meaningful when Graphiti runs (it needs the OpenAI-compatible
+    // endpoint above). Off by default — when on, we publish Graphiti's MCP port to localhost
+    // and mint a bearer token for the user's own reverse proxy (TLS + auth) to enforce.
+    if (useOpenai) {
+      wantRemoteMemory = await confirm(
+        "Allow the memory server (Graphiti) to be reached REMOTELY over MCP, behind your own " +
+          "reverse proxy? (publishes its port + generates a bearer token; you add TLS/auth in the proxy)",
+        !fresh && Boolean(priorRemote?.enabled),
+      );
+    }
 
     const tgRaw =
       ((await secretPrompt({
@@ -206,6 +226,16 @@ export async function runInstall(
   // still needs a non-empty ONECLI_API_KEY to attempt the connection. Keep it stable.
   const onecliKey = prevOnecliKey || randomBytes(24).toString("base64url");
 
+  // Remote memory access (opt-in). Only meaningful when Graphiti runs (needs an
+  // OpenAI-compatible endpoint — see graphitiEnabled below). When on we publish Graphiti's
+  // MCP port and mint a bearer token for the user's reverse proxy to enforce (Graphiti has no
+  // auth of its own). The token is kept STABLE across re-runs (reuse the prior one if present)
+  // so an existing proxy config + client keep working after `dae update`.
+  const remoteEnabled = useOpenai && wantRemoteMemory;
+  const remoteHost = priorRemote?.host ?? "127.0.0.1";
+  const remotePort = priorRemote?.port ?? 8000;
+  const remoteToken = remoteEnabled ? prevRemoteToken || randomBytes(32).toString("base64url") : prevRemoteToken;
+
   // 3. Persist config + runner secrets.
   const yamlEdits: Array<{ keyPath: string[]; value: unknown }> = [];
   // Memory: Graphiti (containerised temporal knowledge graph, reached by service name).
@@ -217,6 +247,11 @@ export async function runInstall(
       { keyPath: ["memory", "backend"], value: "graphiti" },
       { keyPath: ["graphiti", "enabled"], value: true },
       { keyPath: ["graphiti", "url"], value: "http://graphiti:8000/mcp/" },
+      // Persist the remote-access decision so `dae update` re-applies it (incl. the published
+      // port overlay) without re-asking. The bearer token stays in the compose .env, not here.
+      { keyPath: ["graphiti", "remote", "enabled"], value: remoteEnabled },
+      { keyPath: ["graphiti", "remote", "host"], value: remoteHost },
+      { keyPath: ["graphiti", "remote", "port"], value: remotePort },
     );
   }
   const runnerEnv: Record<string, string> = {};
@@ -355,6 +390,13 @@ export async function runInstall(
     composeEnv.GRAPHITI_DATA_PATH = graphitiDataPath;
     composeEnv.ONECLI_CA_PATH = onecliCaPath;
   }
+  if (remoteEnabled) {
+    // Consumed by docker-compose.remote.yml (the published-port overlay). The token isn't read
+    // by compose — it's persisted here so it stays stable across re-runs and we can re-print it.
+    composeEnv.GRAPHITI_REMOTE_BIND = remoteHost;
+    composeEnv.GRAPHITI_REMOTE_PORT = String(remotePort);
+    composeEnv.GRAPHITI_REMOTE_TOKEN = remoteToken;
+  }
   // Persist the active compose profiles (MERGED) so EVERY compose command (install,
   // `dae update`, manual `docker compose`) keeps the SAME services up — not just this
   // run. Without this, `dae update` (compose up with no --profile) would drop them.
@@ -369,8 +411,14 @@ export async function runInstall(
   //    Graphiti's proxy/CA, (c) build + start everything else.
   // Run a compose command under a spinner with its (noisy) pull/build output captured rather
   // than streamed. execa's `all` collects stdout+stderr so a caller can surface it on failure.
+  // When remote memory is enabled, merge the published-port overlay onto every bring-up so the
+  // graphiti container is (re)created WITH its host port. `-f` order matters: base first, overlay
+  // second (compose deep-merges later files on top). All other compose calls in this flow target
+  // single services / queries and don't need the overlay, so they keep the base file only.
+  const remoteOverride = path.join(composeDir, "docker-compose.remote.yml");
+  const composeFileArgs = remoteEnabled ? ["-f", composeFile, "-f", remoteOverride] : ["-f", composeFile];
   const composeUp = async (label: string, extra: string[]) =>
-    withSpinner(label, () => execa("docker", ["compose", "-f", composeFile, ...extra], { cwd: composeDir, all: true }));
+    withSpinner(label, () => execa("docker", ["compose", ...composeFileArgs, ...extra], { cwd: composeDir, all: true }));
 
   // (a) OneCLI first (brings up onecli-db via depends_on). No --build: it's a pulled image.
   try {
@@ -560,6 +608,47 @@ export async function runInstall(
   console.log("  If your proxy runs on another host/container, set WEB_BIND=0.0.0.0 in");
   console.log(`  ${rel(composeEnvPath)} so it can reach the port.`);
   console.log("─────────────────────────────────────────────────────────────");
+
+  // Remote memory (MCP). Printed only when the user opted in: the Graphiti MCP port is now
+  // published to ${remoteHost}:${remotePort}. Graphiti has NO auth of its own, so the bearer
+  // token below MUST be enforced by the reverse proxy. Print the token + a ready-to-use Caddy
+  // snippet + the client connection details.
+  if (remoteEnabled) {
+    const target = `127.0.0.1:${remotePort}`;
+    console.log("\n── Remote memory (MCP) ──────────────────────────────────────");
+    console.log(`Graphiti's MCP port is published on http://${remoteHost}:${remotePort} (loopback`);
+    console.log("by default). ⚠ Graphiti has NO built-in auth — anything that can reach this");
+    console.log("port can read/write your whole memory graph. NEVER expose it directly; put a");
+    console.log("reverse proxy in front that enforces the bearer token below (TLS + auth).\n");
+    console.log("Bearer token (store it safely — re-printed on re-run, rotate by clearing");
+    console.log(`GRAPHITI_REMOTE_TOKEN in ${rel(composeEnvPath)} and re-running \`dae install\`):\n`);
+    console.log(`    ${remoteToken}\n`);
+    console.log("Example Caddy (replace the hostname; the bearer check gates access, and the");
+    console.log("MCP stream needs flush_interval -1):\n");
+    console.log("    memory.example.com {");
+    console.log(`        @unauthorized not header Authorization "Bearer ${remoteToken}"`);
+    console.log('        handle @unauthorized {');
+    console.log('            respond "Unauthorized" 401');
+    console.log("        }");
+    console.log("        handle {");
+    console.log(`            reverse_proxy ${target} {`);
+    console.log("                flush_interval -1");
+    console.log("            }");
+    console.log("        }");
+    console.log("    }\n");
+    console.log("Point a remote MCP client at it (streamable-HTTP transport):\n");
+    console.log("    URL:    https://memory.example.com/mcp/");
+    console.log(`    Header: Authorization: Bearer ${remoteToken}\n`);
+    if (remoteHost === "0.0.0.0") {
+      console.log("  Bound to 0.0.0.0 (reachable beyond loopback) — make sure ONLY your proxy can");
+      console.log(`  reach ${remotePort} (firewall it), since the token is enforced at the proxy.`);
+    } else {
+      console.log("  If your proxy runs on another host/container, set graphiti.remote.host to");
+      console.log(`  0.0.0.0 in your config (then re-run \`dae install\`) so it can reach the port.`);
+    }
+    console.log("  Turn this off later: set graphiti.remote.enabled: false and re-run `dae install`.");
+    console.log("─────────────────────────────────────────────────────────────");
+  }
 
   if (!graphitiEnabled) {
     console.log(
@@ -766,6 +855,10 @@ async function ensureConfig(configFlag?: string): Promise<string | null> {
 // context allows exactly these inputs (plus the packed tarball glob).
 export const COMPOSE_FILES = [
   "docker-compose.yml",
+  // Optional overlay (merged with `-f`) that publishes the Graphiti MCP port to a host port
+  // for remote access. Always materialised so it's there when graphiti.remote.enabled flips
+  // on; only actually passed to `docker compose` when remote memory is enabled.
+  "docker-compose.remote.yml",
   "Dockerfile",
   "Dockerfile.graphiti",
   "graphiti-entrypoint.sh",

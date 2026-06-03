@@ -18,6 +18,7 @@
     "README.md",
     "CHANGELOG.md",
     "docker-compose.yml",
+    "docker-compose.remote.yml",
     "Dockerfile",
     "Dockerfile.graphiti",
     "graphiti-entrypoint.sh",
