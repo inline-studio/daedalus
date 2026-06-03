@@ -13,6 +13,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { WebChannel } from "../dist/channels/web.js";
 import { SessionStore } from "../dist/sessions/store.js";
+import { cleanTitle } from "../dist/sessions/title.js";
 
 let pass = true;
 const ok = (label, cond, detail = "") => {
@@ -117,6 +118,19 @@ const AGENT = "orchestrator";
   const histGone = await getJson("/history?externalUserId=" + U1 + "&conversationId=" + convB);
   ok("deleted conversation's messages are gone (falls back to empty Main view)", !histGone.messages.some((m) => m.text === "reply in B"));
 
+  // "New chat" guardrail — use a fresh user so the counts above are undisturbed.
+  const U3 = "web-user-three";
+  await getJson("/conversations?externalUserId=" + U3); // bootstrap Main
+  const e1 = await (await post("/conversations?externalUserId=" + U3, {})).json();
+  const e2 = await (await post("/conversations?externalUserId=" + U3, {})).json();
+  ok("GUARDRAIL: repeated New chat reuses the one empty conversation", e1.id === e2.id, e1.id + " vs " + e2.id);
+  const listU3 = await getJson("/conversations?externalUserId=" + U3);
+  ok("GUARDRAIL: no pile-up — exactly Main + one empty conversation", listU3.conversations.length === 2);
+  // Once the empty conversation has been used, a new create makes a distinct one.
+  sessions.appendMessage({ sessionId: e1.id, role: "user", content: [{ type: "text", text: "first" }] });
+  const e3 = await (await post("/conversations?externalUserId=" + U3, {})).json();
+  ok("GUARDRAIL: after the empty conv is used, New chat creates a fresh one", e3.id !== e1.id);
+
   await ch.stop();
   sessions.close();
 }
@@ -172,6 +186,16 @@ const AGENT = "orchestrator";
   ok("MIGRATION: idempotent reopen keeps both sessions", store2.listSessions("u-legacy", "orchestrator").length === 2);
   store2.close();
 }
+
+// ---------------------------------------------------------------------------------------
+// Part 3 — cleanTitle: the model's raw title response is sanitised before it becomes a label.
+// ---------------------------------------------------------------------------------------
+ok("cleanTitle: strips wrapping quotes and trailing period", cleanTitle('"Refactor the auth module."') === "Refactor the auth module", cleanTitle('"Refactor the auth module."'));
+ok("cleanTitle: collapses inner whitespace", cleanTitle("Plan   the   roadmap") === "Plan the roadmap");
+ok("cleanTitle: takes the first line only", cleanTitle("Weather setup\nignore this") === "Weather setup");
+ok("cleanTitle: strips a code fence", cleanTitle("```\nDeploy pipeline\n```") === "Deploy pipeline");
+ok("cleanTitle: blank input yields empty string", cleanTitle("   ") === "");
+ok("cleanTitle: caps very long titles", cleanTitle("x".repeat(80)).length <= 60);
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);

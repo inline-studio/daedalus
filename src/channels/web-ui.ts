@@ -651,6 +651,10 @@ export const WEB_UI_HTML = `<!doctype html>
       // persisted createdAt for replayed messages) — so the transcript timestamp is accurate.
       addMsg("assistant", d.text || "", d.attachments || [], ev.lastEventId);
       maybeNotify(d.text || "");
+      // A reply may have triggered a server-side model-generated title for this conversation
+      // (and bumped its recency); refresh the sidebar so the new label/order shows without a
+      // manual reload. Cheap JSON; doesn't touch the open chat log.
+      loadConversations();
     });
   }
 
@@ -812,15 +816,28 @@ export const WEB_UI_HTML = `<!doctype html>
     closeSidebar();
   }
 
+  // Guardrail against piling up blank chats from repeated clicks:
+  //   1. If an unused chat already exists locally (non-default, no title yet), just open it.
+  //   2. Otherwise create one — but block concurrent creates with an in-flight flag, and if the
+  //      server hands back an existing empty chat (its own guardrail), don't duplicate it.
+  var creatingConvo = false;
   function newConversation() {
-    fetch("/conversations", { method: "POST", headers: authHeaders(), body: "{}" })
+    var unused = conversations.filter(function (c) { return c.id !== defaultConvId && !c.title; })[0];
+    if (unused) { selectConversation(unused.id); return; }
+    if (creatingConvo) return;
+    creatingConvo = true;
+    // externalUserId goes on the query string (the server reads the user from the cookie in
+    // login mode, but from this param in token/open mode — same as GET/DELETE /conversations).
+    fetch("/conversations?externalUserId=" + encodeURIComponent(uid), { method: "POST", headers: authHeaders(), body: "{}" })
       .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
       .then(function (c) {
+        creatingConvo = false;
         if (!c || !c.id) { statusEl.textContent = "couldn't start a new chat"; return; }
-        conversations.unshift(c);
+        var known = conversations.some(function (x) { return x.id === c.id; });
+        if (!known) conversations.unshift(c);
         selectConversation(c.id);
       })
-      .catch(function () { statusEl.textContent = "couldn't start a new chat"; });
+      .catch(function () { creatingConvo = false; statusEl.textContent = "couldn't start a new chat"; });
   }
 
   function deleteConversation(id) {

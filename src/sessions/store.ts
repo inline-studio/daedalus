@@ -270,6 +270,17 @@ export class SessionStore {
     return rows.map((r) => this.rowToSession(r));
   }
 
+  // Number of messages in a session. Used to tell a brand-new, never-used conversation (0)
+  // from one that's already been written to — the web "New chat" guardrail reuses an existing
+  // empty conversation instead of piling up duplicates.
+  countMessages(sessionId: string): number {
+    this.ensureFreshConnection();
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM messages WHERE session_id = ?`)
+      .get(sessionId) as { n: number } | undefined;
+    return row ? Number(row.n) : 0;
+  }
+
   // Set a conversation's title (idempotent overwrite). Used to auto-name a new conversation
   // from its first user message and for an explicit rename later.
   setSessionTitle(sessionId: string, title: string): void {
