@@ -34,4 +34,8 @@ database:
     falkordb:
       uri: "redis://localhost:6379"
       password: ${FALKORDB_PASSWORD:}
-      database: ${FALKORDB_DATABASE:default_db}
+      # Default to "main" — Graphiti's FalkorDB driver names the per-group graph after the
+      # group_id, and daedalus writes under the server-default group "main". Reading "main"
+      # keeps the search graph aligned with where auto-save writes. A previous default of
+      # "default_db" pointed the server at an empty graph, orphaning all saved memory.
+      database: ${FALKORDB_DATABASE:main}
