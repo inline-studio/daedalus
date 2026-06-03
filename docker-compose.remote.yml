@@ -7,7 +7,12 @@
 #
 # GRAPHITI_REMOTE_BIND defaults to 127.0.0.1 (loopback) — the right choice when your reverse
 # proxy runs on the SAME host (it connects to 127.0.0.1:<port>). Set it to 0.0.0.0 in the
-# compose .env only if the proxy runs on another host/container.
+# compose .env only if the proxy runs on another host.
+#
+# NOTE: if your reverse proxy runs as a CONTAINER, don't use this published port — a proxy
+# aimed at 127.0.0.1 hits its own loopback, not the host (→ 502). Instead attach the proxy to
+# the daedalus network and proxy to `graphiti:8000` by service name. `dae install` prints the
+# exact Caddy + network snippet for that path.
 #
 # SECURITY: Graphiti has NO built-in authentication. Anything that can reach this port can
 # read and write your memory graph. Your reverse proxy MUST enforce the bearer token
