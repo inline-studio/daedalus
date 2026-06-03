@@ -216,6 +216,11 @@ services:
       NO_PROXY: "localhost,127.0.0.1,onecli"
       no_proxy: "localhost,127.0.0.1,onecli"
       CONFIG_PATH: /app/mcp/config/config.yaml
+      # FalkorDB graph daedalus reads/writes. MUST be passed through (graphiti.config.yaml
+      # interpolates it from the CONTAINER env, not the compose .env) and MUST match the graph
+      # the default group "main" writes to — otherwise the server reads an empty graph and all
+      # saved memory looks lost. Default "main"; override via FALKORDB_DATABASE in the compose .env.
+      FALKORDB_DATABASE: ${FALKORDB_DATABASE:-main}
       # spark is CPU-constrained — keep episode-processing concurrency low.
       SEMAPHORE_LIMIT: ${GRAPHITI_SEMAPHORE_LIMIT:-3}
       BROWSER: "0" # disable the FalkorDB web UI
