@@ -1,7 +1,7 @@
 import http from "node:http";
 import type { Channel, ChannelContext, IncomingAttachment, OutgoingMessage } from "./base.js";
 import type { ContentPart } from "../types.js";
-import type { SessionStore } from "../sessions/store.js";
+import type { SessionStore, PersistedSession } from "../sessions/store.js";
 import { WEB_UI_HTML, WEB_LOGIN_HTML } from "./web-ui.js";
 import { verifyPassword, signSession, verifySession, parseCookies } from "./web-auth.js";
 import { log } from "../log.js";
@@ -35,10 +35,13 @@ export class WebChannel implements Channel {
   readonly id = "web";
   readonly defaultAgent: string;
   private server: http.Server | null = null;
-  // One user can have MANY live SSE connections (multiple tabs, a reconnect, even a curl test).
-  // In login mode the key is the username, so they ALL share a key — keying a single response
-  // per user makes connections evict each other and orphan the live one. Hold a Set per user
-  // and broadcast every reply to all of them.
+  // Live SSE connections, keyed by streamKey(externalUserId, conversationId) — i.e. per
+  // (user, conversation), not just per user. One user can have MANY connections (multiple
+  // tabs, a reconnect, a curl test) and now ALSO several conversations open at once; keying
+  // by conversation means a reply is delivered only to the tab(s) showing that conversation
+  // rather than broadcast across all of them. Each key holds a Set so multiple tabs on the
+  // same conversation all stay in sync. A connection from an older cached UI that doesn't
+  // send a conversationId registers under the bare externalUserId key (see streamsFor).
   private streams = new Map<string, Set<http.ServerResponse>>();
   private port: number;
   private token: string | undefined;
@@ -148,6 +151,10 @@ export class WebChannel implements Channel {
           this.handleHistory(url, res, loginUser);
           return;
         }
+        if (pathname === "/conversations") {
+          await this.handleConversations(req, res, url, loginUser);
+          return;
+        }
         res.writeHead(404);
         res.end("not found");
       } catch (err) {
@@ -169,11 +176,14 @@ export class WebChannel implements Channel {
   }
 
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {
-    const set = this.streams.get(externalUserId);
-    if (!set || set.size === 0) return; // user not connected; dropped reply will be replayed on reconnect via Last-Event-ID
+    const targets = this.streamsFor(externalUserId, msg.conversationId);
+    if (targets.length === 0) return; // not connected; dropped reply will be replayed on reconnect via Last-Event-ID
     const data = JSON.stringify({
       text: msg.text ?? "",
       parts: msg.parts ?? [],
+      // Carry the conversation id so a client can tell which conversation a reply belongs to
+      // (defensive — routing already targets the right stream). Null for non-conversation sends.
+      conversationId: msg.conversationId ?? null,
       attachments: (msg.attachments ?? []).map((a) => ({
         mediaType: a.mediaType,
         ...(a.filename ? { filename: a.filename } : {}),
@@ -190,8 +200,54 @@ export class WebChannel implements Channel {
     // never a subset. The handleSse replay uses that filter.
     const sseId = new Date().toISOString();
     const block = `id: ${sseId}\nevent: message\ndata: ${data}\n\n`;
-    // Broadcast to every live connection for this user (all tabs/devices stay in sync).
-    for (const stream of set) stream.write(block);
+    // Deliver to every matching connection (all tabs on this conversation stay in sync).
+    for (const set of targets) for (const stream of set) stream.write(block);
+  }
+
+  // The streams map key for a (user, conversation). A bare externalUserId (no conversationId)
+  // is the legacy key used by older cached UIs that predate conversations. The separator is a
+  // NUL — it can't appear in a username or a UUID conversation id, so the startsWith() prefix
+  // match in streamsFor can't bleed across similarly-named users.
+  private streamKey(externalUserId: string, conversationId: string | undefined): string {
+    return conversationId ? externalUserId + "\u0000" + conversationId : externalUserId;
+  }
+
+  // The connection Sets a reply should go to. With a conversationId: the exact per-conversation
+  // stream PLUS any legacy bare-key stream for the same user (so an un-refreshed old UI still
+  // receives replies during a deploy). Without one: every stream belonging to the user.
+  private streamsFor(
+    externalUserId: string,
+    conversationId: string | undefined,
+  ): Set<http.ServerResponse>[] {
+    const out: Set<http.ServerResponse>[] = [];
+    if (conversationId) {
+      const exact = this.streams.get(this.streamKey(externalUserId, conversationId));
+      if (exact) out.push(exact);
+      const legacy = this.streams.get(externalUserId);
+      if (legacy) out.push(legacy);
+    } else {
+      const prefix = externalUserId + "\u0000";
+      for (const [k, set] of this.streams) {
+        if (k === externalUserId || k.startsWith(prefix)) out.push(set);
+      }
+    }
+    return out;
+  }
+
+  // Resolve the session a web request targets, enforcing ownership. With a conversationId,
+  // returns that session ONLY if it belongs to (user, defaultAgent); an unknown / forbidden id
+  // falls back to the default ("Main") session. Returns null only when no SessionStore is wired.
+  private resolveConversation(
+    externalUserId: string,
+    conversationId: string | null | undefined,
+  ): PersistedSession | null {
+    if (!this.sessions) return null;
+    const userId = this.sessions.resolveUser(this.id, externalUserId);
+    if (conversationId) {
+      const s = this.sessions.getSessionById(conversationId);
+      if (s && s.userId === userId && s.agentName === this.defaultAgent) return s;
+    }
+    return this.sessions.getOrCreateSession(userId, this.defaultAgent);
   }
 
   // Verify the session cookie and return the authenticated username, or null.
@@ -293,10 +349,20 @@ export class WebChannel implements Channel {
         });
       }
     }
+    // A client-supplied conversation id is only forwarded if it belongs to this user (ingest
+    // re-validates, but checking here keeps a forged id from even reaching the pipeline). An
+    // invalid/absent id is simply dropped, so the message lands in the default ("Main") session.
+    let conversationId: string | undefined;
+    if (typeof body.conversationId === "string" && body.conversationId && this.sessions) {
+      const userId = this.sessions.resolveUser(this.id, externalUserId);
+      const s = this.sessions.getSessionById(body.conversationId);
+      if (s && s.userId === userId) conversationId = body.conversationId;
+    }
     await ctx.publish({
       channel: this.id,
       externalUserId,
       ...(typeof body.text === "string" ? { text: body.text } : {}),
+      ...(conversationId ? { conversationId } : {}),
       ...(typeof body.addressedTo === "string" ? { addressedTo: body.addressedTo } : {}),
       ...(typeof body.externalMessageId === "string" ? { externalMessageId: body.externalMessageId } : {}),
       ...(attachments.length ? { attachments } : {}),
@@ -314,6 +380,13 @@ export class WebChannel implements Channel {
       res.end("externalUserId required");
       return;
     }
+    // Which conversation this stream is for. Resolve it to an owned session up front so both
+    // the reconnect replay and the stream-key registration use the same one. A client that
+    // doesn't send a conversationId (older cached UI) gets the default session and registers
+    // under the bare-user legacy key.
+    const reqConversationId = url.searchParams.get("conversationId");
+    const session = this.resolveConversation(externalUserId, reqConversationId);
+    const streamConversationId = session ? session.id : reqConversationId ?? undefined;
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -339,10 +412,8 @@ export class WebChannel implements Channel {
     // by re-reading bytes from disk; we don't reconstruct that here. Same
     // limitation as the /history endpoint. A page refresh still shows them.
     const lastEventId = req.headers["last-event-id"];
-    if (typeof lastEventId === "string" && lastEventId && this.sessions) {
+    if (typeof lastEventId === "string" && lastEventId && this.sessions && session) {
       try {
-        const userId = this.sessions.resolveUser(this.id, externalUserId);
-        const session = this.sessions.getOrCreateSession(userId, this.defaultAgent);
         const missed = this.sessions.messagesSince(session.id, lastEventId, 200);
         for (const m of missed) {
           if (m.role !== "assistant") continue; // user msgs were rendered locally on send
@@ -356,11 +427,13 @@ export class WebChannel implements Channel {
       }
     }
 
-    // Add THIS connection to the user's set (don't replace — other tabs/reconnects coexist).
-    let set = this.streams.get(externalUserId);
+    // Add THIS connection to the (user, conversation) set (don't replace — other tabs/
+    // reconnects on the same conversation coexist).
+    const key = this.streamKey(externalUserId, streamConversationId);
+    let set = this.streams.get(key);
     if (!set) {
       set = new Set();
-      this.streams.set(externalUserId, set);
+      this.streams.set(key, set);
     }
     set.add(res);
 
@@ -388,11 +461,11 @@ export class WebChannel implements Channel {
 
     const cleanup = () => {
       clearInterval(heartbeat);
-      // Remove only THIS connection from the user's set (leave other tabs/reconnects intact).
-      const s = this.streams.get(externalUserId);
+      // Remove only THIS connection from its (user, conversation) set (leave others intact).
+      const s = this.streams.get(key);
       if (s) {
         s.delete(res);
-        if (s.size === 0) this.streams.delete(externalUserId);
+        if (s.size === 0) this.streams.delete(key);
       }
     };
     req.on("close", cleanup);
@@ -412,8 +485,10 @@ export class WebChannel implements Channel {
     let messages: Array<{ role: string; text: string; at?: string }> = [];
     if (this.sessions) {
       try {
-        const userId = this.sessions.resolveUser(this.id, externalUserId);
-        const session = this.sessions.getOrCreateSession(userId, this.defaultAgent);
+        // Replay the requested conversation (validated to belong to the user; an unknown id
+        // falls back to the default/"Main" session).
+        const session = this.resolveConversation(externalUserId, url.searchParams.get("conversationId"));
+        if (!session) throw new Error("no session");
         // Tool-using turns put TWO rows into the messages table per turn: the
         // assistant message (text + tool_use parts) AND a synthetic "user"
         // message holding the tool_results (no text, filtered out below).
@@ -445,6 +520,85 @@ export class WebChannel implements Channel {
     }
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ messages }));
+  }
+
+  // Conversation management for the web UI's separate-sessions feature.
+  //   GET    /conversations           → { conversations: [{id,title,createdAt,lastActiveAt}], defaultId }
+  //   POST   /conversations           → create a new conversation, returns the created entry
+  //   DELETE /conversations?id=<id>   → delete a conversation (the default/"Main" one is protected)
+  // All operate on the (user, defaultAgent) the page is bound to; ownership is enforced via the
+  // resolved user so a client can't touch another user's conversations.
+  private async handleConversations(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    forcedUser: string | null,
+  ): Promise<void> {
+    const externalUserId = forcedUser ?? url.searchParams.get("externalUserId");
+    if (!externalUserId) {
+      res.writeHead(400);
+      res.end("externalUserId required");
+      return;
+    }
+    if (!this.sessions) {
+      // No store wired (e.g. a bare smoke harness) — report just a virtual default.
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ conversations: [], defaultId: null }));
+      return;
+    }
+    const sessions = this.sessions;
+    const userId = sessions.resolveUser(this.id, externalUserId);
+    const json = (status: number, body: unknown) => {
+      res.writeHead(status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(body));
+    };
+    const toEntry = (s: PersistedSession) => ({
+      id: s.id,
+      title: s.title,
+      createdAt: s.createdAt,
+      lastActiveAt: s.lastActiveAt,
+    });
+
+    if (req.method === "GET") {
+      // Ensure the default/"Main" session exists so the UI always has at least one conversation,
+      // and so a brand-new browser gets a stable id to talk to.
+      const def = sessions.getOrCreateSession(userId, this.defaultAgent);
+      const conversations = sessions.listSessions(userId, this.defaultAgent).map(toEntry);
+      json(200, { conversations, defaultId: def.id });
+      return;
+    }
+    if (req.method === "POST") {
+      const body = await readJson(req).catch(() => ({}) as Record<string, unknown>);
+      const title =
+        typeof body.title === "string" && body.title.trim() ? body.title.trim().slice(0, 80) : undefined;
+      const created = sessions.createSession(userId, this.defaultAgent, title);
+      json(200, toEntry(created));
+      return;
+    }
+    if (req.method === "DELETE") {
+      const id = url.searchParams.get("id");
+      if (!id) {
+        json(400, { error: "id required" });
+        return;
+      }
+      const s = sessions.getSessionById(id);
+      if (!s || s.userId !== userId || s.agentName !== this.defaultAgent) {
+        json(404, { error: "not found" });
+        return;
+      }
+      // Protect the default/"Main" conversation — it's shared with non-web channels and is the
+      // fallback every stale id resolves to. Deleting it would orphan that history.
+      const def = sessions.getOrCreateSession(userId, this.defaultAgent);
+      if (s.id === def.id) {
+        json(403, { error: "cannot delete the main conversation" });
+        return;
+      }
+      sessions.deleteSession(id);
+      json(200, { ok: true });
+      return;
+    }
+    res.writeHead(405);
+    res.end("method not allowed");
   }
 }
 
