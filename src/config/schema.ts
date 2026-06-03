@@ -176,6 +176,21 @@ export type MempalaceConfig = z.infer<typeof MempalaceConfigSchema>;
 export const GraphitiConfigSchema = z.object({
   enabled: z.boolean().default(false),
   url: z.string().default("http://graphiti:8000/mcp/"),
+  // OPTIONAL remote access over MCP. When enabled, `dae install` publishes the Graphiti
+  // MCP port to a host port (bind:port) so you can reach the memory server from another
+  // machine THROUGH YOUR OWN reverse proxy (which adds TLS + auth). Graphiti itself has
+  // NO authentication — the proxy MUST enforce the bearer token (`dae install` generates
+  // one and stores it as GRAPHITI_REMOTE_TOKEN in the compose .env; it prints the matching
+  // Caddy config + the remote MCP URL/token at the end). `bind` defaults to 127.0.0.1
+  // (loopback — correct when the proxy runs on the same host); set it to 0.0.0.0 only if
+  // the proxy runs elsewhere. The token lives in the compose .env, never here.
+  remote: z
+    .object({
+      enabled: z.boolean().default(false),
+      host: z.string().default("127.0.0.1"),
+      port: z.number().int().min(1).max(65535).default(8000),
+    })
+    .default({ enabled: false, host: "127.0.0.1", port: 8000 }),
 });
 export type GraphitiConfig = z.infer<typeof GraphitiConfigSchema>;
 

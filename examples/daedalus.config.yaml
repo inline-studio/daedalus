@@ -49,6 +49,21 @@ memory:
     schedule: '0 */6 * * *'
     path: ./brain/memory
 
+# Graphiti temporal-knowledge-graph memory (the `graphiti` compose service). `dae install`
+# turns this on automatically when you configure an OpenAI-compatible endpoint. Internal-only
+# by default (reached by service name on the daedalus network).
+# graphiti:
+#   enabled: true
+#   # OPTIONAL remote access over MCP. When enabled, `dae install` publishes Graphiti's MCP
+#   # port to host:port so you can reach the memory server from another machine THROUGH YOUR
+#   # OWN reverse proxy (TLS + auth). Graphiti has NO auth of its own — `dae install` mints a
+#   # bearer token (stored as GRAPHITI_REMOTE_TOKEN in the compose .env) and prints a Caddy
+#   # config that enforces it. Set host: 0.0.0.0 only if your proxy runs on another host.
+#   remote:
+#     enabled: true
+#     host: 127.0.0.1
+#     port: 8000
+
 sessions:
   dbPath: ./data/sessions.sqlite
   attachmentsPath: ./data/attachments
