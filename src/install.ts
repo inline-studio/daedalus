@@ -617,43 +617,58 @@ export async function runInstall(
   console.log(`  ${rel(composeEnvPath)} so it can reach the port.`);
   console.log("─────────────────────────────────────────────────────────────");
 
-  // Remote memory (MCP). Printed only when the user opted in: the Graphiti MCP port is now
-  // published to ${remoteHost}:${remotePort}. Graphiti has NO auth of its own, so the bearer
-  // token below MUST be enforced by the reverse proxy. Print the token + a ready-to-use Caddy
-  // snippet + the client connection details.
+  // Remote memory (MCP). Printed only when the user opted in. Graphiti has NO auth of its own,
+  // so the bearer token MUST be enforced by the reverse proxy. We lead with the CONTAINERISED
+  // proxy recipe (proxy → `graphiti:8000` over the daedalus network) because that's how most
+  // docker deployments run their proxy — and a containerised proxy pointed at the published
+  // 127.0.0.1 port hits ITS OWN loopback, not the host, which 502s. The host-proxy variant
+  // (→ the published port) is given as the alternative.
   if (remoteEnabled) {
-    const target = `127.0.0.1:${remotePort}`;
+    // Compose names the network <project>_daedalus; the project defaults to the compose dir's
+    // basename (we run compose with cwd = composeDir). Printed as a starting point — the user
+    // confirms it with `docker network ls`.
+    const daedalusNetwork = `${path.basename(composeDir)}_daedalus`;
     console.log("\n── Remote memory (MCP) ──────────────────────────────────────");
     console.log(`Graphiti's MCP port is published on http://${remoteHost}:${remotePort} (loopback`);
-    console.log("by default). ⚠ Graphiti has NO built-in auth — anything that can reach this");
-    console.log("port can read/write your whole memory graph. NEVER expose it directly; put a");
-    console.log("reverse proxy in front that enforces the bearer token below (TLS + auth).\n");
+    console.log("by default). ⚠ Graphiti has NO built-in auth — anything that can reach it can");
+    console.log("read/write your whole memory graph. NEVER expose it directly; front it with a");
+    console.log("reverse proxy that enforces the bearer token below (TLS + auth).\n");
     console.log("Bearer token (store it safely — re-printed on re-run, rotate by clearing");
     console.log(`GRAPHITI_REMOTE_TOKEN in ${rel(composeEnvPath)} and re-running \`dae install\`):\n`);
     console.log(`    ${remoteToken}\n`);
-    console.log("Example Caddy (replace the hostname; the bearer check gates access, and the");
-    console.log("MCP stream needs flush_interval -1):\n");
+    console.log("Most proxies for this stack run as a CONTAINER. Put yours on Daedalus's docker");
+    console.log("network and proxy to the `graphiti` service by name — then the published host");
+    console.log("port isn't even needed (a containerised proxy aimed at 127.0.0.1 hits its own");
+    console.log("loopback, not the host → 502). Example Caddy (replace the hostname):\n");
     console.log("    memory.example.com {");
     console.log(`        @unauthorized not header Authorization "Bearer ${remoteToken}"`);
     console.log('        handle @unauthorized {');
     console.log('            respond "Unauthorized" 401');
     console.log("        }");
     console.log("        handle {");
-    console.log(`            reverse_proxy ${target} {`);
-    console.log("                flush_interval -1");
+    console.log("            reverse_proxy graphiti:8000 {");
+    console.log("                flush_interval -1                 # MCP reply stream needs this");
+    console.log("                header_up Host {upstream_hostport} # avoids Graphiti host-check");
     console.log("            }");
     console.log("        }");
     console.log("    }\n");
-    console.log("Point a remote MCP client at it (streamable-HTTP transport):\n");
+    console.log("…and attach the proxy's container to Daedalus's network (confirm the name with");
+    console.log("`docker network ls | grep daedalus`):\n");
+    console.log("    networks:");
+    console.log("      daedalus:");
+    console.log("        external: true");
+    console.log(`        name: ${daedalusNetwork}\n`);
+    console.log("If instead your proxy runs ON THE HOST, skip the network block and point it at");
+    console.log(`the published port: reverse_proxy 127.0.0.1:${remotePort}`);
+    if (remoteHost === "0.0.0.0") {
+      console.log("  (Bound to 0.0.0.0 — reachable beyond loopback. Make sure ONLY your proxy can");
+      console.log(`  reach ${remotePort}, e.g. firewall it; the token is enforced at the proxy.)`);
+    } else {
+      console.log("  (For a proxy on ANOTHER host, set graphiti.remote.host: 0.0.0.0 and re-run.)");
+    }
+    console.log("\nPoint a remote MCP client at it (streamable-HTTP transport):\n");
     console.log("    URL:    https://memory.example.com/mcp/");
     console.log(`    Header: Authorization: Bearer ${remoteToken}\n`);
-    if (remoteHost === "0.0.0.0") {
-      console.log("  Bound to 0.0.0.0 (reachable beyond loopback) — make sure ONLY your proxy can");
-      console.log(`  reach ${remotePort} (firewall it), since the token is enforced at the proxy.`);
-    } else {
-      console.log("  If your proxy runs on another host/container, set graphiti.remote.host to");
-      console.log(`  0.0.0.0 in your config (then re-run \`dae install\`) so it can reach the port.`);
-    }
     console.log("  Turn this off later: set graphiti.remote.enabled: false and re-run `dae install`.");
     console.log("─────────────────────────────────────────────────────────────");
   }
