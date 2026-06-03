@@ -95,7 +95,9 @@ export async function runInstall(
   let wantWhisper = false;
   let tgToken = "";
   let braveKey = "";
-  let wantRemoteMemory = false;
+  // Default to the existing remote-memory state; the offer below (which runs on `dae install`
+  // AND `dae update`) may flip it on. Carried through every mode so an update preserves it.
+  let wantRemoteMemory = Boolean(priorRemote?.enabled);
 
   // A prior install wrote the compose .env; its presence means "already set up". Decide how
   // to resolve the intent: apply supplied answers (update), reuse the existing setup (re-run
@@ -114,10 +116,6 @@ export async function runInstall(
     wantWhisper = a.wantWhisper;
     tgToken = a.telegramToken ?? "";
     braveKey = a.braveKey ?? "";
-    // Remote memory isn't part of InstallAnswers (dae update infers from the config, not
-    // from re-asking) — carry the existing decision straight through so `dae update` keeps
-    // the published port + token exactly as they were.
-    wantRemoteMemory = Boolean(priorRemote?.enabled);
     if (mode === "reuse") {
       console.log(
         "\nReusing your existing configuration (stored keys kept; only a genuinely-missing\n" +
@@ -156,17 +154,6 @@ export async function runInstall(
       "Run a local Whisper container for voice-note transcription?",
       !fresh && localWhisperEnabled(config),
     );
-
-    // Remote memory access. Only meaningful when Graphiti runs (it needs the OpenAI-compatible
-    // endpoint above). Off by default — when on, we publish Graphiti's MCP port to localhost
-    // and mint a bearer token for the user's own reverse proxy (TLS + auth) to enforce.
-    if (useOpenai) {
-      wantRemoteMemory = await confirm(
-        "Allow the memory server (Graphiti) to be reached REMOTELY over MCP, behind your own " +
-          "reverse proxy? (publishes its port + generates a bearer token; you add TLS/auth in the proxy)",
-        !fresh && Boolean(priorRemote?.enabled),
-      );
-    }
 
     const tgRaw =
       ((await secretPrompt({
@@ -221,6 +208,24 @@ export async function runInstall(
   }
   const webLogin = Boolean(webUsername && webPasswordHash);
   if (webLogin && !webSessionSecret) webSessionSecret = randomBytes(32).toString("base64");
+
+  // Remote memory access offer. Like the web-login offer above, this runs on `dae install` AND
+  // `dae update` (both have a TTY) so an existing install can turn it on without --fresh — which
+  // is why it lives HERE, outside the answers/interactive split (the answers branch never
+  // prompts). Only meaningful when Graphiti will run (useOpenai). If it's already enabled we keep
+  // it (no re-ask). A remembered decline (GRAPHITI_REMOTE_OPT_OUT) stops us nagging every update;
+  // `--fresh` re-asks regardless; a non-interactive run (no TTY) just keeps the prior state.
+  // Default NO — this publishes a port, so opting in must be deliberate.
+  let remoteOptOut = false;
+  const remoteDeclinedBefore = prev.GRAPHITI_REMOTE_OPT_OUT === "1";
+  if (useOpenai && process.stdin.isTTY && !wantRemoteMemory && (fresh || !remoteDeclinedBefore)) {
+    wantRemoteMemory = await confirm(
+      "Allow the memory server (Graphiti) to be reached REMOTELY over MCP, behind your own " +
+        "reverse proxy? (publishes its port + generates a bearer token; you add TLS/auth in the proxy)",
+      false,
+    );
+    if (!wantRemoteMemory) remoteOptOut = true; // remember the decline so future runs don't re-ask
+  }
 
   // OneCLI runs in the stack in local auth mode (it ignores the key's value), but daedalus
   // still needs a non-empty ONECLI_API_KEY to attempt the connection. Keep it stable.
@@ -396,6 +401,9 @@ export async function runInstall(
     composeEnv.GRAPHITI_REMOTE_BIND = remoteHost;
     composeEnv.GRAPHITI_REMOTE_PORT = String(remotePort);
     composeEnv.GRAPHITI_REMOTE_TOKEN = remoteToken;
+  } else if (remoteOptOut) {
+    // Persist the "no thanks" so `dae install`/`dae update` stop offering it (until --fresh).
+    composeEnv.GRAPHITI_REMOTE_OPT_OUT = "1";
   }
   // Persist the active compose profiles (MERGED) so EVERY compose command (install,
   // `dae update`, manual `docker compose`) keeps the SAME services up — not just this
