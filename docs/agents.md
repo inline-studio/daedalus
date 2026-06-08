@@ -120,6 +120,29 @@ Rule of thumb: **orchestrator / browser / interactive work → omit `container.i
 (runs warm). **Per-language build/test leaves → set `container.image`** to the right
 toolchain image (`dev-node`, `dev-python`, `dev-php-8.3`, …).
 
+#### In-line.studio default images
+
+The example brain references in-line.studio's per-stack agent images at
+`ghcr.io/inline-studio/...` — glibc-based, with a shell + git + jq + curl, ready for
+skill bootstraps. Browse them at
+[github.com/orgs/inline-studio/packages](https://github.com/orgs/inline-studio/packages)
+(access depends on visibility).
+
+| Image | For agents that need |
+|---|---|
+| `ghcr.io/inline-studio/daedalus:latest` | The default — Node, Docker CLI, Chromium runtime libs. What the supervisor + warm worker run; a fine default for general-purpose agents. |
+| `ghcr.io/inline-studio/dev-node:latest` | Node-focused agents (extra Node versions via `n`, common build tooling) |
+| `ghcr.io/inline-studio/dev-python:latest` | Python agents (CPython, pip, common scientific libs) |
+| `ghcr.io/inline-studio/dev-php-8.3:latest` | PHP 8.3 agents (Composer, common PHP extensions) |
+
+If these aren't accessible to you, the convention is straightforward — your own image
+just needs a glibc-compatible base, a POSIX shell, and whatever toolchain the agent
+reaches for. When a skill needs system libraries (shared libs, an interpreter), bake them
+into the image here; a skill's `bootstrap.sh` runs without root and can't `apt-get`
+(see [skills.md](./skills.md)). Typically that's `FROM debian:bookworm-slim` plus an
+`apt-get install …` line. See [docker-mode.md](./docker-mode.md) for the agent image
+contract.
+
 ### `vision:` (image input)
 
 Inbound images (e.g. a photo sent over Telegram) reach the agent as message content.
