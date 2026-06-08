@@ -68,7 +68,7 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
         additionalProperties: false,
       },
     },
-    async invoke(input, _toolCtx: ToolContext) {
+    async invoke(input, toolCtx: ToolContext) {
       const name = String(input.agent ?? "");
       const prompt = String(input.prompt ?? "");
       if (!allowed.includes(name)) {
@@ -108,6 +108,12 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
         sessionId: subSession.id,
         userId: ctx.userId,
         isSubagent: true,
+        // Propagate the parent turn's origin so a subagent that arms
+        // schedule_message still routes deliveries back to the real user.
+        ...(toolCtx.originChannel ? { originChannel: toolCtx.originChannel } : {}),
+        ...(toolCtx.originExternalUserId
+          ? { originExternalUserId: toolCtx.originExternalUserId }
+          : {}),
       });
 
       if (result.status === "pending_question") {

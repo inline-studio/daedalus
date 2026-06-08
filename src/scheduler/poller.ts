@@ -1,9 +1,11 @@
 import type { ArtemisConfig } from "../config/schema.js";
-import type { AgentDispatcher } from "../dispatch/base.js";
+import type { AgentDispatcher, DispatchResult } from "../dispatch/base.js";
 import type { SessionStore } from "../sessions/store.js";
 import type { AttachmentStore } from "../attachments/store.js";
 import type { Transcriber } from "../attachments/transcribe.js";
 import type { ScheduleStore, ScheduledMessage } from "../sessions/schedule-store.js";
+import type { MessageBus } from "../channels/bus.js";
+import type { OutgoingMessage, OutgoingAttachment } from "../channels/base.js";
 import { ingestIncomingMessage } from "../kernel/ingest.js";
 import { nextCronFire } from "./parse-when.js";
 import { log } from "../log.js";
@@ -16,15 +18,22 @@ import { log } from "../log.js";
 // One-shot rows go pending → firing → done. Recurring rows compute next-fire from
 // their cron and go pending → firing → pending (with last_fired_at bumped).
 //
-// Synthetic ingest identity: channel = "scheduled", external_user_id = the
-// scheduled row's `user_external_id` (defaults to the row id, so each schedule
-// gets its own persistent session and the agent can see prior fires' history).
+// Ingest identity: the fire is ingested on the SAME channel + external_user_id the
+// user armed the schedule on (stored on the row). That resolves to the user's real
+// session so the reminder lands back in the channel they spoke on — not an orphan
+// "scheduled" user. The same identity is passed as the turn's origin so a reminder
+// that arms a follow-up schedule keeps routing to the real user.
 export interface PollerDeps {
   store: ScheduleStore;
   sessions: SessionStore;
   attachments: AttachmentStore;
   transcriber: Transcriber;
   dispatcher: AgentDispatcher;
+  // Delivers the fired turn's reply back to the originating channel. Without it a
+  // dispatched reminder would run but never reach the user (the dispatcher only
+  // produces the reply text; sending is the caller's job — same as the channel
+  // inbound path in serve.ts).
+  bus: MessageBus;
 }
 
 export interface PollerHandle {
@@ -77,10 +86,14 @@ export function startSchedulePoller(
 }
 
 async function fireOne(row: ScheduledMessage, deps: PollerDeps): Promise<void> {
+  log.info(
+    { id: row.id, agent: row.agentName, channel: row.channel, externalUserId: row.userExternalId },
+    "schedule poller: firing — resolving origin identity",
+  );
   const ingested = await ingestIncomingMessage({
     agentName: row.agentName,
     incoming: {
-      channel: "scheduled",
+      channel: row.channel,
       externalUserId: row.userExternalId,
       text: row.prompt,
       attachments: [],
@@ -95,7 +108,18 @@ async function fireOne(row: ScheduledMessage, deps: PollerDeps): Promise<void> {
     sessionId: ingested.sessionId,
     userId: ingested.userId,
     isSubagent: false,
+    // Carry the same identity as origin so a reminder that arms a follow-up
+    // schedule re-targets the real user, not a synthetic session.
+    originChannel: row.channel,
+    originExternalUserId: row.userExternalId,
   });
+
+  // Deliver the reply back to the channel the user armed the schedule on. The
+  // dispatcher only produces the reply; sending is on us (mirrors serve.ts's
+  // inbound path). Force the row's channel so it lands where the user expects
+  // even if they've since spoken elsewhere.
+  await deliverReply(row, ingested.sessionId, ingested.userId, result, deps);
+
   if (row.recurringCron) {
     const next = nextCronFire(row.recurringCron);
     deps.store.reschedule(row.id, next);
@@ -110,4 +134,47 @@ async function fireOne(row: ScheduledMessage, deps: PollerDeps): Promise<void> {
       "scheduled message fired (one-shot; done)",
     );
   }
+}
+
+// Push the fired turn's reply to the user over the channel they armed it on.
+// Mirrors serve.ts's inbound delivery (notices, then the reply, with any reply
+// attachments resolved from the shared store) but routes by stored channel
+// identity instead of a live inbound message.
+async function deliverReply(
+  row: ScheduledMessage,
+  sessionId: string,
+  userId: string,
+  result: DispatchResult,
+  deps: PollerDeps,
+): Promise<void> {
+  const send = (msg: OutgoingMessage) =>
+    deps.bus
+      .sendToUser(userId, { ...msg, conversationId: sessionId }, { forceChannel: row.channel })
+      .catch((err) => log.warn({ id: row.id, err }, "scheduled reply delivery failed"));
+
+  if (result.notices?.length) {
+    for (const n of result.notices) await send({ text: n });
+  }
+
+  const reply = result.status === "pending_question" ? result.question : result.finalText;
+
+  const outgoing: OutgoingMessage = { text: reply };
+  if (result.status === "complete" && result.attachments?.length) {
+    const resolved: OutgoingAttachment[] = [];
+    for (const a of result.attachments) {
+      const data = await deps.attachments.readBuffer(a.ref);
+      if (!data) {
+        log.warn({ id: row.id, ref: a.ref }, "scheduled reply attachment ref not found — skipping");
+        continue;
+      }
+      resolved.push({
+        data,
+        mediaType: a.mediaType,
+        ...(a.filename ? { filename: a.filename } : {}),
+        ...(a.caption ? { caption: a.caption } : {}),
+      });
+    }
+    if (resolved.length) outgoing.attachments = resolved;
+  }
+  await send(outgoing);
 }

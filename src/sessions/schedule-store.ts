@@ -30,8 +30,13 @@ export interface ScheduledMessage {
   // so an agent can only cancel its own schedules — prevents one subagent
   // accidentally killing another's callbacks.
   createdByAgent: string;
-  // The synthetic external_user_id used when ingesting the fire so the
-  // resulting session is keyed off this schedule. Defaults to the schedule id.
+  // The channel of the user who armed this schedule (e.g. "telegram", "web").
+  // The poller ingests the fire on this channel so the reply routes back to the
+  // real user instead of an orphan "scheduled" session.
+  channel: string;
+  // The external_user_id of the user who armed this schedule (e.g. the Telegram
+  // numeric id). Paired with `channel`, it resolves to the originating user at
+  // fire time so the reminder lands in their real session.
   userExternalId: string;
   // The prompt text to feed the agent when this fires.
   prompt: string;
@@ -51,10 +56,14 @@ export interface ScheduledMessage {
 export interface EnqueueArgs {
   agentName: string;
   createdByAgent: string;
+  // Origin identity of the user arming the schedule. Required (no fallback) so a
+  // fired schedule always routes back to the real user — see the orphan-session
+  // bug this guards against.
+  channel: string;
+  userExternalId: string;
   prompt: string;
   dueAt: string;
   recurringCron?: string | null;
-  userExternalId?: string | null;
 }
 
 export class ScheduleStore {
@@ -114,6 +123,7 @@ export class ScheduleStore {
         id TEXT PRIMARY KEY,
         agent_name TEXT NOT NULL,
         created_by_agent TEXT NOT NULL,
+        channel TEXT NOT NULL DEFAULT 'scheduled',
         user_external_id TEXT NOT NULL,
         prompt TEXT NOT NULL,
         due_at TEXT NOT NULL,
@@ -128,25 +138,37 @@ export class ScheduleStore {
       CREATE INDEX IF NOT EXISTS idx_scheduled_messages_creator
         ON scheduled_messages(created_by_agent, status);
     `);
+    // Legacy tables predate the `channel` column. Add it with a default so the
+    // NOT NULL stays satisfiable; any pre-existing rows were already misrouting
+    // (the orphan-session bug) so 'scheduled' is a fine backfill — they can't be
+    // delivered correctly retroactively anyway.
+    const cols = this.db
+      .prepare(`PRAGMA table_info(scheduled_messages)`)
+      .all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "channel")) {
+      this.db.exec(
+        `ALTER TABLE scheduled_messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'scheduled'`,
+      );
+    }
   }
 
   enqueue(args: EnqueueArgs): ScheduledMessage {
     this.ensureFreshConnection();
     const id = `sched_${crypto.randomBytes(8).toString("hex")}`;
     const now = new Date().toISOString();
-    const userExternalId = args.userExternalId ?? id;
     this.db
       .prepare(
         `INSERT INTO scheduled_messages
-           (id, agent_name, created_by_agent, user_external_id, prompt, due_at,
+           (id, agent_name, created_by_agent, channel, user_external_id, prompt, due_at,
             recurring_cron, status, created_at, last_fired_at, fire_count)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, 0)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, 0)`,
       )
       .run(
         id,
         args.agentName,
         args.createdByAgent,
-        userExternalId,
+        args.channel,
+        args.userExternalId,
         args.prompt,
         args.dueAt,
         args.recurringCron ?? null,
@@ -268,6 +290,7 @@ function rowToScheduledMessage(row: Record<string, unknown>): ScheduledMessage {
     id: row.id as string,
     agentName: row.agent_name as string,
     createdByAgent: row.created_by_agent as string,
+    channel: row.channel as string,
     userExternalId: row.user_external_id as string,
     prompt: row.prompt as string,
     dueAt: row.due_at as string,

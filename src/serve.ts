@@ -82,6 +82,10 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         sessionId: ingested.sessionId,
         userId: ingested.userId,
         isSubagent: false,
+        // Origin identity so an in-turn schedule_message routes future deliveries
+        // back to this channel/user instead of an orphan "scheduled" session.
+        originChannel: msg.channel,
+        originExternalUserId: msg.externalUserId,
       });
       // Deliver any in-turn notices (e.g. "I compacted our earlier conversation") as their
       // own short messages first, so the user knows what happened before the reply lands.
@@ -158,6 +162,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     attachments,
     transcriber,
     dispatcher,
+    bus,
   });
 
   log.info(

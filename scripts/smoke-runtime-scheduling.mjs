@@ -85,18 +85,27 @@ const store = new ScheduleStore(dbPath);
   const row = store.enqueue({
     agentName: "artemis",
     createdByAgent: "artemis",
+    channel: "telegram",
+    userExternalId: "8724271796",
     prompt: "ping me",
     dueAt: new Date(Date.now() - 1000).toISOString(), // already due
   });
   expect("enqueue returns a row with id", !!row.id && row.status === "pending");
+  expect(
+    "enqueue persists the origin channel + external id (not the sched id)",
+    row.channel === "telegram" && row.userExternalId === "8724271796" && row.userExternalId !== row.id,
+    `channel=${row.channel} userExternalId=${row.userExternalId}`,
+  );
 
   const got = store.get(row.id);
-  expect("get returns the row", got?.id === row.id);
+  expect("get returns the row", got?.id === row.id && got?.channel === "telegram");
 
   // Not-due row — claimDue should not return it
   store.enqueue({
     agentName: "artemis",
     createdByAgent: "artemis",
+    channel: "telegram",
+    userExternalId: "8724271796",
     prompt: "later",
     dueAt: new Date(Date.now() + 3600_000).toISOString(),
   });
@@ -118,6 +127,8 @@ const store = new ScheduleStore(dbPath);
   const recurring = store.enqueue({
     agentName: "artemis",
     createdByAgent: "artemis",
+    channel: "telegram",
+    userExternalId: "8724271796",
     prompt: "tick",
     dueAt: new Date(Date.now() - 1000).toISOString(),
     recurringCron: "*/5 * * * *",
@@ -135,6 +146,8 @@ const store = new ScheduleStore(dbPath);
   const owned = store.enqueue({
     agentName: "artemis",
     createdByAgent: "artemis",
+    channel: "telegram",
+    userExternalId: "8724271796",
     prompt: "owned",
     dueAt: new Date(Date.now() + 3600_000).toISOString(),
   });
@@ -147,10 +160,38 @@ const store = new ScheduleStore(dbPath);
 // --- Tools (schedule_message / cancel / list) ---------------------------------
 {
   const schedTool = scheduleMessageTool(store);
-  const ctx = { agentName: "orchestrator", brainPath: "/tmp", brainWritable: false, workspacePath: "/tmp", runtime: { id: "host" } };
+  const ctx = {
+    agentName: "orchestrator",
+    brainPath: "/tmp",
+    brainWritable: false,
+    workspacePath: "/tmp",
+    runtime: { id: "host" },
+    originChannel: "telegram",
+    originExternalUserId: "8724271796",
+  };
 
   const r = await schedTool.invoke({ when: "in 1 hour", prompt: "remind me" }, ctx);
   expect("schedule_message tool returns id in content", !r.isError && /id=sched_/.test(r.content));
+  // The core fix: the armed row carries the originating channel + external id from
+  // ctx, NOT the synthetic schedule id (the orphan-session bug).
+  {
+    const id = r.content.match(/id=(sched_\w+)/)[1];
+    const stored = store.get(id);
+    expect(
+      "armed row routes to the origin channel + external id (not the sched id)",
+      stored?.channel === "telegram" &&
+        stored?.userExternalId === "8724271796" &&
+        stored?.userExternalId !== id,
+      `channel=${stored?.channel} userExternalId=${stored?.userExternalId}`,
+    );
+  }
+
+  // Without an origin identity the tool must refuse rather than arm a misrouting row.
+  const noOrigin = await schedTool.invoke(
+    { when: "in 1 hour", prompt: "remind me" },
+    { agentName: "orchestrator", brainPath: "/tmp", brainWritable: false, workspacePath: "/tmp", runtime: { id: "host" } },
+  );
+  expect("schedule_message refuses without origin identity", noOrigin.isError === true);
 
   const bad = await schedTool.invoke({ when: "garbage", prompt: "x" }, ctx);
   expect("schedule_message tool reports parse error", bad.isError === true);

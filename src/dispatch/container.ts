@@ -217,6 +217,12 @@ export function buildContainerArgs(input: {
     "--user",
     dispatchArgs.userId,
     ...(dispatchArgs.isSubagent ? ["--subagent"] : []),
+    ...(dispatchArgs.originChannel
+      ? ["--origin-channel", dispatchArgs.originChannel]
+      : []),
+    ...(dispatchArgs.originExternalUserId
+      ? ["--origin-external-user", dispatchArgs.originExternalUserId]
+      : []),
   );
   return a;
 }
