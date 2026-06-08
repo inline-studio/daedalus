@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ScheduleStore } from "../dist/sessions/schedule-store.js";
 import { parseWhen, nextCronFire } from "../dist/scheduler/parse-when.js";
+import { frameFiredPrompt } from "../dist/scheduler/poller.js";
 import {
   scheduleMessageTool,
   cancelScheduledMessageTool,
@@ -215,6 +216,57 @@ const store = new ScheduleStore(dbPath);
     !list.isError && /sched_/.test(list.content),
     list.content.slice(0, 200),
   );
+}
+
+// --- Fired-turn framing -------------------------------------------------------
+{
+  const framed = frameFiredPrompt("Remind the user to log their travel expenses");
+  expect(
+    "frameFiredPrompt tags the turn as a firing timer, not a user request",
+    /SCHEDULED MESSAGE/.test(framed) && /not a new request/i.test(framed),
+    framed.slice(0, 80),
+  );
+  expect(
+    "frameFiredPrompt preserves the original prompt verbatim",
+    framed.includes("Remind the user to log their travel expenses"),
+  );
+  expect(
+    "frameFiredPrompt steers away from re-scheduling / asking",
+    /do NOT re-arm/i.test(framed) && /reschedule/i.test(framed),
+  );
+}
+
+// --- list excludes the currently-firing row (self-collision guard) ------------
+{
+  const fresh = mkdtempSync(join(tmpdir(), "dae-sched-list-"));
+  const s = new ScheduleStore(join(fresh, "test.sqlite"));
+  s.enqueue({
+    agentName: "artemis",
+    createdByAgent: "artemis",
+    channel: "telegram",
+    userExternalId: "8724271796",
+    prompt: "Remind the user to do travel expenses",
+    dueAt: new Date(Date.now() - 1000).toISOString(), // due now
+  });
+  s.claimDue(); // flips the row to 'firing' — simulates a fire in progress
+  const listed = s.listForAgent("artemis");
+  expect(
+    "listForAgent omits the row that is mid-fire ('firing')",
+    listed.length === 0,
+    `got ${listed.length} rows`,
+  );
+  // A genuinely pending row still shows.
+  s.enqueue({
+    agentName: "artemis",
+    createdByAgent: "artemis",
+    channel: "telegram",
+    userExternalId: "8724271796",
+    prompt: "Remind the user later",
+    dueAt: new Date(Date.now() + 3600_000).toISOString(),
+  });
+  expect("listForAgent still returns genuinely pending rows", s.listForAgent("artemis").length === 1);
+  s.close();
+  rmSync(fresh, { recursive: true, force: true });
 }
 
 store.close();

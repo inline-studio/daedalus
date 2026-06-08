@@ -21,8 +21,10 @@ export function scheduleMessageTool(store: ScheduleStore): ToolImpl {
         `  - reminders ("in 30 minutes")\n` +
         `  - recurring status pings ("*/10 * * * *")\n` +
         `  - deferred handoffs ("at 2026-05-18T15:00:00Z")\n\n` +
-        `When the schedule fires, the supervisor delivers your 'prompt' as a user-style ` +
-        `message to the chosen agent, dispatched the same way a channel message would be. ` +
+        `When the schedule fires, the supervisor delivers your 'prompt' to the chosen agent ` +
+        `as a turn, dispatched the same way a channel message would be. The fired turn is ` +
+        `tagged so the agent knows it's a timer firing (not a fresh user request) and acts ` +
+        `on it directly — it will not re-schedule or ask about rescheduling.\n` +
         `For recurring schedules, the row re-arms automatically after each fire.\n\n` +
         `Returns the schedule id so you can cancel later via cancel_scheduled_message.`,
       inputSchema: {
@@ -36,7 +38,11 @@ export function scheduleMessageTool(store: ScheduleStore): ToolImpl {
           },
           prompt: {
             type: "string",
-            description: "The prompt text the agent will see when this fires.",
+            description:
+              `The instruction your future self will act on when this fires. Write it as a ` +
+              `forward instruction, NEVER as the user's own words. Reminder: "Remind the ` +
+              `user to log their travel expenses" — not "remind me to log expenses". ` +
+              `Self-task: "Check Cypher's progress on <task> and update the user".`,
           },
           agent: {
             type: "string",
@@ -122,8 +128,8 @@ export function listScheduledMessagesTool(store: ScheduleStore): ToolImpl {
     definition: {
       name: "list_scheduled_messages",
       description:
-        `List the pending and currently-firing schedules this agent has armed. Returns id, ` +
-        `agent, next-fire timestamp, and the prompt. Read-only.`,
+        `List the pending schedules this agent has armed. Returns id, agent, next-fire ` +
+        `timestamp, and the prompt. Read-only.`,
       inputSchema: { type: "object", properties: {}, additionalProperties: false },
     },
     async invoke(_input, ctx: ToolContext) {

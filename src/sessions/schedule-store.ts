@@ -267,13 +267,19 @@ export class ScheduleStore {
     return r.changes > 0;
   }
 
-  // List active (pending / firing) schedules created by a given agent.
+  // List pending schedules created by a given agent. Deliberately excludes
+  // 'firing' rows: a row is only in 'firing' state for the duration of its own
+  // fired turn, so the only schedule a fired turn would ever see as 'firing' is
+  // *itself* mid-fire. Surfacing that made the agent treat the in-flight reminder
+  // as a pre-existing schedule and ask "reschedule or leave?" instead of just
+  // delivering it. Pending-only gives the agent the set of genuinely upcoming
+  // schedules without the self-collision.
   listForAgent(byAgent: string): ScheduledMessage[] {
     this.ensureFreshConnection();
     const rows = this.db
       .prepare(
         `SELECT * FROM scheduled_messages
-         WHERE created_by_agent = ? AND status IN ('pending','firing')
+         WHERE created_by_agent = ? AND status = 'pending'
          ORDER BY due_at ASC`,
       )
       .all(byAgent) as Record<string, unknown>[];

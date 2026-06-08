@@ -85,6 +85,25 @@ export function startSchedulePoller(
   };
 }
 
+// The fired prompt is ingested as a user-style turn (same path a channel message
+// takes). Without framing, the agent can't tell a scheduler-replayed string from
+// the user typing it right now — so a stored reminder like "remind me to log
+// expenses" reads as a *fresh* scheduling request, and the agent checks its
+// schedules, sees this very row mid-fire, and asks "reschedule or leave?" instead
+// of delivering anything. This marker tells the agent the turn is a timer it armed
+// firing now: act on the intent (deliver a reminder, or carry out a self-task) and
+// never re-arm or ask about rescheduling it. Kept deliberately use-case-neutral so
+// it works for both user reminders and self-directed status pings.
+export function frameFiredPrompt(prompt: string): string {
+  return (
+    `[SCHEDULED MESSAGE — a timer you armed earlier is firing now. This is NOT a new ` +
+    `request from the user. Act on the intent below: if it's a reminder, deliver it to ` +
+    `the user in your own words; if it's a task to check on, carry it out now. This timer ` +
+    `is already being handled — do NOT re-arm it, schedule a new one, or ask the user ` +
+    `whether to reschedule.]\n\n${prompt}`
+  );
+}
+
 async function fireOne(row: ScheduledMessage, deps: PollerDeps): Promise<void> {
   log.info(
     { id: row.id, agent: row.agentName, channel: row.channel, externalUserId: row.userExternalId },
@@ -95,7 +114,7 @@ async function fireOne(row: ScheduledMessage, deps: PollerDeps): Promise<void> {
     incoming: {
       channel: row.channel,
       externalUserId: row.userExternalId,
-      text: row.prompt,
+      text: frameFiredPrompt(row.prompt),
       attachments: [],
       receivedAt: new Date().toISOString(),
     },
