@@ -11,6 +11,20 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Changed
+
+- **Memory: setup-agnostic model defaults + `SPARK_URL` renamed to
+  `OPENAI_BASE_URL`.** The Graphiti memory config previously baked in
+  setup-specific model aliases (`artemis` for extraction, `embeddings` for
+  embeddings) as the defaults, so a fresh install pointing at any other
+  OpenAI-compatible endpoint silently failed extraction until the names were
+  discovered and overridden. `dae install` now **asks** for the extraction
+  model name, embeddings model name, and embeddings dimension (pre-filled
+  with conventional OpenAI ids `gpt-4o-mini` / `text-embedding-3-small` /
+  `1536`) and writes them to the compose `.env`. The endpoint URL var is
+  renamed `SPARK_URL` → `OPENAI_BASE_URL`; set `OPENAI_BASE_URL` and the
+  three `GRAPHITI_*` model keys in your compose `.env`. ([#109])
+
 ### Added
 
 - **Webchat: Copy button on code blocks.** Every `<pre><code>` block in
@@ -195,3 +209,4 @@ Significant changes that shipped before this changelog was started:
 [#88]: https://github.com/inline-studio/daedalus/pull/88
 [#89]: https://github.com/inline-studio/daedalus/pull/89
 [#90]: https://github.com/inline-studio/daedalus/pull/90
+[#109]: https://github.com/inline-studio/daedalus/pull/109

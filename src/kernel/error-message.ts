@@ -143,7 +143,7 @@ export function humanizeTurnError(err: unknown): ClassifiedError {
       userMessage:
         "I couldn't reach the AI model — the upstream is down or hung up on us " +
         "(I tried a few times). " +
-        "Check that your spark/LiteLLM endpoint is up; once it's back, ask me again. " +
+        "Check that your model endpoint (OpenAI / LiteLLM / Ollama / …) is up; once it's back, ask me again. " +
         techHint(text),
     };
   }
