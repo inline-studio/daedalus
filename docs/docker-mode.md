@@ -254,12 +254,13 @@ tracks *when* facts held, not just snapshots. It runs as one container — built
 reached at `http://graphiti:8000/mcp/` on the daedalus network.
 
 It stays **local + leak-free**: the graph store is on local disk, and the extraction LLM +
-embeddings run on **your spark**, reached **through the OneCLI proxy** — so the spark key is
-never written to disk (OneCLI injects it per request). The image also disables graphiti-core's
-PostHog telemetry and points its cross-encoder reranker at spark, so nothing phones home.
+embeddings run on **your own OpenAI-compatible endpoint** (`SPARK_URL`), reached **through the
+OneCLI proxy** — so its key is never written to disk (OneCLI injects it per request). The image
+also disables graphiti-core's PostHog telemetry and points its cross-encoder reranker at that
+same endpoint, so nothing phones home.
 
 `dae install` wires all of this **automatically** when you configure an OpenAI-compatible
-(spark) endpoint — there's nothing to hand-edit. It:
+endpoint (`SPARK_URL`) — there's nothing to hand-edit. It:
 - builds `Dockerfile.graphiti` and starts the `graphiti` service (its profile is merged into
   `COMPOSE_PROFILES` alongside whisper — never overwritten);
 - sets `memory.backend: graphiti` + `graphiti.enabled: true` in your config;
@@ -277,9 +278,9 @@ set). Knobs with sane defaults you can override in `.env`: `GRAPHITI_LLM_MODEL` 
 > *do* enforce json-schema on), disables telemetry, and trusts the OneCLI CA at startup.
 
 **Verify (leak-check + recall):**
-- Egress: confirm graphiti talks only to your spark — watch `docker compose logs onecli` for
-  `url=https://<spark-host>/...` and **no** `api.openai.com` / `posthog.com`.
-- Recall: have an agent remember a fact, then ask for it back. Recall needs your spark
+- Egress: confirm graphiti talks only to your configured endpoint — watch `docker compose logs
+  onecli` for `url=https://<your-endpoint-host>/...` and **no** unexpected `posthog.com`.
+- Recall: have an agent remember a fact, then ask for it back. Recall needs your
   **embeddings** model up — every query is embedded, so if embeddings is down, recall returns
   nothing (the rest of the agent still works).
 
@@ -424,9 +425,9 @@ UID=1000
 DOCKER_GID=998
 ONECLI_API_KEY=oc_…
 # Graphiti memory (the `graphiti` profile). SPARK_URL is your OpenAI-compatible base
-# URL; the spark key is NOT put here — graphiti routes through OneCLI, which injects it.
+# URL; its key is NOT put here — graphiti routes through OneCLI, which injects it.
 COMPOSE_PROFILES=graphiti              # comma-join with whisper if you use both
-SPARK_URL=https://your-spark/v1
+SPARK_URL=https://your-endpoint.example/v1
 GRAPHITI_DATA_PATH=/home/you/.daedalus/graphiti
 # ONECLI_PROXY_URL + ONECLI_CA_PATH are written by `dae install` AFTER OneCLI is up
 # (it fetches OneCLI's proxy URL + MITM CA). Hand-wiring them is fiddly — prefer

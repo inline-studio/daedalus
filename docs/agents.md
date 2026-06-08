@@ -151,7 +151,7 @@ Whether they're sent to the model depends on `vision`:
 ```yaml
 vision: false              # default — images are NOT sent to the model
 vision: true               # the agent's own `model` is multimodal; send images to it
-vision: "spark/qwen2-vl"   # route image-bearing turns to this vision model
+vision: "ollama/llava"     # route image-bearing turns to this separate vision model
 ```
 
 - **`false` / omitted** — images are stripped before the model call. Use this when the
