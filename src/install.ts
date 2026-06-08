@@ -106,6 +106,14 @@ export async function runInstall(
   const mode = installAnswerMode({ hasAnswers: Boolean(opts.answers), fresh, priorInstall });
   const answers = opts.answers ?? (mode === "reuse" ? resolveAnswersInferred(config) : undefined);
 
+  // Graphiti's extraction + embeddings model names (and the embed dimension, which MUST match
+  // the embeddings model). Defaults are conventional OpenAI ids that work out of the box; the
+  // interactive branch below lets the user point them at whatever exists on their endpoint, and
+  // a prior install's values (if any) pre-fill so a re-run / `dae update` keeps them.
+  let graphitiLlmModel = prev.GRAPHITI_LLM_MODEL ?? "gpt-4o-mini";
+  let graphitiEmbedModel = prev.GRAPHITI_EMBED_MODEL ?? "text-embedding-3-small";
+  let graphitiEmbedDim = prev.GRAPHITI_EMBED_DIM ?? "1536";
+
   if (answers) {
     const a = answers;
     useAnthropic = a.useAnthropic;
@@ -148,6 +156,20 @@ export async function runInstall(
       openaiKey = ((await secretPrompt({
         message: keep ? "API key / token (leave blank to keep existing):" : "API key / token for that endpoint:",
       })) ?? "").trim();
+
+      // Memory (Graphiti) extraction + embeddings models. These must EXIST on the endpoint
+      // above — the shipped defaults are conventional OpenAI ids, not magic aliases. The embed
+      // dimension must match the embeddings model (1536 for text-embedding-3-small, 768 for a
+      // local nomic-embed-text, etc.). Defaults pre-fill from a prior install where present.
+      console.log("\n  Memory (Graphiti) runs an extraction LLM + an embeddings model on that endpoint.");
+      graphitiLlmModel =
+        (await textPrompt(`  Extraction model name (must exist on the endpoint) [${graphitiLlmModel}]:`)) ||
+        graphitiLlmModel;
+      graphitiEmbedModel =
+        (await textPrompt(`  Embeddings model name [${graphitiEmbedModel}]:`)) || graphitiEmbedModel;
+      graphitiEmbedDim =
+        (await textPrompt(`  Embeddings dimension (must match that model) [${graphitiEmbedDim}]:`)) ||
+        graphitiEmbedDim;
     }
 
     wantWhisper = await confirm(
@@ -408,9 +430,14 @@ export async function runInstall(
   }
   composeEnv.SECRET_ENCRYPTION_KEY = secretEncKey;
   if (graphitiEnabled) {
-    // Graphiti reaches spark THROUGH the OneCLI proxy (ONECLI_PROXY_URL is written after
-    // OneCLI is up — see the two-phase bring-up below). The raw spark key is never stored.
-    composeEnv.SPARK_URL = openaiBaseUrl;
+    // Graphiti reaches the endpoint THROUGH the OneCLI proxy (ONECLI_PROXY_URL is written after
+    // OneCLI is up — see the two-phase bring-up below). The raw endpoint key is never stored.
+    // Write the model names explicitly (not just the URL): the shipped defaults are conventional
+    // OpenAI ids, so an endpoint using other names needs these persisted in the compose .env.
+    composeEnv.OPENAI_BASE_URL = openaiBaseUrl;
+    composeEnv.GRAPHITI_LLM_MODEL = graphitiLlmModel;
+    composeEnv.GRAPHITI_EMBED_MODEL = graphitiEmbedModel;
+    composeEnv.GRAPHITI_EMBED_DIM = graphitiEmbedDim;
     composeEnv.GRAPHITI_DATA_PATH = graphitiDataPath;
     composeEnv.ONECLI_CA_PATH = onecliCaPath;
   }
@@ -694,7 +721,7 @@ export async function runInstall(
 
   if (!graphitiEnabled) {
     console.log(
-      "\n⚠ Memory (Graphiti) is OFF: it needs an OpenAI-compatible (spark) endpoint for its\n" +
+      "\n⚠ Memory (Graphiti) is OFF: it needs an OpenAI-compatible endpoint for its\n" +
         "  extraction LLM + embeddings. Re-run `dae install` and enable an OpenAI-compatible\n" +
         "  provider to turn it on.",
     );

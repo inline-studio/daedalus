@@ -1,8 +1,8 @@
 # Graphiti MCP server config for daedalus (mounted into the `graphiti` compose service).
 # All values are env-driven from the compose .env so nothing is hardcoded.
 #
-# Both the extraction LLM and the embeddings run on YOUR spark endpoint (OpenAI-compatible),
-# so nothing leaves your infrastructure. The only egress is to ${SPARK_URL}.
+# Both the extraction LLM and the embeddings run on YOUR endpoint (OpenAI-compatible),
+# so nothing leaves your infrastructure. The only egress is to ${OPENAI_BASE_URL}.
 server:
   transport: "http" # MCP at http://graphiti:8000/mcp/
   host: "0.0.0.0"
@@ -10,23 +10,26 @@ server:
 
 llm:
   # Entity/relationship extraction. Use a capable INSTRUCT model (it must emit structured
-  # output) — not a code/autocomplete model. Default: the agent's main model on spark.
+  # output) — not a code/autocomplete model. Default is a conventional OpenAI model; `dae
+  # install` asks for the name that exists on your endpoint and writes GRAPHITI_LLM_MODEL.
   provider: "openai"
-  model: ${GRAPHITI_LLM_MODEL:artemis}
+  model: ${GRAPHITI_LLM_MODEL:gpt-4o-mini}
   max_tokens: 4096
   providers:
     openai:
-      api_key: onecli-managed # placeholder — OneCLI injects the real key for the spark host
-      api_url: ${SPARK_URL}
+      api_key: onecli-managed # placeholder — OneCLI injects the real key for your endpoint
+      api_url: ${OPENAI_BASE_URL}
 
 embedder:
+  # Default is a conventional OpenAI embeddings model; the dimension MUST match the model.
+  # `dae install` asks for both and writes GRAPHITI_EMBED_MODEL / GRAPHITI_EMBED_DIM.
   provider: "openai"
-  model: ${GRAPHITI_EMBED_MODEL:embeddings}
-  dimensions: ${GRAPHITI_EMBED_DIM:768}
+  model: ${GRAPHITI_EMBED_MODEL:text-embedding-3-small}
+  dimensions: ${GRAPHITI_EMBED_DIM:1536}
   providers:
     openai:
-      api_key: onecli-managed # placeholder — OneCLI injects the real key for the spark host
-      api_url: ${SPARK_URL}
+      api_key: onecli-managed # placeholder — OneCLI injects the real key for your endpoint
+      api_url: ${OPENAI_BASE_URL}
 
 database:
   provider: "falkordb" # bundled in this image; data persists to /var/lib/falkordb/data

@@ -42,7 +42,7 @@ Then it runs `docker compose up -d --build`, bringing up:
 |---|---|
 | `daedalus` | Supervisor + scheduler (`dae serve`) — owns the channels. |
 | `dae-worker` | Warm agent worker — runs top-level agent turns without per-message boot. |
-| `graphiti` | Shared memory — a temporal knowledge-graph MCP every agent gets (with the `graphiti` profile, enabled when a memory endpoint `SPARK_URL` is configured). |
+| `graphiti` | Shared memory — a temporal knowledge-graph MCP every agent gets (with the `graphiti` profile, enabled when an OpenAI-compatible endpoint is configured). |
 | `onecli` (+ `onecli-db`) | Credential-injecting gateway (+ its Postgres). |
 | `whisper` | Local speech-to-text — only with the `whisper` profile (if you opted in). |
 
@@ -121,8 +121,7 @@ placeholder `apiKey: onecli-managed`) and registers the real key in OneCLI, inje
 
 Memory is a **Graphiti** container — a temporal knowledge-graph MCP server, auto-injected as
 the `memory` server for every agent (see [mcp.md](./mcp.md)). Its extraction LLM + embeddings
-run on an OpenAI-compatible endpoint you configure (`SPARK_URL`), reached through the OneCLI
-proxy (so the key never hits disk). The
+run on your OpenAI-compatible endpoint, reached through the OneCLI proxy (so the key never hits disk). The
 graph store is a persistent bind-mount (`GRAPHITI_DATA_PATH`), so memories survive restarts and
 the whole store is portable to another host. See [docker-mode.md](./docker-mode.md) → "The
 `graphiti` container" for details.
@@ -131,22 +130,28 @@ the whole store is portable to another host. See [docker-mode.md](./docker-mode.
 
 Graphiti needs a capable INSTRUCT model (to extract entities + relationships from each turn)
 **and** an embeddings model (for semantic recall), both reachable via an OpenAI-shaped API at
-one base URL (`SPARK_URL`). `GRAPHITI_EMBED_DIM` must match your embeddings model's dimension.
+one base URL (`OPENAI_BASE_URL`). At install `dae install` asks for the **extraction model
+name**, the **embeddings model name**, and the **embeddings dimension** — there's no magic
+default model id, so the names must be ones that actually exist on your endpoint. The
+dimension MUST match your embeddings model. The shipped defaults are conventional OpenAI ids
+(`gpt-4o-mini`, `text-embedding-3-small`, dim `1536`) so plain OpenAI works on Enter-through.
 The clean setups:
 
-- **OpenAI-only** — `text-embedding-3-small` (1536 dims) on OpenAI directly.
-  `GRAPHITI_EMBED_MODEL=text-embedding-3-small`, `GRAPHITI_EMBED_DIM=1536`.
+- **OpenAI-only** — the shipped defaults: extraction `gpt-4o-mini`, embeddings
+  `text-embedding-3-small` (1536 dims), `GRAPHITI_EMBED_DIM=1536`.
 - **LiteLLM in front of multiple providers** — front Anthropic for the extraction LLM *and*
-  OpenAI (or a local server) for embeddings under a single base URL, then point `SPARK_URL`
-  at that LiteLLM `/v1` endpoint. This is a common reason to run a gateway in front.
+  OpenAI (or a local server) for embeddings under a single base URL, then give `dae install`
+  the model aliases your gateway exposes. Point `OPENAI_BASE_URL` at the gateway, e.g.
+  `https://litellm.example.com/v1`.
 - **Fully local** — [Ollama](https://ollama.com) serves both. `ollama pull nomic-embed-text`
-  gives 768-dim embeddings, matching the default `GRAPHITI_EMBED_DIM=768`.
+  gives 768-dim embeddings, so set the embeddings model to `nomic-embed-text` and
+  `GRAPHITI_EMBED_DIM=768`.
 - **Anthropic + a separate embeddings endpoint** — Anthropic for the chat model on one
-  provider entry; a small Ollama/local container for embeddings under `SPARK_URL`. Anthropic
-  ships no embeddings API, so memory always needs an embeddings endpoint *somewhere*.
+  provider entry; a small Ollama/local container for embeddings under `OPENAI_BASE_URL`.
+  Anthropic ships no embeddings API, so memory always needs an embeddings endpoint *somewhere*.
 
-If you don't want memory, skip the `SPARK_URL` answer at install — the `graphiti`
-profile stays disabled and no embeddings model is needed.
+If you don't want memory, skip the endpoint/`OPENAI_BASE_URL` answer at install — the
+`graphiti` profile stays disabled and no embeddings model is needed.
 
 ## Why all-container (the Docker choice)
 

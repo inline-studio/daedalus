@@ -187,8 +187,8 @@ services:
   # Graphiti temporal-knowledge-graph memory (bundled FalkorDB + MCP server in one
   # container), built from Dockerfile.graphiti (a thin layer over Zep's image — see that
   # file for the why). Opt-in via the `graphiti` compose profile + memory.backend: graphiti.
-  # Extraction LLM + embeddings run on your spark, reached THROUGH the OneCLI proxy (so the
-  # spark key is never on disk — OneCLI injects it). The graph store is local and portable —
+  # Extraction LLM + embeddings run on your endpoint, reached THROUGH the OneCLI proxy (so the
+  # key is never on disk — OneCLI injects it). The graph store is local and portable —
   # bind-mount GRAPHITI_DATA_PATH to back it up / move it to another host (then reindex).
   graphiti:
     build:
@@ -198,22 +198,23 @@ services:
     restart: unless-stopped
     profiles: ["graphiti"]
     environment:
-      # SPARK_URL is your OpenAI-compatible base URL (incl. /v1). graphiti reaches it via
-      # the OneCLI proxy; the api key is a placeholder that OneCLI swaps for the real one.
-      # Soft default so compose interpolation never errors when graphiti isn't in the
-      # active profile; `dae install` always sets it when graphiti IS enabled.
-      SPARK_URL: ${SPARK_URL:-}
-      # graphiti-core builds its cross-encoder/reranker client itself from these env vars —
-      # point them at spark too so nothing ever falls back to api.openai.com. Placeholder
-      # key; OneCLI injects the real one for the spark host.
-      OPENAI_BASE_URL: ${SPARK_URL}
+      # OPENAI_BASE_URL is your OpenAI-compatible base URL (incl. /v1). graphiti reaches it
+      # via the OneCLI proxy; the api key is a placeholder that OneCLI swaps for the real one.
+      # graphiti.config.yaml + graphiti-core's reranker client both read OPENAI_BASE_URL from
+      # the CONTAINER env, so set it once here. Soft default so compose interpolation never
+      # errors when graphiti isn't in the active profile; `dae install` always sets it when
+      # graphiti IS enabled.
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
       OPENAI_API_KEY: onecli-managed
-      GRAPHITI_LLM_MODEL: ${GRAPHITI_LLM_MODEL:-artemis}
-      GRAPHITI_EMBED_MODEL: ${GRAPHITI_EMBED_MODEL:-embeddings}
-      GRAPHITI_EMBED_DIM: ${GRAPHITI_EMBED_DIM:-768}
+      # Model names default to conventional OpenAI ids so a fresh install works out of the box;
+      # `dae install` asks for the names that exist on your endpoint and writes these. The embed
+      # dimension MUST match the embeddings model (1536 for text-embedding-3-small).
+      GRAPHITI_LLM_MODEL: ${GRAPHITI_LLM_MODEL:-gpt-4o-mini}
+      GRAPHITI_EMBED_MODEL: ${GRAPHITI_EMBED_MODEL:-text-embedding-3-small}
+      GRAPHITI_EMBED_DIM: ${GRAPHITI_EMBED_DIM:-1536}
       # graphiti-core ships PostHog telemetry ON by default — disabled (also baked into the image).
       GRAPHITI_TELEMETRY_ENABLED: "false"
-      # Route egress through the OneCLI proxy (it injects the spark key). `dae install` sets
+      # Route egress through the OneCLI proxy (it injects the endpoint's key). `dae install` sets
       # ONECLI_PROXY_URL after onecli is up. NO_PROXY keeps loopback + the proxy itself direct.
       HTTP_PROXY: ${ONECLI_PROXY_URL:-}
       HTTPS_PROXY: ${ONECLI_PROXY_URL:-}
@@ -227,7 +228,7 @@ services:
       # the default group "main" writes to — otherwise the server reads an empty graph and all
       # saved memory looks lost. Default "main"; override via FALKORDB_DATABASE in the compose .env.
       FALKORDB_DATABASE: ${FALKORDB_DATABASE:-main}
-      # spark is CPU-constrained — keep episode-processing concurrency low.
+      # a CPU-constrained endpoint — keep episode-processing concurrency low.
       SEMAPHORE_LIMIT: ${GRAPHITI_SEMAPHORE_LIMIT:-3}
       BROWSER: "0" # disable the FalkorDB web UI
     volumes:

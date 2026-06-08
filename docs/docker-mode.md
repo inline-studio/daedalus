@@ -254,23 +254,26 @@ tracks *when* facts held, not just snapshots. It runs as one container — built
 reached at `http://graphiti:8000/mcp/` on the daedalus network.
 
 It stays **local + leak-free**: the graph store is on local disk, and the extraction LLM +
-embeddings run on **your own OpenAI-compatible endpoint** (`SPARK_URL`), reached **through the
-OneCLI proxy** — so its key is never written to disk (OneCLI injects it per request). The image
-also disables graphiti-core's PostHog telemetry and points its cross-encoder reranker at that
-same endpoint, so nothing phones home.
+embeddings run on **your OpenAI-compatible endpoint**, reached **through the OneCLI proxy** — so
+the key is never written to disk (OneCLI injects it per request). The image also disables
+graphiti-core's PostHog telemetry and points its cross-encoder reranker at the same endpoint,
+so nothing phones home.
 
 `dae install` wires all of this **automatically** when you configure an OpenAI-compatible
-endpoint (`SPARK_URL`) — there's nothing to hand-edit. It:
+endpoint — there's nothing to hand-edit. It:
 - builds `Dockerfile.graphiti` and starts the `graphiti` service (its profile is merged into
   `COMPOSE_PROFILES` alongside whisper — never overwritten);
 - sets `memory.backend: graphiti` + `graphiti.enabled: true` in your config;
-- writes `SPARK_URL`, a host `GRAPHITI_DATA_PATH`, and — after OneCLI is up — the OneCLI
-  proxy URL + CA into the compose `.env`, so graphiti routes egress through OneCLI.
+- asks for the extraction + embeddings model names and the embeddings dimension, then writes
+  `OPENAI_BASE_URL`, `GRAPHITI_LLM_MODEL`, `GRAPHITI_EMBED_MODEL`, `GRAPHITI_EMBED_DIM`, a host
+  `GRAPHITI_DATA_PATH`, and — after OneCLI is up — the OneCLI proxy URL + CA into the compose
+  `.env`, so graphiti routes egress through OneCLI.
 
 `dae update` re-checks and self-heals this (re-fetches the proxy/CA, keeps the merged profile
-set). Knobs with sane defaults you can override in `.env`: `GRAPHITI_LLM_MODEL` (default
-`artemis`, a capable INSTRUCT model), `GRAPHITI_EMBED_MODEL` (`embeddings`), `GRAPHITI_EMBED_DIM`
-(`768` — must match your embeddings model's dimension).
+set). The model names default to conventional OpenAI ids (`GRAPHITI_LLM_MODEL=gpt-4o-mini`,
+`GRAPHITI_EMBED_MODEL=text-embedding-3-small`, `GRAPHITI_EMBED_DIM=1536`) but `dae install`
+writes whatever you entered; override them in `.env` and re-run if your endpoint uses other
+names. `GRAPHITI_EMBED_DIM` MUST match the embeddings model.
 
 > **Why a custom image?** The upstream `openai` provider uses the OpenAI **Responses API**,
 > which litellm-fronted local models don't enforce structured outputs on, so extraction fails.
@@ -424,10 +427,14 @@ DAEDALUS_CONFIG_DIR=/home/you/.daedalus
 UID=1000
 DOCKER_GID=998
 ONECLI_API_KEY=oc_…
-# Graphiti memory (the `graphiti` profile). SPARK_URL is your OpenAI-compatible base
-# URL; its key is NOT put here — graphiti routes through OneCLI, which injects it.
+# Graphiti memory (the `graphiti` profile). OPENAI_BASE_URL is your OpenAI-compatible base
+# URL; the key is NOT put here — graphiti routes through OneCLI, which injects it. The model
+# names must exist on that endpoint (dimension must match the embeddings model).
 COMPOSE_PROFILES=graphiti              # comma-join with whisper if you use both
-SPARK_URL=https://your-endpoint.example/v1
+OPENAI_BASE_URL=https://your-endpoint/v1
+GRAPHITI_LLM_MODEL=gpt-4o-mini
+GRAPHITI_EMBED_MODEL=text-embedding-3-small
+GRAPHITI_EMBED_DIM=1536
 GRAPHITI_DATA_PATH=/home/you/.daedalus/graphiti
 # ONECLI_PROXY_URL + ONECLI_CA_PATH are written by `dae install` AFTER OneCLI is up
 # (it fetches OneCLI's proxy URL + MITM CA). Hand-wiring them is fiddly — prefer
