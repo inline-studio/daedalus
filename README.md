@@ -59,14 +59,14 @@ dae install         # asks a few skippable questions, then `docker compose up -d
 `dae install` asks only what it can't infer (an LLM provider key, optional Telegram /
 memory / search), then starts the container stack. Re-running is idempotent.
 
-Then talk to your agent through whichever surface you wired:
+The `daedalus` container is now serving (it runs `dae serve` as its entrypoint) — you
+don't start anything by hand. Talk to your agent through whichever surface you wired:
 
-- **CLI:** `dae serve` in another terminal, then type into stdin.
 - **Web:** open `http://127.0.0.1:8765` (loopback-only by default).
-- **Telegram:** message your bot.
+- **Telegram:** message your bot (if you gave `dae install` a token).
 
-Keep it current with `dae update`. Full walkthrough, prerequisites, and provider setup:
-[docs/install.md](docs/install.md).
+Watch it work with `docker compose logs -f daedalus`. Keep it current with `dae update`.
+Full walkthrough, prerequisites, and provider setup: [docs/install.md](docs/install.md).
 
 ---
 
@@ -381,7 +381,7 @@ the credential model and the manual injection form: [docs/install.md](docs/insta
 | `dae install` | Turnkey: ensure config, then `docker compose up -d` the stack |
 | `dae update` | Check for a newer release, install it, re-apply your configuration |
 | `dae uninstall [--purge]` | Stop the stack (`--purge` also deletes config; data preserved) |
-| `dae serve` | Long-running: channels + scheduler (what the supervisor container runs) |
+| `dae serve` | The long-running supervisor (channels + scheduler + dispatcher). The `daedalus` container runs this as its entrypoint, so in the normal stack you **never run it by hand** — operate via `docker compose` (see below). Host/dev-mode only. |
 | `dae agents` / `dae skills` / `dae mcp` | Browse what's in the brain |
 | `dae config` | Print the resolved config as JSON |
 | `dae identity [name] [--nickname N]` | Show or change the orchestrator's persona name |
@@ -426,15 +426,30 @@ is for ad-hoc development.)
 After that, manage with plain compose:
 
 ```bash
+docker compose ps                           # is the daedalus container up?
 docker compose up -d                        # start the stack
 docker compose --profile whisper up -d      # also start local whisper STT
-docker compose logs -f daedalus             # tail the supervisor
-docker compose restart daedalus             # restart after a config change
+docker compose logs -f daedalus             # tail the supervisor (this IS the live `dae serve` output)
+docker compose restart daedalus             # restart the supervisor (e.g. after a config change)
 docker compose up -d --build                # rebuild + restart after `dae update`
 ```
 
 `restart: unless-stopped` on each service means the stack comes back on boot once the
 Docker daemon starts.
+
+> **Don't run `dae serve` on the host while the stack is up.** The container is already
+> the supervisor; a second host-side `dae serve` will fail — and the failures are expected,
+> not a broken install:
+> - **`fetch failed` / `getContainerConfig failed`** — the stack's config points OneCLI at
+>   `http://onecli:10254`, a hostname that only resolves *inside* the `daedalus` docker
+>   network. From the bare host there's no such DNS. (The in-process default is
+>   `localhost:10254`; an `onecli` host means it's the container's config.)
+> - **`EADDRINUSE :::8765`** — the running container already publishes port 8765 to the
+>   host, so a second server can't bind it. This is proof the supervisor is already serving.
+>
+> To inspect or control it, use `docker compose` (above), not `dae serve`. The bare-host
+> `dae serve` is only for a non-docker host/dev deployment — a config pointing at
+> `localhost` (or OneCLI disabled) and a free port 8765.
 
 ---
 
