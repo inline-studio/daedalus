@@ -28,6 +28,10 @@ It asks only what can't be inferred:
    server itself enforces nothing — internally it's reached over the private docker
    network — so a token only matters if you expose memory through a reverse proxy that
    checks it. See [docker-mode.md](./docker-mode.md) → "Exposing memory to other devices".)
+7. **Timezone** — IANA zone (e.g. `Europe/London`) for scheduling and timestamps,
+   defaulting to the host's detected zone → written as `TZ` in the compose `.env`. The
+   containers default to UTC without it, which skews fired schedules and the local time
+   agents see. An update asks once if your existing `.env` has no `TZ` yet.
 
 Everything else is automatic: OneCLI, the memory store, and the warm agent worker always
 run. Re-running is idempotent ("leave blank to keep" reuses previous answers).
