@@ -42,7 +42,7 @@ Then it runs `docker compose up -d --build`, bringing up:
 |---|---|
 | `daedalus` | Supervisor + scheduler (`dae serve`) — owns the channels. |
 | `dae-worker` | Warm agent worker — runs top-level agent turns without per-message boot. |
-| `graphiti` | Shared memory — a temporal knowledge-graph MCP every agent gets (with the `graphiti` profile, enabled when a spark endpoint is configured). |
+| `graphiti` | Shared memory — a temporal knowledge-graph MCP every agent gets (with the `graphiti` profile, enabled when a memory endpoint `SPARK_URL` is configured). |
 | `onecli` (+ `onecli-db`) | Credential-injecting gateway (+ its Postgres). |
 | `whisper` | Local speech-to-text — only with the `whisper` profile (if you opted in). |
 
@@ -121,7 +121,8 @@ placeholder `apiKey: onecli-managed`) and registers the real key in OneCLI, inje
 
 Memory is a **Graphiti** container — a temporal knowledge-graph MCP server, auto-injected as
 the `memory` server for every agent (see [mcp.md](./mcp.md)). Its extraction LLM + embeddings
-run on your spark endpoint, reached through the OneCLI proxy (so the key never hits disk). The
+run on an OpenAI-compatible endpoint you configure (`SPARK_URL`), reached through the OneCLI
+proxy (so the key never hits disk). The
 graph store is a persistent bind-mount (`GRAPHITI_DATA_PATH`), so memories survive restarts and
 the whole store is portable to another host. See [docker-mode.md](./docker-mode.md) → "The
 `graphiti` container" for details.
@@ -136,15 +137,15 @@ The clean setups:
 - **OpenAI-only** — `text-embedding-3-small` (1536 dims) on OpenAI directly.
   `GRAPHITI_EMBED_MODEL=text-embedding-3-small`, `GRAPHITI_EMBED_DIM=1536`.
 - **LiteLLM in front of multiple providers** — front Anthropic for the extraction LLM *and*
-  OpenAI (or a local server) for embeddings under a single base URL. The in-line.studio
-  default points `SPARK_URL` at `https://litellm.in-line.studio/v1` for exactly this reason.
+  OpenAI (or a local server) for embeddings under a single base URL, then point `SPARK_URL`
+  at that LiteLLM `/v1` endpoint. This is a common reason to run a gateway in front.
 - **Fully local** — [Ollama](https://ollama.com) serves both. `ollama pull nomic-embed-text`
   gives 768-dim embeddings, matching the default `GRAPHITI_EMBED_DIM=768`.
 - **Anthropic + a separate embeddings endpoint** — Anthropic for the chat model on one
   provider entry; a small Ollama/local container for embeddings under `SPARK_URL`. Anthropic
   ships no embeddings API, so memory always needs an embeddings endpoint *somewhere*.
 
-If you don't want memory, skip the spark/`SPARK_URL` answer at install — the `graphiti`
+If you don't want memory, skip the `SPARK_URL` answer at install — the `graphiti`
 profile stays disabled and no embeddings model is needed.
 
 ## Why all-container (the Docker choice)

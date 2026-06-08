@@ -90,7 +90,7 @@ What `dae install` brings up:
 |---|---|
 | `daedalus` | Supervisor + scheduler — owns the channels (long-running). |
 | `dae-worker` | Warm agent worker — runs top-level turns without per-message boot. |
-| `graphiti` | Temporal knowledge-graph memory MCP (with the `graphiti` profile, when a spark endpoint is set). |
+| `graphiti` | Temporal knowledge-graph memory MCP (with the `graphiti` profile, when a memory endpoint `SPARK_URL` is set). |
 | `onecli` (+ `onecli-db`) | Credential-injecting gateway + its Postgres (always). |
 | `whisper` | Local speech-to-text (only with the `whisper` profile). |
 
@@ -346,12 +346,12 @@ with the `attach_to_reply` tool. Full reference: [docs/channels.md](docs/channel
 
 Memory is a **Graphiti** temporal knowledge-graph MCP, auto-injected as the `memory`
 server on every agent when enabled. Entities, relationships, and decisions are extracted
-from each turn with validity tracked over time. Extraction + embeddings run on *your*
-OpenAI-compatible spark endpoint through the OneCLI proxy, so no key hits disk, and the
-whole graph is one portable bind-mounted directory.
+from each turn with validity tracked over time. Extraction + embeddings run on an
+OpenAI-compatible endpoint you configure (`SPARK_URL`), reached through the OneCLI proxy,
+so no key hits disk, and the whole graph is one portable bind-mounted directory.
 
-Enable it by giving `dae install` a spark (embeddings + extraction) URL — usually the
-same as your OpenAI base URL. Embeddings-setup options: [docs/install.md](docs/install.md).
+Enable it by giving `dae install` that endpoint's URL (`SPARK_URL`) — usually the same as
+your OpenAI base URL. Embeddings-setup options: [docs/install.md](docs/install.md).
 The `graphiti` container internals and exposing memory to other devices:
 [docs/docker-mode.md](docs/docker-mode.md).
 
