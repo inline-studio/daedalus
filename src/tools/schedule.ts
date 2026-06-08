@@ -61,9 +61,22 @@ export function scheduleMessageTool(store: ScheduleStore): ToolImpl {
       } catch (err) {
         return { content: (err as Error).message, isError: true };
       }
+      // The fire must route back to the user who armed it. Without a known origin
+      // (channel + external id) the schedule would land in an orphan session — the
+      // exact bug this guard prevents — so refuse rather than silently misroute.
+      if (!ctx.originChannel || !ctx.originExternalUserId) {
+        return {
+          content:
+            "schedule_message: can't determine which user to deliver to (no origin channel). " +
+            "This turn has no originating channel identity to route the reminder back to.",
+          isError: true,
+        };
+      }
       const row = store.enqueue({
         agentName,
         createdByAgent: ctx.agentName,
+        channel: ctx.originChannel,
+        userExternalId: ctx.originExternalUserId,
         prompt,
         dueAt: parsed.dueAt,
         recurringCron: parsed.cron ?? null,

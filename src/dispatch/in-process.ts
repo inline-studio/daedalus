@@ -15,6 +15,10 @@ export class InProcessAgentDispatcher implements AgentDispatcher {
       sessionId: args.sessionId,
       userId: args.userId,
       isSubagent: args.isSubagent,
+      ...(args.originChannel ? { originChannel: args.originChannel } : {}),
+      ...(args.originExternalUserId
+        ? { originExternalUserId: args.originExternalUserId }
+        : {}),
     });
   }
 }

@@ -93,6 +93,10 @@ export function startScheduler(
           sessionId: ingested.sessionId,
           userId: ingested.userId,
           isSubagent: false,
+          // Match the synthetic ingest identity so an in-turn schedule_message
+          // re-arms against this schedule's own session.
+          originChannel: "schedule",
+          originExternalUserId: s.name,
         });
         log.info(
           { schedule: s.name, agent: s.agent, turns: r.turns, status: r.status },

@@ -70,8 +70,17 @@ program
   .requiredOption("--session <id>", "session id (the dispatcher caller persisted the inbound msg)")
   .requiredOption("--user <id>", "user id (for subagent session keying)")
   .option("--subagent", "system-prompt voice: 'you are operating as a subagent'", false)
+  .option("--origin-channel <channel>", "channel the originating user spoke on (for schedule_message routing)")
+  .option("--origin-external-user <id>", "external id of the originating user (for schedule_message routing)")
   .action(
-    async (opts: { agent: string; session: string; user: string; subagent: boolean }) => {
+    async (opts: {
+      agent: string;
+      session: string;
+      user: string;
+      subagent: boolean;
+      originChannel?: string;
+      originExternalUser?: string;
+    }) => {
       const config = loadConfig(program.opts().config);
       await applyOneCli(config.onecli);
       const { runAgentTurn } = await import("./kernel/agent-turn.js");
@@ -82,6 +91,10 @@ program
           sessionId: opts.session,
           userId: opts.user,
           isSubagent: Boolean(opts.subagent),
+          ...(opts.originChannel ? { originChannel: opts.originChannel } : {}),
+          ...(opts.originExternalUser
+            ? { originExternalUserId: opts.originExternalUser }
+            : {}),
         });
         // The container dispatcher scans stdout bottom-up for the JSON line.
         // Keep this the LAST thing we write.

@@ -49,6 +49,12 @@ export interface RunAgentTurnInput {
   sessionId: string;
   userId: string;
   isSubagent: boolean;
+  // Origin identity of the user this turn runs on behalf of (channel + external
+  // id the inbound arrived on). Surfaced to tools via ToolContext so future
+  // deliveries (schedule_message) route back to the real user. Optional —
+  // synthetic paths may omit them.
+  originChannel?: string;
+  originExternalUserId?: string;
   // When set (the long-lived agent-worker), MCP connections are taken from this
   // persistent pool and kept open across turns. When omitted (the one-shot
   // `dae agent-turn` container), we connect fresh and close at the end of the turn.
@@ -191,6 +197,10 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
         brainWritable: config.brain.writable,
         workspacePath: path.resolve(process.cwd()),
         agentName: agent.name,
+        ...(input.originChannel ? { originChannel: input.originChannel } : {}),
+        ...(input.originExternalUserId
+          ? { originExternalUserId: input.originExternalUserId }
+          : {}),
         ...(config.runtime.shared.enabled
           ? {
               shared: {

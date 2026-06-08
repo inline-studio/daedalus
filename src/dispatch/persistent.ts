@@ -32,6 +32,10 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
       sessionId: args.sessionId,
       userId: args.userId,
       isSubagent: args.isSubagent,
+      ...(args.originChannel ? { originChannel: args.originChannel } : {}),
+      ...(args.originExternalUserId
+        ? { originExternalUserId: args.originExternalUserId }
+        : {}),
     });
 
     // A turn can take a while (LLM + tools), so don't impose a tight timeout —

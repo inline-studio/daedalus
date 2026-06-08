@@ -31,6 +31,12 @@ export interface DispatchArgs {
   // Sets the system-prompt voice ("you're operating as a subagent…"). Subagent
   // dispatches always pass true; top-level channel dispatches pass false.
   isSubagent: boolean;
+  // Origin identity of the user this turn runs on behalf of: the channel +
+  // external id the inbound arrived on. Threaded into ToolContext so tools that
+  // arm future deliveries (schedule_message) can route them back to the real
+  // user. Optional — synthetic/cron paths may omit them.
+  originChannel?: string;
+  originExternalUserId?: string;
   // Optional caller-provided timeout in ms. Container dispatcher hard-kills the
   // container after this; in-process dispatcher ignores (kernel has its own).
   timeoutMs?: number;

@@ -83,6 +83,10 @@ async function handleTurn(
       sessionId: args.sessionId,
       userId: args.userId,
       isSubagent: Boolean(args.isSubagent),
+      ...(args.originChannel ? { originChannel: args.originChannel } : {}),
+      ...(args.originExternalUserId
+        ? { originExternalUserId: args.originExternalUserId }
+        : {}),
       mcpPool: pool,
     });
     res.writeHead(200, { "content-type": "application/json" });

@@ -85,6 +85,8 @@ const expect = (label, ok, detail = "") => {
   store.enqueue({
     agentName: "artemis",
     createdByAgent: "artemis",
+    channel: "telegram",
+    userExternalId: "8724271796",
     prompt: "first",
     dueAt: new Date(Date.now() + 60_000).toISOString(),
   });
@@ -94,6 +96,8 @@ const expect = (label, ok, detail = "") => {
     row = store.enqueue({
       agentName: "artemis",
       createdByAgent: "artemis",
+      channel: "telegram",
+      userExternalId: "8724271796",
       prompt: "second",
       dueAt: new Date(Date.now() + 60_000).toISOString(),
     });
