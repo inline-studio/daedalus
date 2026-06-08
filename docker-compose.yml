@@ -65,6 +65,10 @@ services:
     init: true
     environment:
       DAE_CONFIG: /etc/daedalus/config.yaml
+      # Timezone for the scheduler (croner evaluates cron in the system zone) and the
+      # injected "# Now" context. Unset → the container defaults to UTC; `dae install` asks
+      # for this and pins it in .env. The dispatcher forwards it into spawned agent containers.
+      TZ: ${TZ:-UTC}
       # OneCLI bootstrap — the gateway runs as the `onecli` service. When you supply a
       # daemon API key (dae install asks for it), the supervisor uses it to fetch the
       # gateway bundle at startup and forwards it into each agent container via
@@ -146,6 +150,8 @@ services:
     init: true
     environment:
       DAE_CONFIG: /etc/daedalus/config.yaml
+      # Keep top-level turns on the same zone as the supervisor + spawned agents (see daedalus).
+      TZ: ${TZ:-UTC}
       ONECLI_API_KEY: ${ONECLI_API_KEY:-}
       # Subagents the worker spawns run as their own ephemeral containers.
       DAE_DISPATCHER: container

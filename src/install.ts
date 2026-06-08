@@ -364,11 +364,30 @@ export async function runInstall(
   const onecliCaPath = path.join(composeDir, "onecli-ca.pem");
   if (graphitiEnabled) await fs.mkdir(graphitiDataPath, { recursive: true });
 
+  // Timezone for the long-lived containers AND every agent container they spawn. Both the
+  // scheduler (croner evaluates cron in the system zone) and the injected "# Now" context
+  // read the container's TZ, so a single value keeps fired schedules and displayed local
+  // time in agreement — without it the containers default to UTC. Default to the host's
+  // detected zone; ask in interactive setup, and in reuse mode (a normal `dae update`) only
+  // when it isn't pinned yet, so an update retrofits an existing install exactly once.
+  const detectedTz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  let timezone = prev.TZ || "";
+  if (mode === "interactive" || (mode === "reuse" && !timezone)) {
+    timezone =
+      (await textPrompt(
+        `Timezone for scheduling + timestamps (IANA name, e.g. Europe/London) [${timezone || detectedTz}]:`,
+      )) ||
+      timezone ||
+      detectedTz;
+  }
+  if (!timezone) timezone = detectedTz;
+
   const composeEnv: Record<string, string> = {
     BRAIN_PATH: brainPath,
     DAEDALUS_CONFIG_DIR: configDir,
     UID: String(process.getuid?.() ?? 1000),
     DOCKER_GID: String(dockerGid()),
+    TZ: timezone,
   };
   composeEnv.ONECLI_API_KEY = onecliKey;
   // Stable at-rest encryption key for OneCLI's secret store. OneCLI otherwise auto-generates

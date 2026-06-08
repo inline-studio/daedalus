@@ -287,6 +287,9 @@ export function dispatcherOptionsFromEnv(config: ArtemisConfig): ContainerDispat
   // resolve inside the container). MEMPALACE_TOKEN is the memory server's bearer.
   const forwardEnv: Record<string, string> = {};
   if (env.MEMPALACE_TOKEN) forwardEnv.MEMPALACE_TOKEN = env.MEMPALACE_TOKEN;
+  // Keep spawned agents on the supervisor's timezone so their "# Now" local time matches
+  // the scheduler. Without it the agent container falls back to UTC.
+  if (env.TZ) forwardEnv.TZ = env.TZ;
   if (Object.keys(forwardEnv).length > 0) opts.forwardEnv = forwardEnv;
   // Inject the runtime by default if a volume is named. Opt out with
   // DAE_AGENT_RUNTIME_INJECT=false (useful when the agent image already has
