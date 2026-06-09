@@ -11,6 +11,7 @@ import { buildRuntime } from "../runtime/factory.js";
 import { selectBuiltins } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
 import { composeSystemPrompt } from "../brain/composer.js";
+import { appendNowToLastUserMessage } from "../brain/now.js";
 import { loadSkill, listSkills } from "../brain/skills.js";
 import { runSkillBootstraps } from "../brain/skill-bootstrap.js";
 import { loadAgentCommands } from "../brain/commands.js";
@@ -184,6 +185,16 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
         "history trimmed to token budget",
       );
     }
+
+    // Time context rides on the latest user turn rather than the system prompt, so the system
+    // prompt + tool definitions stay byte-identical across requests and the backend reuses their
+    // KV cache (a fresh timestamp in the system prefix forces a full cold re-prefill every turn).
+    // In place: doesn't grow the array (the new-message slice below stays correct) and isn't
+    // persisted to session history.
+    appendNowToLastUserMessage(messages, {
+      timeAware: agent.timeAware,
+      ...(agent.timezone ? { timezone: agent.timezone } : {}),
+    });
 
     const kernel = new Kernel({
       provider,

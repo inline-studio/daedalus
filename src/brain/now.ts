@@ -1,11 +1,15 @@
-// Current-time context. Injected fresh into the system prompt on every kernel turn so the
+// Current-time context. Appended fresh to the latest user turn on every kernel turn so the
 // model never falls back to "today" assumptions from training data or stale session state.
+// It lives on the user turn rather than the system prompt deliberately: a timestamp baked into
+// the system prefix changes every request and forces the inference backend to re-prefill the
+// whole prompt cold, whereas a time-invariant system prompt + tool set stays byte-identical and
+// its KV cache is reused. See appendNowToLastUserMessage.
+
+import type { Message } from "../types.js";
 
 export interface NowContextOptions {
   // Override the system timezone (e.g. "America/New_York"). Defaults to Intl resolvedOptions.
   timezone?: string;
-  // Optional: how long since the user last interacted in this session.
-  sessionGapMs?: number;
 }
 
 export function nowContext(opts: NowContextOptions = {}): string {
@@ -31,10 +35,6 @@ export function nowContext(opts: NowContextOptions = {}): string {
     `- Day of the week: ${dayOfWeek}`,
   ];
 
-  if (opts.sessionGapMs && opts.sessionGapMs > 60_000) {
-    lines.push(`- Time since last message in this session: ${formatGap(opts.sessionGapMs)}`);
-  }
-
   lines.push(
     "",
     "Treat the values above as authoritative. Do NOT say \"today\" or \"yesterday\" without",
@@ -43,6 +43,25 @@ export function nowContext(opts: NowContextOptions = {}): string {
   );
 
   return lines.join("\n");
+}
+
+// Append the time context to the latest user turn, mutating `messages` in place. Replaces the
+// last slot with a fresh object (never mutates the original message) and keeps the array length
+// unchanged, so callers that slice on `messages.length` to find newly-produced messages stay
+// correct and the transient timestamp is never persisted. No-op when not time-aware or when the
+// last message isn't a user turn.
+export function appendNowToLastUserMessage(
+  messages: Message[],
+  opts: { timeAware?: boolean; timezone?: string } = {},
+): void {
+  if (opts.timeAware === false || messages.length === 0) return;
+  const last = messages[messages.length - 1]!;
+  if (last.role !== "user") return;
+  const now = nowContext(opts.timezone ? { timezone: opts.timezone } : {});
+  messages[messages.length - 1] = {
+    ...last,
+    content: [...last.content, { type: "text", text: `\n\n${now}` }],
+  };
 }
 
 export function formatGap(ms: number): string {
