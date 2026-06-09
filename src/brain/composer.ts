@@ -3,7 +3,6 @@ import path from "node:path";
 import type { AgentManifest } from "../config/schema.js";
 import type { LoadedSkill } from "./skills.js";
 import type { LoadedCommand } from "./commands.js";
-import { nowContext } from "./now.js";
 
 // Read every *.md from `dir`, optionally filtered to a list of names (without .md).
 // Names compare against the basename. An empty filter list means "include all".
@@ -39,9 +38,6 @@ export interface ComposerInput {
   // injected into the system prompt with names + descriptions so the agent
   // knows what to expect when the user types /word.
   commands?: LoadedCommand[];
-  // Time since the most recent prior message in this session, if known. Used to surface
-  // session-resume gaps to the model.
-  sessionGapMs?: number;
   // Orchestrator identity. Injected so every agent knows what name the user is addressing.
   // Subagents see this too so they can refer to "Artemis" internally without breaking the
   // single-persona illusion.
@@ -52,8 +48,11 @@ export interface ComposerInput {
   isSubagent?: boolean;
 }
 
-// Deterministic order: standards → operations → souls → personas → skills → agent body → now.
-// "Now" is last so it's the freshest thing the model sees before user messages.
+// Deterministic order: identity → standards → operations → souls → personas → skills →
+// commands → agent body. The system prompt is intentionally time-INVARIANT: the "# Now"
+// time context is NOT composed here. It's appended to the latest user message at turn
+// assembly (see agent-turn) so this whole prefix stays byte-identical across turns and the
+// backend can reuse its KV cache instead of re-prefilling on every request.
 export async function composeSystemPrompt(input: ComposerInput): Promise<string> {
   const { brainPath, agent, agentBody, skills } = input;
 
@@ -87,14 +86,6 @@ export async function composeSystemPrompt(input: ComposerInput): Promise<string>
     );
   }
   if (agentBody) parts.push(section("Agent", [agentBody]));
-  if (agent.timeAware) {
-    parts.push(
-      nowContext({
-        ...(agent.timezone ? { timezone: agent.timezone } : {}),
-        ...(input.sessionGapMs ? { sessionGapMs: input.sessionGapMs } : {}),
-      }),
-    );
-  }
 
   return parts.join("\n\n---\n\n");
 }

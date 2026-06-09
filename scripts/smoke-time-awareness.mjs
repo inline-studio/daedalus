@@ -1,9 +1,11 @@
 // Smoke test for time-awareness wiring.
 //   1. nowContext / formatGap return sensible strings
-//   2. composeSystemPrompt always appends "# Now" when timeAware is on
-//   3. session-gap markers materialize when a stale session is resumed
+//   2. composeSystemPrompt is time-INVARIANT (no "# Now") — the system prefix stays
+//      byte-stable so the inference backend can reuse its KV cache across requests
+//   3. appendNowToLastUserMessage rides the time context on the latest user turn instead
+//   4. session-gap markers materialize when a stale session is resumed
 
-import { nowContext, formatGap } from "../dist/brain/now.js";
+import { nowContext, formatGap, appendNowToLastUserMessage } from "../dist/brain/now.js";
 import { composeSystemPrompt } from "../dist/brain/composer.js";
 import { loadConfig } from "../dist/config/load.js";
 import { loadAgent } from "../dist/brain/agents.js";
@@ -32,19 +34,18 @@ expect("now contains '# Now'", now.includes("# Now"));
 expect("now mentions ISO datetime", /Current date\/time \(UTC\):/.test(now));
 expect("now mentions day of week", /Day of the week:/.test(now));
 
-// 3. composeSystemPrompt appends Now when timeAware
+// 3. composeSystemPrompt is time-invariant — "# Now" must NOT be baked into the system
+//    prompt (it changes every request and would cold-prefill the whole prompt). True whether
+//    or not the agent is time-aware; the time context rides on the user turn instead.
 const config = loadConfig("examples/daedalus.config.yaml");
 const { manifest, body } = await loadAgent(config.brain.path, "coder");
-const promptOn = await composeSystemPrompt({
+const prompt = await composeSystemPrompt({
   brainPath: config.brain.path,
   agent: manifest,
   agentBody: body,
   skills: [],
 });
-expect("timeAware=true → '# Now' present", promptOn.includes("# Now"));
-expect("timeAware=true → ends with Now",   promptOn.lastIndexOf("# Now") > promptOn.lastIndexOf("# Agent"));
-
-// timeAware=false skips the section
+expect("system prompt is time-invariant (no '# Now')", !prompt.includes("# Now"));
 const offManifest = { ...manifest, timeAware: false };
 const promptOff = await composeSystemPrompt({
   brainPath: config.brain.path,
@@ -52,17 +53,36 @@ const promptOff = await composeSystemPrompt({
   agentBody: body,
   skills: [],
 });
-expect("timeAware=false → no '# Now'", !promptOff.includes("# Now"));
+expect("system prompt time-invariant regardless of timeAware", !promptOff.includes("# Now"));
 
-// With a sessionGap, "Time since last message" is included
-const promptGap = await composeSystemPrompt({
-  brainPath: config.brain.path,
-  agent: manifest,
-  agentBody: body,
-  skills: [],
-  sessionGapMs: 3 * 86_400_000 + 4 * 3_600_000, // 3d4h
-});
-expect("sessionGapMs surfaced in Now", /Time since last message in this session: 3 days 4 hours/.test(promptGap));
+// 3b. appendNowToLastUserMessage rides the time context on the latest user turn.
+const msgs = [
+  { role: "assistant", content: [{ type: "text", text: "earlier reply" }] },
+  { role: "user", content: [{ type: "text", text: "hello" }] },
+];
+appendNowToLastUserMessage(msgs, { timeAware: true });
+expect("appendNow → '# Now' on last user turn", msgs[1].content.some((p) => p.type === "text" && p.text.includes("# Now")));
+expect("appendNow → array length unchanged", msgs.length === 2);
+expect("appendNow → earlier turn untouched", !JSON.stringify(msgs[0]).includes("# Now"));
+
+// no-op when not time-aware
+const offMsgs = [{ role: "user", content: [{ type: "text", text: "hi" }] }];
+appendNowToLastUserMessage(offMsgs, { timeAware: false });
+expect("appendNow timeAware=false → no-op", !JSON.stringify(offMsgs).includes("# Now"));
+
+// no-op when the last message isn't a user turn
+const asstLast = [
+  { role: "user", content: [{ type: "text", text: "q" }] },
+  { role: "assistant", content: [{ type: "text", text: "a" }] },
+];
+appendNowToLastUserMessage(asstLast, { timeAware: true });
+expect("appendNow last≠user → no-op", !JSON.stringify(asstLast).includes("# Now"));
+
+// doesn't mutate the original message object (transient; never persisted)
+const orig = { role: "user", content: [{ type: "text", text: "hello" }] };
+const arr = [orig];
+appendNowToLastUserMessage(arr, { timeAware: true });
+expect("appendNow → original message object untouched", orig.content.length === 1 && arr[0] !== orig);
 
 // 4. Session-resume marker via the SessionStore: insert an old message, verify next-load detects it
 const tmpDir = path.join(os.tmpdir(), `dae-time-smoke-${Date.now()}`);
