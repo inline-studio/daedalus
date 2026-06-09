@@ -143,6 +143,17 @@ export const WEB_UI_HTML = `<!doctype html>
   .msg th { background: #0d1117; font-weight: 600; }
   .msg.user th { background: rgba(0,0,0,.25); }
   .msg.user th, .msg.user td { border-color: rgba(255,255,255,.2); }
+  /* "Thinking…" indicator — an assistant-aligned bubble with three pulsing dots,
+     shown between sending a message and the first reply event (replies can take
+     ~30s, and without this the UI looked frozen). It is purely a DOM element in
+     the log (id #thinking); it is never recorded into the convo transcript. */
+  .msg.thinking { display: flex; gap: 5px; align-items: center; padding: 14px 16px; }
+  .msg.thinking i { width: 7px; height: 7px; border-radius: 50%; background: #8b949e;
+                    animation: think 1.4s infinite ease-in-out both; }
+  .msg.thinking i:nth-child(2) { animation-delay: .2s; }
+  .msg.thinking i:nth-child(3) { animation-delay: .4s; }
+  @keyframes think { 0%, 80%, 100% { opacity: .3; transform: translateY(0); }
+                     40% { opacity: 1; transform: translateY(-4px); } }
   .meta { font-size: 11px; color: #8b949e; margin: 0 4px; }
   footer { border-top: 1px solid #21262d; background: #161b22; padding: 10px 14px; }
   #chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
@@ -647,6 +658,32 @@ export const WEB_UI_HTML = `<!doctype html>
     return div;
   }
 
+  // Thinking indicator: a transient assistant bubble shown from the moment a
+  // message is sent until the first reply event arrives. It lives in the log
+  // DOM only (never pushed into convo, so it stays out of the copy/select
+  // transcript) and clearLog's innerHTML reset disposes of it on a conversation
+  // switch. A safety timer hides it if no reply ever lands.
+  var thinkingTimer = null;
+  function showThinking() {
+    var empty = log.querySelector(".empty"); if (empty) empty.remove();
+    if (!$("thinking")) {
+      var div = document.createElement("div");
+      div.id = "thinking";
+      div.className = "msg assistant thinking";
+      div.setAttribute("aria-label", "Artemis is thinking");
+      div.innerHTML = "<i></i><i></i><i></i>";
+      log.appendChild(div);
+    }
+    jumpToBottom();
+    if (thinkingTimer) clearTimeout(thinkingTimer);
+    // Give up after 3 min so a dropped/failed reply doesn't spin forever.
+    thinkingTimer = setTimeout(hideThinking, 180000);
+  }
+  function hideThinking() {
+    if (thinkingTimer) { clearTimeout(thinkingTimer); thinkingTimer = null; }
+    var el = $("thinking"); if (el) el.remove();
+  }
+
   // SSE wiring. Three reliability fixes layered here:
   //
   //   1. Last-Event-ID resume (server-side, see web.ts:send + handleSse): the
@@ -693,6 +730,8 @@ export const WEB_UI_HTML = `<!doctype html>
       // conversation ever reaches us (e.g. via the legacy bare-key broadcast during a deploy),
       // don't render it into the conversation the user is currently looking at.
       if (d.conversationId && convId && d.conversationId !== convId) return;
+      // A reply for this conversation has landed — drop the thinking indicator.
+      hideThinking();
       // ev.lastEventId carries the event's id line — the server's ISO send time (or the
       // persisted createdAt for replayed messages) — so the transcript timestamp is accurate.
       addMsg("assistant", d.text || "", d.attachments || [], ev.lastEventId);
@@ -776,9 +815,10 @@ export const WEB_UI_HTML = `<!doctype html>
     if (text) maybeTitleCurrent(text);
     addMsg("user", text, atts, new Date().toISOString());
     $("text").value = ""; pending = []; renderChips(); autosize();
+    showThinking();
     fetch("/messages", { method: "POST", headers: authHeaders(), body: JSON.stringify(body) })
-      .then(function (r) { if (on401(r)) return; if (!r.ok) statusEl.textContent = "send failed (" + r.status + ")"; })
-      .catch(function () { statusEl.textContent = "send failed"; });
+      .then(function (r) { if (on401(r)) { hideThinking(); return; } if (!r.ok) { hideThinking(); statusEl.textContent = "send failed (" + r.status + ")"; } })
+      .catch(function () { hideThinking(); statusEl.textContent = "send failed"; });
   }
 
   function autosize() { var t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; }
