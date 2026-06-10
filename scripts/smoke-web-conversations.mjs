@@ -106,9 +106,15 @@ const AGENT = "orchestrator";
   sMain.req.destroy();
   sB.req.destroy();
 
-  // Delete protections + behaviour.
+  // Delete behaviour. Main's ROW survives a delete (it's the cross-channel default and must
+  // stay the oldest session) — its history is cleared instead.
   const delMain = await fetch(base + "/conversations?externalUserId=" + U1 + "&id=" + mainId, { method: "DELETE" });
-  ok("DELETE Main → 403 (protected)", delMain.status === 403);
+  const delMainBody = await delMain.json();
+  ok("DELETE Main → 200 with cleared:true", delMain.status === 200 && delMainBody.cleared === true, JSON.stringify(delMainBody));
+  const cMain = await getJson("/conversations?externalUserId=" + U1);
+  ok("DELETE Main keeps the entry and its id", cMain.defaultId === mainId && cMain.conversations.some((c) => c.id === mainId));
+  const histMainCleared = await getJson("/history?externalUserId=" + U1 + "&conversationId=" + mainId);
+  ok("DELETE Main cleared its history", histMainCleared.messages.length === 0, JSON.stringify(histMainCleared.messages));
   const delForeign = await fetch(base + "/conversations?externalUserId=" + U2 + "&id=" + convB, { method: "DELETE" });
   ok("DELETE another user's conversation → 404", delForeign.status === 404);
   const delB = await fetch(base + "/conversations?externalUserId=" + U1 + "&id=" + convB, { method: "DELETE" });
@@ -130,6 +136,28 @@ const AGENT = "orchestrator";
   sessions.appendMessage({ sessionId: e1.id, role: "user", content: [{ type: "text", text: "first" }] });
   const e3 = await (await post("/conversations?externalUserId=" + U3, {})).json();
   ok("GUARDRAIL: after the empty conv is used, New chat creates a fresh one", e3.id !== e1.id);
+
+  // GET /commands: built-ins (/compact) always present; brain commands appended when a
+  // loader is injected.
+  const cmds0 = await getJson("/commands");
+  ok(
+    "GET /commands without a loader → built-ins only",
+    Array.isArray(cmds0.commands) && cmds0.commands.length === 1 && cmds0.commands[0].name === "compact",
+    JSON.stringify(cmds0),
+  );
+  const ch2 = new WebChannel({
+    defaultAgent: AGENT,
+    port: 8802,
+    listCommands: async () => [{ name: "ship", description: "Ship it", aliases: ["s"] }],
+  });
+  await ch2.start(ctx);
+  const cmds = await (await fetch("http://127.0.0.1:8802/commands")).json();
+  ok(
+    "GET /commands serves built-ins + the injected command list",
+    cmds.commands.length === 2 && cmds.commands[0].name === "compact" && cmds.commands[1].name === "ship",
+    JSON.stringify(cmds),
+  );
+  await ch2.stop();
 
   await ch.stop();
   sessions.close();

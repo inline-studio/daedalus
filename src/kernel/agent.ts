@@ -48,6 +48,11 @@ export interface KernelResult {
   // User-facing notices produced during the turn (e.g. "compacted earlier history").
   // The dispatcher forwards these to the channel so the user knows what happened.
   notices?: string[];
+  // True when the turn had to shrink its context to fit the model's window (summarise
+  // or drop on overflow). The reduction is per-call only — agent-turn uses this to
+  // persist a compaction marker so later turns don't reload (and re-overflow on) the
+  // same history.
+  compacted?: boolean;
 }
 
 // One agent loop: send -> read tool calls -> execute -> reply -> until end_turn or maxTurns.
@@ -56,6 +61,8 @@ export class Kernel {
   private allToolDefs: ToolDefinition[];
   // User-facing notices accumulated during a run (reset per runWithMessages).
   private notices: string[] = [];
+  // Whether any completion this run had to shrink its context (reset per runWithMessages).
+  private contextCompacted = false;
 
   constructor(private opts: KernelOptions) {
     for (const t of opts.builtinTools) this.builtinByName.set(t.definition.name, t);
@@ -76,6 +83,7 @@ export class Kernel {
   async runWithMessages(initialMessages: Message[], signal?: AbortSignal): Promise<KernelResult> {
     const messages: Message[] = [...initialMessages];
     this.notices = [];
+    this.contextCompacted = false;
 
     // If a separate vision model is configured, turn the freshest image into text up front
     // (a tiny side-call) so the rest of the turn runs entirely on the main model.
@@ -137,6 +145,7 @@ export class Kernel {
               stopReason: "ask_user",
               pendingQuestion: { question: err.question, toolUseId: tu.id },
               ...(this.notices.length ? { notices: [...this.notices] } : {}),
+              ...(this.contextCompacted ? { compacted: true } : {}),
             };
           }
           throw err;
@@ -196,6 +205,7 @@ export class Kernel {
       turns,
       stopReason,
       ...(this.notices.length ? { notices: [...this.notices] } : {}),
+      ...(this.contextCompacted ? { compacted: true } : {}),
     };
   }
 
@@ -246,6 +256,7 @@ export class Kernel {
           triedCompact = true;
           const compacted = await this.tryCompact(view, signal);
           if (compacted) {
+            this.contextCompacted = true;
             this.notices.push(
               "🗜️ Our conversation got long, so I summarised the earlier part to stay within the model's context window. Ask me to recap anything I seem to have lost.",
             );
@@ -266,6 +277,7 @@ export class Kernel {
               `model's context cap. Underlying error: ${(err as Error).message}`,
           );
         }
+        this.contextCompacted = true;
         log.warn(
           { fromMessages: view.length, toMessages: trimmed.length, err: (err as Error).message },
           "context window exceeded — dropped oldest history and retrying",
@@ -386,57 +398,14 @@ export class Kernel {
   // Ask the model to compress a slice of history into a dense, replaceable summary.
   // Returns null on any failure so the caller falls back to dropping (never blocks a turn).
   private async summarize(messages: Message[], signal?: AbortSignal): Promise<string | null> {
-    const transcript = messages
-      .map((m) => `${m.role.toUpperCase()}: ${summarizeContent(m.content)}`)
-      .join("\n\n");
-    const req: CompletionRequest = {
-      system:
-        "You compress conversation history. Produce a dense, factual summary that can REPLACE " +
-        "the original messages in context. Capture: the user's goals and stated preferences, key " +
-        "facts and decisions, specifics worth keeping (names, numbers, URLs, file paths), and any " +
-        "open threads or pending actions. Use terse prose or bullets. No preamble, no commentary.",
-      messages: [
-        { role: "user", content: [{ type: "text", text: `Summarise this conversation:\n\n${transcript}` }] },
-      ],
-      tools: [],
-      model: this.opts.model,
-      maxTokens: 1024,
-    };
-    try {
-      const res = await this.completeWithRetry(req, signal);
-      const text = collectText(res.message.content).trim();
-      return text.length ? text : null;
-    } catch (err) {
-      log.warn(
-        { err: (err as Error).message },
-        "compaction summary failed — falling back to dropping history",
-      );
-      return null;
-    }
+    return summarizeConversation(this.opts.provider, this.opts.model, messages, signal ? { signal } : {});
   }
 
   private async completeWithRetry(
     req: CompletionRequest,
     signal?: AbortSignal,
   ): Promise<CompletionResult> {
-    const maxAttempts = 4;
-    let lastErr: unknown;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        return await this.opts.provider.complete(req, signal);
-      } catch (err) {
-        lastErr = err;
-        if (attempt === maxAttempts || !isTransientLLMError(err)) throw err;
-        const backoff = Math.min(8000, 500 * 2 ** (attempt - 1));
-        const delayMs = backoff + Math.floor(Math.random() * 250);
-        log.warn(
-          { attempt, maxAttempts, delayMs, provider: this.opts.provider.id, err: (err as Error).message },
-          "LLM call failed transiently — retrying",
-        );
-        await new Promise((r) => setTimeout(r, delayMs));
-      }
-    }
-    throw lastErr;
+    return completeWithRetry(this.opts.provider, req, signal);
   }
 
   private async executeTool(tu: ToolUsePart): Promise<{ content: string; isError?: boolean }> {
@@ -463,6 +432,77 @@ export class Kernel {
 
     return { content: `Unknown tool: ${tu.name}`, isError: true };
   }
+}
+
+// Compress a conversation into a dense, replaceable summary. Standalone so it serves both
+// the kernel's reactive on-overflow compaction and the persistent-compaction paths in
+// agent-turn (the post-overflow marker and the built-in /compact command). `focus` is an
+// optional user-supplied emphasis ("/compact focus on the deploy plan"). Returns null on
+// any failure so callers degrade gracefully (never blocks a turn).
+export async function summarizeConversation(
+  provider: LLMProvider,
+  model: string,
+  messages: Message[],
+  opts?: { focus?: string; signal?: AbortSignal },
+): Promise<string | null> {
+  const transcript = messages
+    .map((m) => `${m.role.toUpperCase()}: ${summarizeContent(m.content)}`)
+    .join("\n\n");
+  const focus = opts?.focus?.trim()
+    ? `\n\nPay particular attention to: ${opts.focus.trim()}`
+    : "";
+  const req: CompletionRequest = {
+    system:
+      "You compress conversation history. Produce a dense, factual summary that can REPLACE " +
+      "the original messages in context. Capture: the user's goals and stated preferences, key " +
+      "facts and decisions, specifics worth keeping (names, numbers, URLs, file paths), and any " +
+      "open threads or pending actions. Use terse prose or bullets. No preamble, no commentary.",
+    messages: [
+      {
+        role: "user",
+        content: [{ type: "text", text: `Summarise this conversation:\n\n${transcript}${focus}` }],
+      },
+    ],
+    tools: [],
+    model,
+    maxTokens: 1024,
+  };
+  try {
+    const res = await completeWithRetry(provider, req, opts?.signal);
+    const text = collectText(res.message.content).trim();
+    return text.length ? text : null;
+  } catch (err) {
+    log.warn(
+      { err: (err as Error).message },
+      "compaction summary failed — falling back to dropping history",
+    );
+    return null;
+  }
+}
+
+async function completeWithRetry(
+  provider: LLMProvider,
+  req: CompletionRequest,
+  signal?: AbortSignal,
+): Promise<CompletionResult> {
+  const maxAttempts = 4;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await provider.complete(req, signal);
+    } catch (err) {
+      lastErr = err;
+      if (attempt === maxAttempts || !isTransientLLMError(err)) throw err;
+      const backoff = Math.min(8000, 500 * 2 ** (attempt - 1));
+      const delayMs = backoff + Math.floor(Math.random() * 250);
+      log.warn(
+        { attempt, maxAttempts, delayMs, provider: provider.id, err: (err as Error).message },
+        "LLM call failed transiently — retrying",
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw lastErr;
 }
 
 // Worth retrying: rate limits, overload, gateway/5xx, and network blips (incl. the

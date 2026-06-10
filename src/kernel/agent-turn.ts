@@ -3,10 +3,11 @@ import { writeFile } from "node:fs/promises";
 import os from "node:os";
 import type { ArtemisConfig } from "../config/schema.js";
 import type { Message, ToolUsePart, ToolResultPart } from "../types.js";
-import { Kernel } from "./agent.js";
+import { Kernel, summarizeConversation } from "./agent.js";
 import { budgetTail, estimateTokens } from "./context-budget.js";
 import { compactCompletedLoops } from "./history-compaction.js";
 import { buildProvider } from "../providers/index.js";
+import type { LLMProvider } from "../providers/base.js";
 import { buildRuntime } from "../runtime/factory.js";
 import { selectBuiltins } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
@@ -14,14 +15,14 @@ import { composeSystemPrompt } from "../brain/composer.js";
 import { appendNowToLastUserMessage } from "../brain/now.js";
 import { loadSkill, listSkills } from "../brain/skills.js";
 import { runSkillBootstraps } from "../brain/skill-bootstrap.js";
-import { loadAgentCommands } from "../brain/commands.js";
+import { loadAgentCommands, detectSlashCommand } from "../brain/commands.js";
 import { loadAgent } from "../brain/agents.js";
 import { resolveProviderKey } from "../providers/resolve.js";
 import { buildSecretsBackend } from "../secrets/store/factory.js";
 import { connectAgentMcp, McpPool } from "../mcp/agent-mcp.js";
 import { autoSaveMemory } from "../memory/auto-save.js";
 import { generateConversationTitle } from "../sessions/title.js";
-import { SessionStore, type PersistedMessage } from "../sessions/store.js";
+import { SessionStore, COMPACTION_CHANNEL, type PersistedMessage } from "../sessions/store.js";
 import { ScheduleStore } from "../sessions/schedule-store.js";
 import { AttachmentStore } from "../attachments/store.js";
 import { readAttachmentTool } from "../tools/attachment.js";
@@ -119,6 +120,28 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     await resolveProviderKey(agent, config, secretsBackend);
     const provider = buildProvider(agent, config);
 
+    // 4b. Built-in /compact — user-triggered persistent compaction, any channel. Handled
+    // here, before the runtime/MCP/tool setup none of which a summarise needs, and
+    // short-circuits the turn: summarise everything since the last marker, persist a reply
+    // plus a fresh compaction marker, and return. A brain-defined commands/compact.md takes
+    // precedence: ingest expands it into a preamble, so the raw "/compact" text below never
+    // matches and the turn runs normally.
+    if (!isSubagent) {
+      const trigger = sessions.tail(sessionId, 1)[0];
+      const compact = trigger ? detectCompactCommand(trigger) : null;
+      if (compact) {
+        const finalText = await runCompactCommand({
+          provider,
+          model: agent.model,
+          sessions,
+          sessionId,
+          historyLimit: config.sessions.historyLimit,
+          focus: compact.focus,
+        });
+        return { status: "complete", finalText, turns: 0 };
+      }
+    }
+
     // 5. Runtime for tool exec. In docker mode this is the agent's own container,
     // so HostRuntime runs commands locally inside the container. Per-agent docker
     // bind/network overrides still apply via the manifest's container block.
@@ -170,7 +193,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     // trim the loaded tail to it up front; otherwise we send the full count-limited tail
     // and let the kernel's reactive on-overflow handling adapt to the model's actual
     // window (we don't bake a context-size assumption into daedalus).
-    const tail = sessions.tail(sessionId, config.sessions.historyLimit);
+    const tail = applyCompactionCut(sessions.tail(sessionId, config.sessions.historyLimit));
     const full = await prepareMessagesForTurn(tail);
     // Compact older completed turn-loops: replace bulky tool_result bodies with stubs once
     // the agent has emitted a final text summary for that loop. Keeps the N most recent loops
@@ -320,6 +343,24 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       sessions.appendMessage({ sessionId, role: m.role, content: m.content });
     }
 
+    // 9a. Persist the compaction. The kernel's in-turn summarise/drop only shrank what was
+    // SENT this turn — the session still holds the full history, so without a persisted cut
+    // every later turn reloads it and overflows again. Summarise the complete final message
+    // list (so nothing the marker cuts off is unaccounted for) and append it as a marker;
+    // applyCompactionCut starts later turns' context there. Best-effort: a summarise failure
+    // just means the next turn pays the reactive path again.
+    if (result.compacted) {
+      try {
+        const summary = await summarizeConversation(provider, agent.model, result.messages);
+        if (summary) {
+          persistCompactionMarker(sessions, sessionId, summary);
+          log.info({ sessionId }, "compaction marker persisted");
+        }
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, "compaction marker failed (ignored)");
+      }
+    }
+
     // 9b. Deterministic memory auto-save. After a TOP-LEVEL turn completes (not a subagent,
     // and not while a question is pending), distil any durable facts from the turn and write
     // them to the memory backend. This runs WHILE the memory MCP is still connected (before
@@ -400,6 +441,98 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     sessions.close();
     scheduleStore.close();
   }
+}
+
+// Cut the loaded tail at the most recent compaction marker. Messages before the marker
+// were summarised INTO the marker's text when a previous turn overflowed, so the model's
+// view starts there — without the cut, every later turn would reload the full history and
+// pay the overflow round-trip again. The marker rides as a user-role message; fold it into
+// an adjacent user message so role alternation stays valid for providers that enforce it.
+// Exported for tests.
+export function applyCompactionCut(tail: PersistedMessage[]): PersistedMessage[] {
+  let idx = -1;
+  for (let i = tail.length - 1; i >= 0; i--) {
+    if (tail[i]!.channel === COMPACTION_CHANNEL) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return tail;
+  const cut = tail.slice(idx);
+  if (cut.length >= 2 && cut[0]!.role === "user" && cut[1]!.role === "user") {
+    const merged: PersistedMessage = { ...cut[1]!, content: [...cut[0]!.content, ...cut[1]!.content] };
+    return [merged, ...cut.slice(2)];
+  }
+  return cut;
+}
+
+function persistCompactionMarker(sessions: SessionStore, sessionId: string, summary: string): void {
+  sessions.appendMessage({
+    sessionId,
+    role: "user",
+    channel: COMPACTION_CHANNEL,
+    content: [
+      {
+        type: "text",
+        text:
+          `[Conversation compacted — messages before this point were summarised to fit ` +
+          `the model's context window. Summary of the earlier conversation:]\n${summary}`,
+      },
+    ],
+  });
+}
+
+// The /compact trigger: a just-ingested user message whose text is the bare slash-command
+// (optionally with a focus hint, e.g. "/compact focus on the deploy plan"). Ingest passes
+// slash-commands the agent doesn't define through verbatim, so the raw text arrives here;
+// session-resume markers ride as separate text parts and don't match. Exported for tests.
+export function detectCompactCommand(msg: PersistedMessage): { focus: string } | null {
+  if (msg.role !== "user") return null;
+  for (const p of msg.content) {
+    if (p.type !== "text") continue;
+    const slash = detectSlashCommand(p.text);
+    if (slash && slash.name === "compact") return { focus: slash.rest.trim() };
+  }
+  return null;
+}
+
+// Execute the built-in /compact: summarise the conversation the model would currently see
+// (the cut tail, minus the /compact trigger itself), persist the user-facing reply and a
+// compaction marker, and hand the reply text back as the turn's result. Summarise failure
+// degrades to an apologetic reply with nothing persisted but the reply. Exported for tests.
+export async function runCompactCommand(args: {
+  provider: LLMProvider;
+  model: string;
+  sessions: SessionStore;
+  sessionId: string;
+  historyLimit: number;
+  focus: string;
+}): Promise<string> {
+  const { provider, model, sessions, sessionId, historyLimit, focus } = args;
+  const tail = applyCompactionCut(sessions.tail(sessionId, historyLimit));
+  const prior = await prepareMessagesForTurn(tail.slice(0, -1));
+  let reply: string;
+  let summary: string | null = null;
+  if (prior.length < 2) {
+    reply = "There's not much conversation to compact yet — carry on, I'll keep up.";
+  } else {
+    summary = await summarizeConversation(provider, model, prior, focus ? { focus } : {});
+    reply = summary
+      ? "🗜️ Compacted. I've summarised our conversation up to here and will work from that " +
+        "summary from now on. The full history is still stored and visible — ask me to recap " +
+        "anything that seems lost."
+      : "I couldn't compact just now — the summarisation call failed. Try again in a moment.";
+  }
+  sessions.appendMessage({
+    sessionId,
+    role: "assistant",
+    content: [{ type: "text", text: reply }],
+  });
+  if (summary) {
+    persistCompactionMarker(sessions, sessionId, summary);
+    log.info({ sessionId, focused: Boolean(focus) }, "manual /compact: marker persisted");
+  }
+  return reply;
 }
 
 // Tail conversion + resume-from-ask_user wiring. If the most recent assistant

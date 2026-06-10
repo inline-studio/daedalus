@@ -15,6 +15,11 @@ import type { Message, ContentPart } from "../types.js";
 // Outbound routing: each persisted message records the inbound channel + external_message_id.
 // For agent-initiated outbound, we look up the user's most-recent inbound channel.
 
+// `channel` value marking a compaction marker message: a user-role row whose text is a
+// model-written summary of everything before it. Replay (agent-turn) cuts the loaded tail
+// at the latest marker; the web UI renders it as a notice instead of a chat bubble.
+export const COMPACTION_CHANNEL = "compaction";
+
 export interface PersistedMessage {
   id: string;
   sessionId: string;
@@ -357,6 +362,18 @@ export class SessionStore {
     this.db.prepare(`UPDATE sessions SET title = ? WHERE id = ?`).run(title, sessionId);
   }
 
+  // Delete all of a conversation's messages but keep the session row. Used to "delete" the
+  // default/"Main" conversation: the row must survive because getOrCreateSession resolves
+  // the default as the OLDEST session — dropping it would silently promote another web
+  // conversation to be every channel's default. Returns false if the session doesn't exist.
+  clearSessionMessages(sessionId: string): boolean {
+    this.ensureFreshConnection();
+    const existing = this.db.prepare(`SELECT id FROM sessions WHERE id = ?`).get(sessionId);
+    if (!existing) return false;
+    this.db.prepare(`DELETE FROM messages WHERE session_id = ?`).run(sessionId);
+    return true;
+  }
+
   // Delete a conversation and all of its messages. Returns false if the session doesn't
   // exist. The caller is responsible for ownership checks.
   deleteSession(sessionId: string): boolean {
@@ -443,9 +460,13 @@ export class SessionStore {
     this.ensureFreshConnection();
     const rows = this.db
       .prepare(
+        // Order by rowid (insertion order), not created_at: timestamps have millisecond
+        // resolution, and a turn persists several rows back-to-back (tool loops, the reply,
+        // a compaction marker) within the same millisecond — created_at ties would make
+        // their replay order nondeterministic.
         `SELECT * FROM (
-           SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT ?
-         ) ORDER BY created_at ASC`,
+           SELECT *, rowid AS rid FROM messages WHERE session_id = ? ORDER BY rowid DESC LIMIT ?
+         ) ORDER BY rid ASC`,
       )
       .all(sessionId, limit) as Array<{
       id: string;
