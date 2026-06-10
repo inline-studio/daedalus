@@ -72,18 +72,30 @@ export async function composeSystemPrompt(input: ComposerInput): Promise<string>
   if (souls.length) parts.push(section("Soul", souls));
   if (personas.length) parts.push(section("Persona", personas));
   if (skills.length) parts.push(section("Skills", [skillMenu(skills)]));
-  if (input.commands && input.commands.length) {
-    const lines = input.commands.map((c) => {
-      const aliases = c.manifest.aliases.length ? ` (alias: ${c.manifest.aliases.join(", ")})` : "";
-      const desc = c.manifest.description ? ` — ${c.manifest.description}` : "";
-      return `- \`/${c.manifest.name}\`${aliases}${desc}`;
-    });
-    parts.push(
-      section("Commands", [
+  // Brain-defined commands expand into a preamble before the message reaches the agent;
+  // built-ins (currently /compact) are handled by the supervisor and never reach it. Both
+  // are listed so the agent can answer "what commands are available?". Subagents skip the
+  // built-ins — channel-level commands don't apply to them.
+  const commandLines = (input.commands ?? []).map((c) => {
+    const aliases = c.manifest.aliases.length ? ` (alias: ${c.manifest.aliases.join(", ")})` : "";
+    const desc = c.manifest.description ? ` — ${c.manifest.description}` : "";
+    return `- \`/${c.manifest.name}\`${aliases}${desc}`;
+  });
+  if (commandLines.length || !input.isSubagent) {
+    const blocks: string[] = [];
+    if (commandLines.length) {
+      blocks.push(
         `When the user's message starts with one of these, the command body is prepended ` +
-          `as a system-style preamble before their message reaches you:\n\n${lines.join("\n")}`,
-      ]),
-    );
+          `as a system-style preamble before their message reaches you:\n\n${commandLines.join("\n")}`,
+      );
+    }
+    if (!input.isSubagent) {
+      blocks.push(
+        `Built-in, handled by the supervisor before a message reaches you:\n\n` +
+          `- \`/compact\` — summarises the conversation so far; later turns continue from the summary`,
+      );
+    }
+    parts.push(section("Commands", blocks));
   }
   if (agentBody) parts.push(section("Agent", [agentBody]));
 

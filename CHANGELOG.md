@@ -25,7 +25,48 @@ Each entry references the PR that introduced the change.
   renamed `SPARK_URL` → `OPENAI_BASE_URL`; set `OPENAI_BASE_URL` and the
   three `GRAPHITI_*` model keys in your compose `.env`. ([#109])
 
+- **Webchat: the Main session is hidden; every web conversation is
+  deletable.** The default/"Main" session is the cross-channel thread
+  (Telegram etc.) and can't safely be dropped (it's resolved as the
+  oldest session for a user+agent — deleting the row would silently
+  promote another web conversation to be the default other channels
+  write into). Instead of showing it with a special non-deletable
+  status, the web sidebar no longer lists it at all: web shows only its
+  own isolated conversations, all deletable, opening the most recent one
+  on load (creating the first if none exist). At the API level,
+  `DELETE /conversations` on the default session clears its history and
+  returns `{ ok: true, cleared: true }` instead of the previous 403.
+  ([#112])
+
 ### Added
+
+- **Persistent auto-compaction.** The kernel's reactive on-overflow
+  summarise/drop only shrank what was sent within a single call — every
+  later turn reloaded the full history and paid the overflow round-trip
+  (and summary cost) again. Now, after a turn that had to shrink its
+  context, the supervisor summarises the full conversation and persists
+  it as a compaction marker in the session; subsequent turns replay only
+  the marker (the summary) plus everything after it. The user is told
+  when it happens (the existing live notice), and the web UI renders the
+  marker inline as a muted system notice in history. Stored history is
+  never deleted — the marker only changes where the model's context
+  starts. ([#112])
+
+- **Built-in `/compact` command.** Sending `/compact` on any channel
+  triggers the same persistent compaction manually: the supervisor
+  summarises the conversation so far (optionally steered, e.g.
+  `/compact focus on the deploy plan`), persists the marker, and replies
+  with a confirmation — the agent itself never runs. Listed in the
+  agent's system-prompt command menu and the web UI's autocomplete. A
+  brain-defined `commands/compact.md` takes precedence over the
+  built-in. ([#112])
+
+- **Webchat: slash-command autocomplete.** New `GET /commands` endpoint
+  lists the slash-commands the default agent accepts (name, description,
+  aliases — resolved from the brain's `commands/` directory per the
+  agent's `commands:` manifest). The chat input shows a menu of matches
+  while the draft is a lone `/word`: ↑/↓ to choose, Tab/Enter to
+  complete, Esc to dismiss, click to fill. ([#112])
 
 - **Webchat: Copy button on code blocks.** Every `<pre><code>` block in
   an assistant reply now has a small "Copy" button in the top-right corner.
@@ -47,6 +88,12 @@ Each entry references the PR that introduced the change.
   is unchanged — this is purely a client-side display change. ([#90])
 
 ### Fixed
+
+- **Deterministic message replay order.** `tail()` ordered messages by
+  `created_at`, whose millisecond resolution ties when a turn persists
+  several rows back-to-back (tool loops, the reply, a compaction marker)
+  — leaving their replay order to SQLite's whim. Now ordered by `rowid`
+  (insertion order). ([#112])
 
 - **Webchat: missing scrollbar in long conversations.** The previous layout
   used `justify-content: flex-end` on the scroll container to anchor
@@ -210,3 +257,4 @@ Significant changes that shipped before this changelog was started:
 [#89]: https://github.com/inline-studio/daedalus/pull/89
 [#90]: https://github.com/inline-studio/daedalus/pull/90
 [#109]: https://github.com/inline-studio/daedalus/pull/109
+[#112]: https://github.com/inline-studio/daedalus/pull/112

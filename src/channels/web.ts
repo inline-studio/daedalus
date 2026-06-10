@@ -1,7 +1,7 @@
 import http from "node:http";
 import type { Channel, ChannelContext, IncomingAttachment, OutgoingMessage } from "./base.js";
 import type { ContentPart } from "../types.js";
-import type { SessionStore, PersistedSession } from "../sessions/store.js";
+import { COMPACTION_CHANNEL, type SessionStore, type PersistedSession } from "../sessions/store.js";
 import { WEB_UI_HTML, WEB_LOGIN_HTML } from "./web-ui.js";
 import { verifyPassword, signSession, verifySession, parseCookies } from "./web-auth.js";
 import { log } from "../log.js";
@@ -31,6 +31,24 @@ interface WebAuth {
   sessionSecret: string;
 }
 
+// A slash-command entry served by GET /commands (name + description + aliases — what the
+// UI's autocomplete needs; the body stays server-side).
+export interface WebCommandInfo {
+  name: string;
+  description: string;
+  aliases: string[];
+}
+
+// Commands handled by the supervisor itself (see agent-turn's /compact short-circuit) —
+// always available, no brain definition needed.
+const BUILTIN_COMMANDS: WebCommandInfo[] = [
+  {
+    name: "compact",
+    description: "Summarise the conversation so far; the assistant continues from the summary",
+    aliases: [],
+  },
+];
+
 export class WebChannel implements Channel {
   readonly id = "web";
   readonly defaultAgent: string;
@@ -51,6 +69,7 @@ export class WebChannel implements Channel {
   // Labels for the "copy conversation" transcript (the attributed Telegram-style export).
   private assistantName: string;
   private userName: string | undefined;
+  private listCommands: (() => Promise<WebCommandInfo[]>) | undefined;
 
   constructor(opts: {
     defaultAgent: string;
@@ -67,6 +86,9 @@ export class WebChannel implements Channel {
     // Optional display name for the human in that transcript. Falls back to the logged-in
     // username (login mode) or "You".
     userName?: string;
+    // Slash-commands available to the default agent, for GET /commands (powers the UI's
+    // autocomplete). Injected by the registry so the channel stays brain-agnostic.
+    listCommands?: () => Promise<WebCommandInfo[]>;
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -76,6 +98,7 @@ export class WebChannel implements Channel {
     this.heartbeatMs = opts.heartbeatMs ?? 20_000;
     this.assistantName = opts.assistantName ?? "Artemis";
     this.userName = opts.userName;
+    this.listCommands = opts.listCommands;
   }
 
   async start(ctx: ChannelContext): Promise<void> {
@@ -153,6 +176,15 @@ export class WebChannel implements Channel {
         }
         if (pathname === "/conversations") {
           await this.handleConversations(req, res, url, loginUser);
+          return;
+        }
+        if (req.method === "GET" && pathname === "/commands") {
+          // Slash-commands for the UI's autocomplete: the built-ins (handled by the
+          // supervisor, available regardless of the brain) plus the default agent's own,
+          // loaded from the brain per request so edits to <brain>/commands/ show up live.
+          const brainCommands = this.listCommands ? await this.listCommands().catch(() => []) : [];
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ commands: [...BUILTIN_COMMANDS, ...brainCommands] }));
           return;
         }
         res.writeHead(404);
@@ -511,7 +543,13 @@ export class WebChannel implements Channel {
           .filter((m) => m.role === "user" || m.role === "assistant")
           // Carry createdAt through as `at` so the client can render the attributed,
           // timestamped "copy conversation" transcript. The chat bubbles ignore it.
-          .map((m) => ({ role: m.role as string, text: partsToText(m.content), at: m.createdAt }))
+          // Compaction markers ride as user-role rows but aren't anything the user said —
+          // surface them as role "notice" so the UI renders them as a system line.
+          .map((m) => ({
+            role: m.channel === COMPACTION_CHANNEL ? "notice" : (m.role as string),
+            text: partsToText(m.content),
+            at: m.createdAt,
+          }))
           .filter((m) => m.text.length > 0)
           .slice(-VISIBLE_CAP);
       } catch (err) {
@@ -525,7 +563,8 @@ export class WebChannel implements Channel {
   // Conversation management for the web UI's separate-sessions feature.
   //   GET    /conversations           → { conversations: [{id,title,createdAt,lastActiveAt}], defaultId }
   //   POST   /conversations           → create a new conversation, returns the created entry
-  //   DELETE /conversations?id=<id>   → delete a conversation (the default/"Main" one is protected)
+  //   DELETE /conversations?id=<id>   → delete a conversation (the default/"Main" one is cleared
+  //                                     instead of dropped — see the handler comment)
   // All operate on the (user, defaultAgent) the page is bound to; ownership is enforced via the
   // resolved user so a client can't touch another user's conversations.
   private async handleConversations(
@@ -600,11 +639,14 @@ export class WebChannel implements Channel {
         json(404, { error: "not found" });
         return;
       }
-      // Protect the default/"Main" conversation — it's shared with non-web channels and is the
-      // fallback every stale id resolves to. Deleting it would orphan that history.
+      // The default/"Main" conversation's ROW must survive: it's shared with non-web channels
+      // and getOrCreateSession resolves the default as the oldest session, so dropping the row
+      // would silently promote another web conversation to be every channel's default. "Delete"
+      // on Main therefore clears its history instead; the conversation entry stays.
       const def = sessions.getOrCreateSession(userId, this.defaultAgent);
       if (s.id === def.id) {
-        json(403, { error: "cannot delete the main conversation" });
+        sessions.clearSessionMessages(id);
+        json(200, { ok: true, cleared: true });
         return;
       }
       sessions.deleteSession(id);

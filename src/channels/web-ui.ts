@@ -136,6 +136,10 @@ export const WEB_UI_HTML = `<!doctype html>
   .copy-btn:hover { background: #30363d; }
   .copy-btn.copied { background: #238636; border-color: #2ea043; color: #fff; }
   .msg.user code, .msg.user pre { background: rgba(0,0,0,.25); border-color: rgba(255,255,255,.2); }
+  /* System notices (e.g. "conversation compacted" markers replayed from /history) —
+     centered, dashed, muted: clearly not something either party said. */
+  .msg.notice { align-self: center; background: transparent; border: 1px dashed #30363d;
+                color: #8b949e; font-size: 12px; max-width: 640px; }
   .msg img { max-width: 100%; border-radius: 8px; margin-top: 6px; }
   .msg a.file { display: inline-block; margin-top: 6px; color: #58a6ff; }
   .msg table { border-collapse: collapse; margin: 8px 0; display: block; overflow-x: auto; max-width: 100%; }
@@ -155,7 +159,18 @@ export const WEB_UI_HTML = `<!doctype html>
   @keyframes think { 0%, 80%, 100% { opacity: .3; transform: translateY(0); }
                      40% { opacity: 1; transform: translateY(-4px); } }
   .meta { font-size: 11px; color: #8b949e; margin: 0 4px; }
-  footer { border-top: 1px solid #21262d; background: #161b22; padding: 10px 14px; }
+  footer { position: relative; border-top: 1px solid #21262d; background: #161b22; padding: 10px 14px; }
+  /* Slash-command autocomplete — floats above the input while the draft is a lone "/prefix";
+     ↑/↓ choose, Tab/Enter complete, Esc dismisses. Populated from GET /commands. */
+  #cmd-menu { position: absolute; bottom: calc(100% + 4px); left: 14px; right: 14px;
+              background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+              box-shadow: 0 -4px 16px rgba(0,0,0,.4); overflow: hidden; display: none; z-index: 11; }
+  #cmd-menu.on { display: block; }
+  #cmd-menu .item { display: flex; gap: 10px; align-items: baseline; padding: 8px 12px; cursor: pointer; }
+  #cmd-menu .item.active { background: #21262d; }
+  #cmd-menu .item .name { font-weight: 600; }
+  #cmd-menu .item .desc { color: #8b949e; font-size: 12px; overflow: hidden;
+                          text-overflow: ellipsis; white-space: nowrap; }
   #chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
   #chips .chip { background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 3px 8px; font-size: 12px; }
   #chips .chip b { cursor: pointer; margin-left: 6px; color: #f85149; }
@@ -211,6 +226,7 @@ export const WEB_UI_HTML = `<!doctype html>
   <div id="log"><div class="empty">No messages yet. Say hello.</div></div>
   <button id="new-pill" type="button">↓ new messages</button>
   <footer>
+    <div id="cmd-menu"></div>
     <div id="chips"></div>
     <div class="row">
       <textarea id="text" rows="1" placeholder="Message Artemis…  (Enter to send, Shift+Enter for newline)"></textarea>
@@ -228,7 +244,8 @@ export const WEB_UI_HTML = `<!doctype html>
   var pending = []; // [{kind, mediaType, filename, base64}]
   var es = null;
   // Separate conversations (Claude.ai-style). convId is the active conversation (session id);
-  // defaultConvId is the "Main" conversation shared with other channels. conversations holds
+  // defaultConvId is the "Main" session shared with other channels — tracked so it can be
+  // filtered OUT of the sidebar (web shows only its own conversations). conversations holds
   // the sidebar list ([{id, title, createdAt, lastActiveAt}]). The active id is remembered in
   // localStorage so a reload reopens the same conversation.
   var convId = LS.getItem("dae_conv") || "";
@@ -631,7 +648,8 @@ export const WEB_UI_HTML = `<!doctype html>
     var convoIdx = convo.length - 1;
     var wasAtBottom = isAtBottom();
     var div = document.createElement("div");
-    div.className = "msg " + (role === "user" ? "user" : "assistant");
+    // "notice" is a system line (e.g. a compaction marker from /history) — neither bubble.
+    div.className = "msg " + (role === "user" ? "user" : role === "notice" ? "notice" : "assistant");
     // Map the bubble back to its convo entry so selection mode can build the transcript.
     div.setAttribute("data-idx", String(convoIdx));
     // Render user messages through md() too. Previously user bubbles were
@@ -815,6 +833,7 @@ export const WEB_UI_HTML = `<!doctype html>
     if (text) maybeTitleCurrent(text);
     addMsg("user", text, atts, new Date().toISOString());
     $("text").value = ""; pending = []; renderChips(); autosize();
+    cmdMatches = []; renderCmdMenu();
     showThinking();
     fetch("/messages", { method: "POST", headers: authHeaders(), body: JSON.stringify(body) })
       .then(function (r) { if (on401(r)) { hideThinking(); return; } if (!r.ok) { hideThinking(); statusEl.textContent = "send failed (" + r.status + ")"; } })
@@ -823,21 +842,92 @@ export const WEB_UI_HTML = `<!doctype html>
 
   function autosize() { var t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; }
   $("text").addEventListener("input", autosize);
-  $("text").addEventListener("keydown", function (e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
   $("send").addEventListener("click", send);
+
+  // --- Slash-command autocomplete -----------------------------------------------------------
+  // GET /commands lists the slash-commands the assistant accepts (name/description/aliases).
+  // While the draft is a lone "/word", a menu of prefix-matches floats above the input.
+  var commands = [];
+  var cmdMatches = [];
+  var cmdIndex = 0;
+  var cmdMenu = $("cmd-menu");
+  function loadCommands() {
+    fetch("/commands", { headers: authHeaders() })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { if (j && j.commands) commands = j.commands; })
+      .catch(function () {});
+  }
+  // The command prefix currently typed, or null when the draft isn't a lone "/word".
+  function cmdPrefix() {
+    var m = $("text").value.match(/^\\/([A-Za-z0-9_-]*)$/);
+    return m ? m[1].toLowerCase() : null;
+  }
+  function renderCmdMenu() {
+    cmdMenu.innerHTML = "";
+    cmdMatches.forEach(function (c, i) {
+      var it = document.createElement("div");
+      it.className = "item" + (i === cmdIndex ? " active" : "");
+      it.setAttribute("data-cmd", c.name);
+      var n = document.createElement("span"); n.className = "name"; n.textContent = "/" + c.name;
+      it.appendChild(n);
+      if (c.description) {
+        var d = document.createElement("span"); d.className = "desc"; d.textContent = c.description;
+        it.appendChild(d);
+      }
+      cmdMenu.appendChild(it);
+    });
+    cmdMenu.classList.toggle("on", cmdMatches.length > 0);
+  }
+  function updateCmdMenu() {
+    var p = cmdPrefix();
+    cmdMatches = p === null ? [] : commands.filter(function (c) {
+      return c.name.toLowerCase().indexOf(p) === 0 ||
+             (c.aliases || []).some(function (a) { return a.toLowerCase().indexOf(p) === 0; });
+    });
+    cmdIndex = 0;
+    renderCmdMenu();
+  }
+  function pickCmd(name) {
+    $("text").value = "/" + name + " ";
+    cmdMatches = []; renderCmdMenu();
+    $("text").focus(); autosize();
+  }
+  // mousedown (not click) so we can preventDefault and keep the textarea focused.
+  cmdMenu.addEventListener("mousedown", function (e) {
+    var it = e.target && e.target.closest && e.target.closest(".item");
+    if (it) { e.preventDefault(); pickCmd(it.getAttribute("data-cmd")); }
+  });
+  $("text").addEventListener("input", updateCmdMenu);
+  $("text").addEventListener("blur", function () { cmdMatches = []; renderCmdMenu(); });
+  $("text").addEventListener("keydown", function (e) {
+    if (cmdMatches.length) {
+      if (e.key === "ArrowDown") { e.preventDefault(); cmdIndex = (cmdIndex + 1) % cmdMatches.length; renderCmdMenu(); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); cmdIndex = (cmdIndex - 1 + cmdMatches.length) % cmdMatches.length; renderCmdMenu(); return; }
+      if (e.key === "Escape") { cmdMatches = []; renderCmdMenu(); return; }
+      if (e.key === "Tab") { e.preventDefault(); pickCmd(cmdMatches[cmdIndex].name); return; }
+      // Enter completes the highlighted command — unless it's already fully typed,
+      // in which case it falls through and sends.
+      if (e.key === "Enter" && !e.shiftKey && cmdMatches[cmdIndex].name !== cmdPrefix()) {
+        e.preventDefault(); pickCmd(cmdMatches[cmdIndex].name); return;
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
 
   $("gear").addEventListener("click", function () { $("settings").classList.toggle("on"); $("uid").textContent = "id: " + uid; $("token").value = token; });
   $("save").addEventListener("click", function () { token = $("token").value.trim(); LS.setItem("dae_token", token); $("settings").classList.remove("on"); connect(); });
 
   // --- Conversations (separate sessions) --------------------------------------------------
-  // The sidebar lists the user's conversations with this assistant. "Main" (defaultConvId) is
-  // the conversation shared with other channels (Telegram etc.) and can't be deleted; every
-  // other entry is an isolated, fresh-context web conversation. Switching one swaps the whole
-  // view: clear the log, load that conversation's history, and reconnect the SSE stream to it.
+  // The sidebar lists the user's web conversations with this assistant. The default/"Main"
+  // session (defaultConvId) is the cross-channel thread (Telegram etc.) — it is HIDDEN here:
+  // web chats are isolated, fresh-context conversations, every one of them deletable. On
+  // load, the most recent web conversation is opened (one is created if none exist yet).
+  // Switching one swaps the whole view: clear the log, load that conversation's history,
+  // and reconnect the SSE stream to it.
 
-  // The display label for a conversation: always "Main" for the default, the auto/explicit
-  // title otherwise, falling back to "New chat" until the first message names it.
-  function convLabel(c) { return c.id === defaultConvId ? "Main" : (c.title || "New chat"); }
+  // The display label for a conversation: the auto/explicit title, falling back to
+  // "New chat" until the first message names it.
+  function convLabel(c) { return c.title || "New chat"; }
 
   function renderConversations() {
     var listEl = $("convo-list");
@@ -850,14 +940,11 @@ export const WEB_UI_HTML = `<!doctype html>
       t.className = "title";
       t.textContent = convLabel(c);
       row.appendChild(t);
-      // The Main conversation is protected server-side; don't offer a delete control for it.
-      if (c.id !== defaultConvId) {
-        var del = document.createElement("button");
-        del.className = "del"; del.type = "button"; del.title = "Delete conversation";
-        del.textContent = "✕";
-        del.setAttribute("data-del", c.id);
-        row.appendChild(del);
-      }
+      var del = document.createElement("button");
+      del.className = "del"; del.type = "button"; del.title = "Delete conversation";
+      del.textContent = "✕";
+      del.setAttribute("data-del", c.id);
+      row.appendChild(del);
       listEl.appendChild(row);
     });
   }
@@ -878,17 +965,38 @@ export const WEB_UI_HTML = `<!doctype html>
     fetch("/conversations?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
       .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
       .then(function (j) {
-        if (j) {
-          conversations = j.conversations || [];
-          defaultConvId = j.defaultId || "";
-          // Reopen the remembered conversation if it still exists; otherwise fall back to Main.
-          var exists = conversations.some(function (c) { return c.id === convId; });
-          if (!convId || !exists) { convId = defaultConvId; LS.setItem("dae_conv", convId); }
-          renderConversations();
+        if (!j) { if (cb) cb(); return; }
+        defaultConvId = j.defaultId || "";
+        // Hide the default/"Main" session — it's the cross-channel (Telegram etc.) thread,
+        // not a web conversation. Web only ever shows (and writes to) its own conversations.
+        conversations = (j.conversations || []).filter(function (c) { return c.id !== defaultConvId; });
+        // Reopen the remembered conversation if it still exists; otherwise fall back to the
+        // most recent web conversation, creating the first one if there are none yet.
+        var exists = conversations.some(function (c) { return c.id === convId; });
+        if (!convId || !exists) {
+          if (!conversations.length) { createFirstConversation(cb); return; }
+          convId = conversations[0].id; LS.setItem("dae_conv", convId);
         }
+        renderConversations();
         if (cb) cb();
       })
       .catch(function (err) { console.error("loadConversations failed", err); if (cb) cb(); });
+  }
+
+  // Bootstrap path: no web conversations exist yet (fresh browser, or the last one was just
+  // deleted) — create one and select it. The server's reuse guardrail makes this idempotent.
+  function createFirstConversation(cb) {
+    fetch("/conversations?externalUserId=" + encodeURIComponent(uid), { method: "POST", headers: authHeaders(), body: "{}" })
+      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (c) {
+        if (c && c.id) {
+          if (!conversations.some(function (x) { return x.id === c.id; })) conversations.unshift(c);
+          convId = c.id; LS.setItem("dae_conv", convId);
+        }
+        renderConversations();
+        if (cb) cb();
+      })
+      .catch(function () { renderConversations(); if (cb) cb(); });
   }
 
   function selectConversation(id) {
@@ -908,7 +1016,7 @@ export const WEB_UI_HTML = `<!doctype html>
   //      server hands back an existing empty chat (its own guardrail), don't duplicate it.
   var creatingConvo = false;
   function newConversation() {
-    var unused = conversations.filter(function (c) { return c.id !== defaultConvId && !c.title; })[0];
+    var unused = conversations.filter(function (c) { return !c.title; })[0];
     if (unused) { selectConversation(unused.id); return; }
     if (creatingConvo) return;
     creatingConvo = true;
@@ -936,10 +1044,17 @@ export const WEB_UI_HTML = `<!doctype html>
         if (on401(r)) return;
         if (!r.ok) { statusEl.textContent = "delete failed (" + r.status + ")"; return; }
         conversations = conversations.filter(function (x) { return x.id !== id; });
-        // If we deleted the conversation we were viewing, drop back to Main.
+        // If we deleted the conversation we were viewing, open the next most recent web
+        // conversation — or bootstrap a fresh one when that was the last.
         if (id === convId) {
-          convId = defaultConvId; LS.setItem("dae_conv", convId);
-          clearLog(); loadHistory(); connect();
+          convId = "";
+          clearLog();
+          if (conversations.length) {
+            convId = conversations[0].id; LS.setItem("dae_conv", convId);
+            loadHistory(); connect();
+          } else {
+            createFirstConversation(function () { loadHistory(); connect(); });
+          }
         }
         renderConversations();
       })
@@ -950,7 +1065,7 @@ export const WEB_UI_HTML = `<!doctype html>
   // the first user message) so the sidebar label updates the instant you hit send.
   function maybeTitleCurrent(text) {
     var c = conversations.filter(function (x) { return x.id === convId; })[0];
-    if (!c || c.id === defaultConvId || c.title) return;
+    if (!c || c.title) return;
     var first = text.split("\\n").map(function (l) { return l.trim(); }).filter(Boolean)[0] || "";
     var t = first.replace(/\\s+/g, " ").trim();
     if (!t) return;
@@ -970,6 +1085,7 @@ export const WEB_UI_HTML = `<!doctype html>
 
   // Load the conversation list first, then open the active one's history + live stream.
   loadConversations(function () { loadHistory(); connect(); });
+  loadCommands();
 })();
 </script>
 </body>
