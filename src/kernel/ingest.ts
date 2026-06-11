@@ -75,9 +75,10 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
   // agent can decide whether it was a typo.
   if (incoming.text) {
     // Skill triggers: plain phrases declared in SKILL.md frontmatter (`triggers:`).
-    // A match prepends a preamble so the skill is surfaced deterministically —
-    // the model still runs the turn, so mixed messages keep working. Skipped for
-    // slash-commands, which have their own expansion below.
+    // A match prepends a preamble with the skill body inlined, so the agent can
+    // act without a load_skill round-trip — the model still runs the turn, so
+    // mixed messages keep working. Skipped for slash-commands, which have their
+    // own expansion below.
     if (!detectSlashCommand(incoming.text)) {
       const preamble = await maybeSkillTriggerPreamble(incoming.text, agentName, args.config);
       if (preamble) inboundParts.push(preamble);
@@ -217,10 +218,12 @@ async function fetchUrl(url: string): Promise<Buffer | null> {
 }
 
 // Check a plain message against the trigger phrases of the receiving agent's
-// skills. On a match, return a preamble part instructing the agent to load the
-// skill and act on the message instead of replying conversationally. Returns
-// null when nothing matches, config is unavailable, or the agent can't be
-// loaded (the dispatcher surfaces that error itself).
+// skills. On a match, return a preamble part carrying the matched skills'
+// instructions inline — mirroring slash-command expansion — so the agent can
+// act on the message in one model call instead of spending a round-trip on
+// load_skill for a file that's already known. Returns null when nothing
+// matches, config is unavailable, or the agent can't be loaded (the dispatcher
+// surfaces that error itself).
 async function maybeSkillTriggerPreamble(
   text: string,
   agentName: string,
@@ -236,25 +239,38 @@ async function maybeSkillTriggerPreamble(
   }
   if (declared.length === 0) return null;
   const skillNames = declared.includes("*") ? await listSkills(config.brain.path) : declared;
-  const manifests = (
+  const skills = (
     await Promise.all(skillNames.map((s) => loadSkill(config.brain.path, s, false)))
-  )
-    .filter((s): s is NonNullable<typeof s> => s !== null)
-    .map((s) => s.manifest);
-  const matches = matchSkillTriggers(text, manifests);
+  ).filter((s): s is NonNullable<typeof s> => s !== null);
+  const matches = matchSkillTriggers(text, skills.map((s) => s.manifest));
   if (matches.length === 0) return null;
   log.info({ matches, agent: agentName }, "skill trigger matched");
   const lines = matches.map(
     (m) => `- "${m.trigger}" is a declared trigger for the skill \`${m.skill}\``,
   );
+  // Inline each matched skill's body once (a skill can declare several trigger
+  // phrases). The instructions are wrapped in clear markers, same as
+  // slash-command expansion, so the agent can tell skill content from user text.
+  const matchedNames = [...new Set(matches.map((m) => m.skill))];
+  const bodies = matchedNames
+    .map((name) => skills.find((s) => s.manifest.name === name))
+    .filter((s): s is NonNullable<typeof s> => s !== undefined)
+    .map(
+      (s) =>
+        `[skill \`${s.manifest.name}\` instructions follow]\n\n` +
+        `${s.body}\n\n` +
+        `[end of \`${s.manifest.name}\` instructions]`,
+    );
   return {
     type: "text",
     text:
       `[skill trigger matched — the message below contains a phrase that maps to a skill:\n` +
       `${lines.join("\n")}\n` +
-      `Load the skill with load_skill and act on the user's message through it rather than ` +
-      `replying with a purely conversational answer — unless the message clearly only ` +
-      `mentions the phrase without intending the action.]`,
+      `The matched skill's instructions are included below — act on the user's message ` +
+      `through them rather than replying with a purely conversational answer — unless the ` +
+      `message clearly only mentions the phrase without intending the action. No load_skill ` +
+      `call is needed for these skills.]\n\n` +
+      bodies.join("\n\n"),
   };
 }
 

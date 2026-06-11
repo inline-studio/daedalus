@@ -17,9 +17,11 @@ Each entry references the PR that introduced the change.
   plain trigger phrases in SKILL.md frontmatter — e.g.
   `triggers: ["good night", "go dark"]`. When a message contains one
   (whole-word, case/punctuation-insensitive), ingest prepends a preamble
-  telling the agent to load the skill and act on the message. The skill-menu
-  description alone is advisory — the model could answer a phrase like
-  "good night" conversationally without reaching for the skill. Triggers
+  carrying the matched skill's instructions inline — same shape as
+  slash-command expansion — so the agent acts in one model call instead of
+  spending a `load_skill` round-trip on a file that's known ahead of time.
+  The skill-menu description alone is advisory — the model could answer a
+  phrase like "good night" conversationally without reaching for the skill. Triggers
   route; they don't bypass: the model still runs the turn, so mixed messages
   ("good night — also, is the back door locked?") keep working. Slash-command
   input skips trigger detection. ([#113])

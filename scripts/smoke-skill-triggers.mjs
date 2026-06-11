@@ -24,6 +24,7 @@ const brainRoot = path.join(tmp, "brain");
 fs.mkdirSync(path.join(brainRoot, "agents"), { recursive: true });
 fs.mkdirSync(path.join(brainRoot, "skills", "home-assistant"), { recursive: true });
 fs.mkdirSync(path.join(brainRoot, "skills", "no-triggers"), { recursive: true });
+fs.mkdirSync(path.join(brainRoot, "skills", "music"), { recursive: true });
 
 fs.writeFileSync(
   path.join(brainRoot, "skills", "home-assistant", "SKILL.md"),
@@ -42,6 +43,16 @@ description: A skill without triggers.
 ---
 
 Body.
+`,
+);
+fs.writeFileSync(
+  path.join(brainRoot, "skills", "music", "SKILL.md"),
+  `---
+description: Play music.
+triggers: ["play some music"]
+---
+
+Queue the request on the speakers.
 `,
 );
 fs.writeFileSync(
@@ -107,6 +118,31 @@ const ingest = async (uid, text) => {
     parts[0]?.slice(0, 90),
   );
   expect("user text is preserved verbatim", parts[1] === "good night artemis");
+  expect(
+    "preamble inlines the skill body",
+    parts[0].includes("Forward the request to HA."),
+    parts[0]?.slice(-90),
+  );
+  expect(
+    "preamble no longer instructs a load_skill round-trip",
+    !/Load the skill with load_skill/.test(parts[0]),
+  );
+}
+
+{
+  // Two skills matched by one message: each body inlined exactly once.
+  const parts = await ingest("u4", "good night, and play some music");
+  const preamble = parts[0];
+  expect(
+    "multi-skill match inlines both bodies",
+    preamble.includes("Forward the request to HA.") &&
+      preamble.includes("Queue the request on the speakers."),
+  );
+  expect(
+    "each body appears exactly once",
+    preamble.split("Forward the request to HA.").length === 2 &&
+      preamble.split("Queue the request on the speakers.").length === 2,
+  );
 }
 
 {
