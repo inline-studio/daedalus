@@ -247,6 +247,9 @@ export const ChannelsConfigSchema = z.object({
       enabled: z.boolean().default(false),
       defaultAgent: z.string(),
       token: z.string(),
+      // Sender allowlist (fail-closed). Only these Telegram chat ids may drive the agent;
+      // UNSET or empty ⇒ ALL inbound messages are rejected. Find your id via @userinfobot.
+      allowedChatIds: z.array(z.coerce.string()).optional(),
     })
     .optional(),
   whatsapp: z

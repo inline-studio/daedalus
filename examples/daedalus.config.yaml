@@ -91,6 +91,9 @@ channels:
   #   enabled: true
   #   defaultAgent: orchestrator
   #   token: ${TELEGRAM_BOT_TOKEN}
+  #   # Fail-closed sender allowlist — REQUIRED, or the bot rejects every message.
+  #   # Get your chat id from @userinfobot on Telegram.
+  #   allowedChatIds: ["123456789"]
   # whatsapp:
   #   enabled: true
   #   defaultAgent: orchestrator

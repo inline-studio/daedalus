@@ -16,11 +16,16 @@ export class TelegramChannel implements Channel {
   private offset = 0;
   private running = false;
   private apiBase: string;
+  // Sender allowlist (fail-closed): only these chat ids may drive the agent. Null when no
+  // allowlist is configured, in which case ALL inbound is rejected — see handleMessage.
+  private allowedChatIds: Set<string> | null;
 
-  constructor(opts: { defaultAgent: string; token: string }) {
+  constructor(opts: { defaultAgent: string; token: string; allowedChatIds?: string[] }) {
     this.defaultAgent = opts.defaultAgent;
     this.token = opts.token;
     this.apiBase = `https://api.telegram.org/bot${this.token}`;
+    this.allowedChatIds =
+      opts.allowedChatIds && opts.allowedChatIds.length ? new Set(opts.allowedChatIds) : null;
   }
 
   async start(ctx: ChannelContext): Promise<void> {
@@ -37,6 +42,13 @@ export class TelegramChannel implements Channel {
     this.running = true;
     void this.pollLoop(ctx);
     log.info({ channel: this.id }, "telegram long-polling started");
+    if (!this.allowedChatIds) {
+      log.warn(
+        { channel: this.id },
+        "telegram: no allowedChatIds configured — ALL inbound messages will be rejected (fail-closed). " +
+          "Add your chat id to channels.telegram.allowedChatIds (get it from @userinfobot).",
+      );
+    }
   }
 
   async stop(): Promise<void> {
@@ -120,6 +132,16 @@ export class TelegramChannel implements Channel {
 
   private async handleMessage(ctx: ChannelContext, m: TelegramMessage): Promise<void> {
     const externalUserId = String(m.chat.id);
+    // Fail-closed authorization: drop anything from a chat id that isn't explicitly
+    // allowlisted, BEFORE downloading any attachments. An unconfigured allowlist (null)
+    // rejects everyone. The rejected id is logged so the operator can discover + add it.
+    if (!this.allowedChatIds || !this.allowedChatIds.has(externalUserId)) {
+      log.warn(
+        { channel: this.id, chatId: externalUserId },
+        "telegram: dropping message from non-allowlisted chat id (add it to channels.telegram.allowedChatIds to permit)",
+      );
+      return;
+    }
     const externalMessageId = String(m.message_id);
     const text = m.text ?? m.caption ?? "";
     const attachments: IncomingAttachment[] = [];
