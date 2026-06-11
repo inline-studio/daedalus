@@ -35,7 +35,7 @@
 | ID | Category | Severity | Location | Description |
 |---|---|---|---|---|
 | SEC-01 | Security | Critical | `channels/telegram.ts:121` | ✅ **DONE** — No sender allowlist — any Telegram user can drive the agent |
-| SEC-02 | Security | Critical | `dispatch/container.ts:161` | Host docker.sock mounted rw into every agent container |
+| SEC-02 | Security | Critical | `dispatch/container.ts:161` | 🟡 **PARTIAL** — Host docker.sock mounted rw into every agent container (interim mitigation applied; broker follow-up deferred) |
 | SEC-03 | Security | High | `dispatch/container.ts:151-207`, `runtime/docker.ts:27-54` | No container hardening (cap-drop, no-new-privileges, pids/memory/cpu limits) |
 | SEC-04 | Security | High | `web/fetch.ts:22-34` | SSRF: no private-IP/metadata/scheme/redirect validation in web_fetch |
 | SEC-05 | Security | High | `kernel/ingest.ts:209-218` | Attachment fetch: SSRF + no size cap + no timeout |
@@ -97,13 +97,26 @@
 ## Detail — Security
 
 ### SEC-01 (Critical) — No sender authorization on Telegram
-**Status: ✅ DONE** — Added a fail-closed `allowedChatIds` allowlist to the telegram config schema (`config/schema.ts`), wired it through `registry.ts`, and enforced it in `TelegramChannel.handleMessage` (drops non-allowlisted chat ids before any attachment download; unconfigured allowlist rejects everyone, with a startup warning + per-rejection chat-id log so the operator can discover their id). Documented in `examples/daedalus.config.yaml`. Scoped to Telegram only — WhatsApp inbound is an unimplemented stub. Type-check clean. _Operator action: set `channels.telegram.allowedChatIds` in the live config (Scott's id: `8724271796`)._
+**Status: ✅ DONE** — Added a fail-closed `allowedChatIds` allowlist to the telegram config schema (`config/schema.ts`), wired it through `registry.ts`, and enforced it in `TelegramChannel.handleMessage` (drops non-allowlisted chat ids before any attachment download; unconfigured allowlist rejects everyone, with a startup warning + per-rejection chat-id log so the operator can discover their id). Documented in `examples/daedalus.config.yaml`. Scoped to Telegram only — WhatsApp inbound is an unimplemented stub. Type-check clean. Commit `133b563`. _Operator action: set `channels.telegram.allowedChatIds` in the live config (Scott's id: `8724271796`)._
 
 **What:** `TelegramChannel.handleMessage` (`channels/telegram.ts:121`) publishes every inbound message to the agent pipeline; `serve.ts:61` dispatches it straight to the agent. There is no allowlist of permitted chat/user IDs anywhere — confirmed by grep across `config/schema.ts` and `channels/*` (no `allow*`/`whitelist` field exists). WhatsApp has the same shape.
 **Why it matters:** The agent has `bash`, container spawn, file, web, and MCP tools. Anyone who discovers the bot handle can issue commands, exfiltrate data, or run up model cost. For a channel exposed to the public Telegram network this is effectively an unauthenticated RCE-capable surface.
 **Fix (described):** Add `allowedChatIds: string[]` (and/or `allowedUserIds`) to the telegram/whatsapp config schema; in `handleMessage`, drop messages whose `m.chat.id` isn't in the list (log at info). Fail closed when the list is empty *and* the channel is reachable beyond localhost.
 
 ### SEC-02 (Critical) — Host Docker socket mounted into every agent container
+**Status: 🟡 PARTIAL (interim mitigation applied; broker follow-up deferred)** — Commit `<pending>`. The `docker.sock` mount is now gated on `manifest.subagents.length > 0` (`dispatch/container.ts` — `dispatch()` derives `mountDockerSock`, threaded through `buildContainerArgs`; fail-closed if the manifest can't load). Leaf agents (e.g. `cypher-php8.5`) — the ones running bash over untrusted web content — no longer receive the host socket; only spawning agents (`artemis`, `cypher`) do, so the cascade still works. Regression coverage added in `scripts/smoke-dispatcher.mjs` (block 11, both branches); smoke + typecheck clean.
+
+**⚠️ This does NOT fully close the finding.** A spawning agent still has the raw socket = host root. See the follow-up below.
+
+#### Follow-up (deferred) — SEC-02-BROKER: remove docker from agent containers entirely
+A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint, not request body, so `POST /containers/create` with `HostConfig.Binds: ["/:/host"]` still escapes to the host fs. The real fix is a **spawn broker**:
+- Agent containers get **no** docker access (no socket, no `DOCKER_HOST`).
+- `spawn_subagent` (in-container) posts `DispatchArgs` to a privileged broker over the docker network — same shape as the existing `PersistentContainerDispatcher` → worker pattern, inverted. New `BrokerDispatcher` (in-container client) selected in `buildDispatcher` when a broker URL is present.
+- The broker is the only component with docker; it runs `ContainerAgentDispatcher`, building `docker run` with the *fixed, safe* mount set and validating the requested agent name against the brain. Agents can't choose mounts/images/flags.
+- Spawned subagents receive the broker URL + token, so cascading (`artemis → cypher → cypher-php8.5`) is preserved at arbitrary depth.
+- Pairs naturally with **SEC-03** (container hardening: `--cap-drop=ALL`, `--security-opt no-new-privileges`, `--pids-limit`, memory/cpu) applied centrally in the broker's arg builder.
+- Scope: new authenticated HTTP endpoint (worker/supervisor), in-container `BrokerDispatcher`, token plumbing, compose changes, deploy-side testing on the live stack. Larger than a single-file edit — schedule as its own change.
+
 **What:** `buildContainerArgs` unconditionally adds `-v /var/run/docker.sock:/var/run/docker.sock` (read-write) to every per-agent container (`dispatch/container.ts:161`). The comment frames it as "so nested subagent spawns work".
 **Why it matters:** Access to the Docker daemon socket is root-equivalent on the host (mount `/` into a new container, run `--privileged`, etc.). An LLM-controlled process with `bash` inside the container can therefore escape to host root, defeating every other isolation measure. This is the single biggest exposure in the codebase.
 **Fix (described):** Don't mount the raw socket. Route subagent spawns through a restricted socket proxy (e.g. `tecnativa/docker-socket-proxy` limited to `container create/start`), or only mount it for agents whose manifest actually declares subagents, and even then read-only behind a proxy. Make it explicit opt-in, off by default.

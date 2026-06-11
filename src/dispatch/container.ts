@@ -23,7 +23,7 @@ import { log } from "../log.js";
 //   - shared         → /shared               (rw — cross-agent scratch)
 //   - sessions.db    → /data/sessions.sqlite (rw)
 //   - attachments    → /data/attachments     (rw)
-//   - docker.sock    → /var/run/docker.sock  (rw, so nested subagent spawns work)
+//   - docker.sock    → /var/run/docker.sock  (rw, ONLY for agents that spawn subagents)
 //   - config dir     → /etc/daedalus         (ro — config + .env)
 //   - dae-runtime    → /dae-runtime          (ro — injected node + daedalus)
 //
@@ -80,8 +80,14 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     const loaded = await loadAgent(this.config.brain.path, args.agentName).catch(() => null);
     const image = loaded?.manifest.container?.image ?? this.opts.defaultImage;
 
+    // SEC-02: the host docker socket is root-equivalent, so only mount it for agents that
+    // actually spawn subagents (they need the daemon to launch child containers). Leaf
+    // agents — the ones running bash over untrusted web content — go without. Fail closed:
+    // if the manifest didn't load, assume no spawn and withhold the socket.
+    const mountDockerSock = (loaded?.manifest.subagents?.length ?? 0) > 0;
+
     const containerName = `dae-${sanitize(args.agentName)}-${Date.now().toString(36)}`;
-    const dockerArgs = this.buildArgs({ containerName, image, args });
+    const dockerArgs = this.buildArgs({ containerName, image, args, mountDockerSock });
 
     log.info(
       { agent: args.agentName, image, container: containerName },
@@ -124,6 +130,7 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     containerName: string;
     image: string;
     args: DispatchArgs;
+    mountDockerSock: boolean;
   }): string[] {
     return buildContainerArgs({
       containerName: opts.containerName,
@@ -131,6 +138,7 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
       dispatchArgs: opts.args,
       opts: this.opts,
       brainWritable: this.config.brain.writable,
+      mountDockerSock: opts.mountDockerSock,
     });
   }
 }
@@ -144,8 +152,11 @@ export function buildContainerArgs(input: {
   dispatchArgs: DispatchArgs;
   opts: ContainerDispatcherOptions;
   brainWritable: boolean;
+  // SEC-02: whether to bind-mount the host docker socket. Only true for agents that spawn
+  // subagents; see the dispatch() call site for the rationale.
+  mountDockerSock: boolean;
 }): string[] {
-  const { containerName, image, dispatchArgs, opts, brainWritable } = input;
+  const { containerName, image, dispatchArgs, opts, brainWritable, mountDockerSock } = input;
   const a: string[] = [];
   if (opts.socket) a.push("-H", opts.socket);
   a.push("run", "--rm", "-i", "--name", containerName);
@@ -158,7 +169,12 @@ export function buildContainerArgs(input: {
   a.push("-v", `${opts.hostSharedPath}:/shared:rw`);
   a.push("-v", `${opts.hostDataPath}:/data:rw`);
   a.push("-v", `${opts.hostConfigDir}:/etc/daedalus:ro`);
-  a.push("-v", "/var/run/docker.sock:/var/run/docker.sock");
+  // SEC-02: root-equivalent — mounted ONLY for spawning agents. A spawning agent still has
+  // full host access via the raw socket; the broker follow-up (AUDIT.md SEC-02) closes that.
+  // This only shrinks the blast radius to agents that genuinely need to launch children.
+  if (mountDockerSock) {
+    a.push("-v", "/var/run/docker.sock:/var/run/docker.sock");
+  }
 
   // Injectable runtime — the Node binary + daedalus install the agent will
   // actually execute. With this, the user's image needs only a posix shell

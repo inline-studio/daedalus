@@ -153,6 +153,7 @@ function fakeConfig() {
     dispatchArgs: { agentName: "vector", sessionId: "sess1", userId: "user1", isSubagent: true },
     opts,
     brainWritable: false,
+    mountDockerSock: false,
   });
   expect(
     "runtime mount present",
@@ -203,6 +204,7 @@ function fakeConfig() {
     dispatchArgs: { agentName: "artemis", sessionId: "s", userId: "u", isSubagent: false },
     opts,
     brainWritable: false,
+    mountDockerSock: false,
   });
   expect("no --entrypoint override in legacy path", !args.includes("--entrypoint"));
   expect("dae prefix present in legacy path", args.includes("dae"));
@@ -227,11 +229,42 @@ function fakeConfig() {
     dispatchArgs: { agentName: "artemis", sessionId: "s", userId: "u", isSubagent: false },
     opts,
     brainWritable: false,
+    mountDockerSock: false,
   });
   expect(
     "forwardEnv MEMPALACE_TOKEN passed as -e to the container",
     args.some((v, i) => args[i - 1] === "-e" && v === "MEMPALACE_TOKEN=tok-123"),
     `args: ${args.join(" ").slice(0, 300)}`,
+  );
+}
+
+// 11. SEC-02: the host docker socket is mounted ONLY when mountDockerSock is true (agents
+// that spawn subagents). Leaf agents must not get it — that's the blast-radius reduction.
+{
+  const opts = {
+    defaultImage: "ghcr.io/test/daedalus:test",
+    network: "daedalus",
+    hostBrainPath: "/host/brain",
+    hostSharedPath: "/host/shared",
+    hostDataPath: "/host/data",
+    hostConfigDir: "/host/etc",
+  };
+  const base = {
+    containerName: "dae-sock",
+    image: "ghcr.io/test/daedalus:test",
+    dispatchArgs: { agentName: "artemis", sessionId: "s", userId: "u", isSubagent: false },
+    opts,
+    brainWritable: false,
+  };
+  const withSock = buildContainerArgs({ ...base, mountDockerSock: true });
+  const withoutSock = buildContainerArgs({ ...base, mountDockerSock: false });
+  expect(
+    "docker.sock mounted when mountDockerSock=true (spawning agent)",
+    withSock.includes("/var/run/docker.sock:/var/run/docker.sock"),
+  );
+  expect(
+    "docker.sock NOT mounted when mountDockerSock=false (leaf agent)",
+    !withoutSock.includes("/var/run/docker.sock:/var/run/docker.sock"),
   );
 }
 
