@@ -399,6 +399,13 @@ export const SkillManifestSchema = z.object({
   // Built-in tools this skill needs at run time (e.g. ['web_search', 'web_fetch']).
   // The runner verifies each is in the agent's tool list before invoking the agent.
   toolsRequired: z.array(z.string()).default([]),
+  // Plain phrases (e.g. "good night") that deterministically surface this skill.
+  // When a user message contains one — whole-word, case/punctuation-insensitive —
+  // ingest prepends a preamble telling the agent to load the skill and act on the
+  // message. Triggers route; they never bypass the model, so mixed messages still
+  // get a full turn. The skill description should keep naming the phrases too, for
+  // the fuzzy variants exact matching can't catch.
+  triggers: z.array(z.string()).default([]),
   // Secret names that must be resolvable (via env or the SecretsBackend) when this skill is loaded.
   // Surfaced as a clear warning at agent start time if missing.
   requires: z

@@ -11,6 +11,19 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Added
+
+- **Skill triggers: deterministic phrase → skill routing.** Skills can declare
+  plain trigger phrases in SKILL.md frontmatter — e.g.
+  `triggers: ["good night", "go dark"]`. When a message contains one
+  (whole-word, case/punctuation-insensitive), ingest prepends a preamble
+  telling the agent to load the skill and act on the message. The skill-menu
+  description alone is advisory — the model could answer a phrase like
+  "good night" conversationally without reaching for the skill. Triggers
+  route; they don't bypass: the model still runs the turn, so mixed messages
+  ("good night — also, is the back door locked?") keep working. Slash-command
+  input skips trigger detection. ([#113])
+
 ### Changed
 
 - **Memory: setup-agnostic model defaults + `SPARK_URL` renamed to
@@ -258,3 +271,4 @@ Significant changes that shipped before this changelog was started:
 [#90]: https://github.com/inline-studio/daedalus/pull/90
 [#109]: https://github.com/inline-studio/daedalus/pull/109
 [#112]: https://github.com/inline-studio/daedalus/pull/112
+[#113]: https://github.com/inline-studio/daedalus/pull/113

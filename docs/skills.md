@@ -41,6 +41,7 @@ name: brave-search            # taken from the directory name; informational her
 description: "Web search via the Brave API."
 version: 1.0.0
 toolsRequired: [web_search]   # built-in tools this skill needs at runtime
+triggers: ["search the web"]  # plain phrases that deterministically surface the skill
 requires:
   secrets: [BRAVE_API_KEY]    # secrets that must resolve when the skill loads
 ---
@@ -58,6 +59,7 @@ the directory, so any value set in frontmatter is ignored.)
 | `description` | No | string — `""` | Short summary. **Shown in the skill menu** — this is all the agent sees until it `load_skill`s the body, so make it clearly say *when* to use the skill. |
 | `version` | No | string — `0.0.0` | Informational. |
 | `toolsRequired` | No | string[] — `[]` | Built-in tools the skill needs. Daedalus checks each is in the agent's `tools:` list before the turn runs, so a missing dependency fails fast instead of mid-task. |
+| `triggers` | No | string[] — `[]` | Plain phrases (e.g. `"good night"`) that deterministically surface the skill. When a message contains one — whole-word, case/punctuation-insensitive — ingest prepends a preamble telling the agent to load the skill and act on the message. Triggers route; the model still runs the turn, so mixed messages ("good night, also is the door locked?") keep working. Keep naming the phrases in `description` too — that covers the fuzzy variants exact matching can't. |
 | `requires.secrets` | No | string[] — `[]` | Secret names that must resolve (env or the secrets backend) when the skill loads. Missing ones surface a clear warning at agent start. |
 
 ## bootstrap.sh — the install script
