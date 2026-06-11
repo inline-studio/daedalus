@@ -6,6 +6,7 @@ import type { Transcriber } from "../attachments/transcribe.js";
 import { formatGap } from "../brain/now.js";
 import { loadAgent } from "../brain/agents.js";
 import { loadAgentCommands, detectSlashCommand, resolveCommand } from "../brain/commands.js";
+import { loadSkill, listSkills, matchSkillTriggers } from "../brain/skills.js";
 import { log } from "../log.js";
 import type { ArtemisConfig } from "../config/schema.js";
 
@@ -73,6 +74,14 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
   // user's args. Unknown / not-allowed commands pass through verbatim so the
   // agent can decide whether it was a typo.
   if (incoming.text) {
+    // Skill triggers: plain phrases declared in SKILL.md frontmatter (`triggers:`).
+    // A match prepends a preamble so the skill is surfaced deterministically —
+    // the model still runs the turn, so mixed messages keep working. Skipped for
+    // slash-commands, which have their own expansion below.
+    if (!detectSlashCommand(incoming.text)) {
+      const preamble = await maybeSkillTriggerPreamble(incoming.text, agentName, args.config);
+      if (preamble) inboundParts.push(preamble);
+    }
     const expanded = await maybeExpandSlashCommand(incoming.text, agentName, args.config);
     for (const part of expanded) inboundParts.push(part);
   }
@@ -205,6 +214,48 @@ async function fetchUrl(url: string): Promise<Buffer | null> {
     log.warn({ url, err }, "fetch attachment failed");
     return null;
   }
+}
+
+// Check a plain message against the trigger phrases of the receiving agent's
+// skills. On a match, return a preamble part instructing the agent to load the
+// skill and act on the message instead of replying conversationally. Returns
+// null when nothing matches, config is unavailable, or the agent can't be
+// loaded (the dispatcher surfaces that error itself).
+async function maybeSkillTriggerPreamble(
+  text: string,
+  agentName: string,
+  config: ArtemisConfig | undefined,
+): Promise<ContentPart | null> {
+  if (!config) return null;
+  let declared: string[];
+  try {
+    const loaded = await loadAgent(config.brain.path, agentName);
+    declared = loaded.manifest.skills;
+  } catch {
+    return null;
+  }
+  if (declared.length === 0) return null;
+  const skillNames = declared.includes("*") ? await listSkills(config.brain.path) : declared;
+  const manifests = (
+    await Promise.all(skillNames.map((s) => loadSkill(config.brain.path, s, false)))
+  )
+    .filter((s): s is NonNullable<typeof s> => s !== null)
+    .map((s) => s.manifest);
+  const matches = matchSkillTriggers(text, manifests);
+  if (matches.length === 0) return null;
+  log.info({ matches, agent: agentName }, "skill trigger matched");
+  const lines = matches.map(
+    (m) => `- "${m.trigger}" is a declared trigger for the skill \`${m.skill}\``,
+  );
+  return {
+    type: "text",
+    text:
+      `[skill trigger matched — the message below contains a phrase that maps to a skill:\n` +
+      `${lines.join("\n")}\n` +
+      `Load the skill with load_skill and act on the user's message through it rather than ` +
+      `replying with a purely conversational answer — unless the message clearly only ` +
+      `mentions the phrase without intending the action.]`,
+  };
 }
 
 // Detect + expand a leading slash-command. Returns a list of ContentParts that

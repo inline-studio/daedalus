@@ -27,6 +27,40 @@ export async function loadSkill(
   }
 }
 
+// A trigger phrase from a skill manifest that matched a user message.
+export interface SkillTriggerMatch {
+  skill: string;
+  trigger: string;
+}
+
+// Lowercase, strip punctuation except intra-word apostrophes ("i'm leaving"),
+// collapse runs of whitespace. Applied to both the message and the trigger so
+// "Good night!" matches the declared phrase "good night".
+function normalizeForTrigger(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}']+/gu, " ")
+    .trim();
+}
+
+// Match a message against the trigger phrases declared by the given skills.
+// A trigger matches when its normalized phrase appears as a whole-word sequence
+// anywhere in the normalized message. At most one match is reported per skill.
+export function matchSkillTriggers(text: string, skills: SkillManifest[]): SkillTriggerMatch[] {
+  const haystack = ` ${normalizeForTrigger(text)} `;
+  const out: SkillTriggerMatch[] = [];
+  for (const skill of skills) {
+    for (const trigger of skill.triggers) {
+      const needle = normalizeForTrigger(trigger);
+      if (needle && haystack.includes(` ${needle} `)) {
+        out.push({ skill: skill.name, trigger });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export async function listSkills(brainPath: string): Promise<string[]> {
   const dir = path.join(brainPath, "skills");
   try {

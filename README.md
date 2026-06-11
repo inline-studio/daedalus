@@ -284,6 +284,7 @@ brain/skills/my-skill/
 ---
 description: "What this skill does — written to clearly signal WHEN to use it."
 toolsRequired: [bash, web_fetch]   # built-in tools the skill leans on
+triggers: ["do the thing"]         # phrases that deterministically surface the skill
 requires:
   secrets: [MY_API_KEY]            # secrets that must resolve when the skill loads
 ---
