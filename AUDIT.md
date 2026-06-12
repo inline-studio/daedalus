@@ -54,12 +54,12 @@
 | SEC-18 | Security | Low | `channels/telegram.ts:23,185` | Bot token embedded in URL strings (latent log/stack-trace leak) |
 | SEC-19 | Security | Low | `web/fetch.ts:80` → `tools/web.ts` | Fetched web content returned to model with no untrusted-content framing (indirect injection) |
 | SEC-20 | Security | Low | `brain/skill-bootstrap.ts:100` | Bootstrap change-detection hash truncated to 64 bits |
-| BUG-01 | Bug | Medium | `dispatch/container.ts:246-263` | Forgeable DispatchResult: any JSON line on agent stdout can spoof the turn result |
-| BUG-02 | Bug | Medium | `scheduler/poller.ts:143` | Recurring fires anchored on wall-clock `now`, not `due_at` → schedule drift |
-| BUG-03 | Bug | Medium | `scheduler/parse-when.ts:50,67`, `scheduler/cron.ts:76` | No timezone passed to croner → schedules fire in host TZ (usually UTC) |
+| BUG-01 | Bug | Medium | `dispatch/container.ts:246-263` | ✅ **DONE** (implemented, commit pending) — Forgeable DispatchResult: any JSON line on agent stdout can spoof the turn result |
+| BUG-02 | Bug | Medium | `scheduler/poller.ts:143` | ⚫ **OBSOLETE** (not a bug) — Recurring fires anchored on wall-clock `now`, not `due_at` → schedule drift |
+| BUG-03 | Bug | Medium | `scheduler/parse-when.ts:50,67`, `scheduler/cron.ts:76` | ⚫ **OBSOLETE** (not a bug) — No timezone passed to croner → schedules fire in host TZ (usually UTC) |
 | BUG-04 | Bug | Medium | `scheduler/poller.ts:68`, `sessions/schedule-store.ts:249-256` | Failed fire returns to `pending` with same `due_at` → infinite retry, no backoff |
-| BUG-05 | Bug | Medium | `providers/anthropic.ts:20`, `providers/openai.ts:24` | Providers advertise `streaming: true` but never stream |
-| BUG-06 | Bug | Medium | `channels/telegram.ts:42-44,101` | `stop()` doesn't abort the in-flight long-poll → up to 30s hang + post-stop dispatch |
+| BUG-05 | Bug | Medium | `providers/anthropic.ts:20`, `providers/openai.ts:24` | ✅ **DONE** (implemented, commit pending) — Providers advertise `streaming: true` but never stream |
+| BUG-06 | Bug | Medium | `channels/telegram.ts:42-44,101` | ✅ **DONE** (implemented, commit pending) — `stop()` doesn't abort the in-flight long-poll → up to 30s hang + post-stop dispatch |
 | BUG-07 | Bug | Low | `providers/anthropic.ts:65-67` | Usage parsing ignores cache token fields → understated input usage |
 | BUG-08 | Bug | Low | `sessions/schedule-store.ts:213` | `claimDue` returns rows with stale `status: "pending"` after flipping to `firing` |
 | BUG-09 | Bug | Low | `scheduler/parse-when.ts:53-61` | Valid cron with no future fire reported as a generic parse error |
@@ -246,16 +246,22 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 ## Detail — Bugs & correctness
 
 ### BUG-01 (Medium) — Forgeable DispatchResult from agent stdout
+**Status: ✅ DONE** — Commit `9962793`. The result line is now framed with `DISPATCH_RESULT_SENTINEL` (`dispatch/base.ts`); the entrypoint (`index.ts`) emits `sentinel + JSON`, and `parseDispatchResult` accepts ONLY a sentinel-framed line. Arbitrary JSON / startup noise on stdout — or a process writing to the container's fd 1 — can no longer be mistaken for or forge the result. Verified by `smoke-dispatch-result` (sentinel parses; forged non-sentinel JSON rejected; real sentinel line wins over a preceding forged line). **Re-assessment:** lower real-world exploitability than the audit implied — daedalus logs go to **stderr** ([log.ts:5](src/log.ts:5)) and bash/tool output is **captured** (not echoed to stdout), so the only injection vector was writing to `/proc/1/fd/1`, and even then bottom-up scanning made the real (last) line win. This is a robustness/determinism hardening.
+
 **What:** `parseDispatchResult` scans stdout bottom-up for the first line starting with `{` that parses as JSON with a valid `status` (`dispatch/container.ts:246-263`). The agent's own tool output (e.g. a `bash` command that prints `{"status":"complete","finalText":"…"}`) is interleaved into the same stdout.
 **Why it matters:** An agent — or any tool it runs — can emit a crafted JSON line that the dispatcher accepts as the authoritative turn result, overriding the real outcome and delivering attacker-chosen `finalText`/`attachments` to the user.
 **Fix (described):** Frame the real result with a unique sentinel prefix (or write it to fd 3 / a file) and parse only sentinel-wrapped lines.
 
 ### BUG-02 (Medium) — Recurring schedule drift
+**Status: ⚫ OBSOLETE (not a real bug; no change made)** — The audit assumed `nextRun` is relative to the anchor time and therefore accumulates poll-latency drift. Empirically it does **not**: croner anchors to **absolute** cron boundaries. Anchoring `nextRun` at the scheduled slot (`12:00:00`), the actual fire time (`12:00:37`), and a mid-interval time (`12:03:47`) all return the identical next fire (`12:10:00`). So the current now-anchored `nextCronFire(row.recurringCron)` already returns the correct next boundary with no drift — and in the "poller fell behind past a boundary" case, now-anchoring is *more* correct (it skips the missed slot instead of firing it late). No code change. _(BUG-03 — the missing timezone — is the genuine scheduling issue and remains open.)_
+
 **What:** `nextCronFire(row.recurringCron)` defaults `after` to `new Date()` (`scheduler/poller.ts:143`), computing the next occurrence from actual fire time (up to one 30s poll interval + processing late) rather than the stored `due_at`.
 **Why it matters:** A `*/10 * * * *` slowly drifts off the :00/:10 boundaries; every fire accumulates poll latency.
 **Fix (described):** Anchor on the scheduled time: `nextCronFire(cron, new Date(row.dueAt))`, guarding against a result still in the past.
 
 ### BUG-03 (Medium) — No timezone for cron
+**Status: ⚫ OBSOLETE (not a real bug; no change made)** — The audit missed that croner uses the **process-local** timezone, which is configured globally via the `TZ` env var: `dae install` prompts "Timezone for scheduling + timestamps" (default = detected OS tz, overridable to e.g. `Europe/London`) and writes `TZ` to the compose `.env` ([install.ts:395-412](src/install.ts:395)); docker-compose passes `TZ: ${TZ:-UTC}` to the supervisor **and** worker ([docker-compose.yml:71,154](docker-compose.yml:71)) where the poller + static cron run. Verified croner honours it: with `TZ=Europe/London`, `0 9 * * *` next-fires at `08:00Z` = 09:00 London. So schedules already fire in the configured zone — not UTC — and there's no need to thread an explicit `timezone` into the `Cron()` options. No code change. (The per-agent `timezone` at schema.ts:443 is separate — it's for the agent's "# Now" time-awareness.)
+
 **What:** Every `new Cron(...)` omits the `timezone` option (`scheduler/parse-when.ts:50,67`, `scheduler/cron.ts:76`), so `"0 9 * * *"` means 9am in the host/container local time (UTC in docker mode).
 **Why it matters:** "Every morning at 9" silently means 9am UTC with no way to specify a zone.
 **Fix (described):** Thread a configured timezone (per-agent `timezone` already exists on the manifest, or a global config) into all croner call sites.
@@ -266,11 +272,15 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Add an attempts/backoff column and dead-letter after N failures (the store comment already flags this).
 
 ### BUG-05 (Medium) — `streaming: true` but no streaming
+**Status: ✅ DONE** — Commit `2854f91`. Both providers now declare `streaming: false` (accurate — `complete()` is a single blocking call, no streaming path exists). Confirmed no code reads `capabilities.streaming`, so this is a metadata-accuracy fix with no behavioural impact (no test needed). Typecheck clean.
+
 **What:** Both providers set `capabilities.streaming = true` (`providers/anthropic.ts:20`, `providers/openai.ts:24`) yet `complete()` makes a single blocking call; no streaming path exists.
 **Why it matters:** Any consumer trusting the flag assumes incremental output the provider can't deliver — a false capability.
 **Fix (described):** Set `streaming: false` until a real streaming path exists.
 
 ### BUG-06 (Medium) — Telegram `stop()` doesn't cancel the long-poll
+**Status: ✅ DONE** — Commit `f6f276e`. `start()` now holds an `AbortController` and the poll-loop promise; `getUpdates` threads the signal into `fetch`; `stop()` clears `running`, aborts the open long-poll, and awaits the loop's exit (and the per-update loop breaks on `!running` so no further batch is dispatched after stop). Verified by `smoke-telegram-stop` (mocked fetch hangs the long-poll; `stop()` returns in ~0ms and the fetch is aborted).
+
 **What:** `stop()` only sets `running = false` (`channels/telegram.ts:42`); the in-flight `getUpdates` (timeout 30s) keeps running and the poll loop isn't awaited or aborted (`:101`).
 **Why it matters:** Shutdown can hang up to ~30s and a final update batch can be dispatched against torn-down dependencies.
 **Fix (described):** Hold an `AbortController`, abort it in `stop()`, and await the poll-loop promise.
