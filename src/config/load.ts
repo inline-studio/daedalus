@@ -31,20 +31,25 @@ export function expandEnv<T>(value: T): T {
   return value;
 }
 
-export function loadConfig(configPath?: string): ArtemisConfig {
+// IMP-03: the ordered list of config-file locations the runtime recognises. Shared so that
+// `dae install`'s ensureConfig looks in exactly the same places loadConfig does — the two
+// hand-rolled lists had drifted (install missed `.yml`/`.json` + some `~/.daedalus` variants).
+export function configCandidates(): string[] {
   const userDir = userConfigDir();
-  const candidates = configPath
-    ? [configPath]
-    : [
-        process.env.DAE_CONFIG,
-        path.join(process.cwd(), "daedalus.config.yaml"),
-        path.join(process.cwd(), "daedalus.config.yml"),
-        path.join(process.cwd(), "daedalus.config.json"),
-        // User-global fallback so a `npm link`'d `dae` works from any cwd.
-        path.join(userDir, "config.yaml"),
-        path.join(userDir, "daedalus.config.yaml"),
-        path.join(userDir, "config.yml"),
-      ].filter((p): p is string => Boolean(p));
+  return [
+    process.env.DAE_CONFIG,
+    path.join(process.cwd(), "daedalus.config.yaml"),
+    path.join(process.cwd(), "daedalus.config.yml"),
+    path.join(process.cwd(), "daedalus.config.json"),
+    // User-global fallback so a `npm link`'d `dae` works from any cwd.
+    path.join(userDir, "config.yaml"),
+    path.join(userDir, "daedalus.config.yaml"),
+    path.join(userDir, "config.yml"),
+  ].filter((p): p is string => Boolean(p));
+}
+
+export function loadConfig(configPath?: string): ArtemisConfig {
+  const candidates = configPath ? [configPath] : configCandidates();
 
   let raw: unknown = null;
   let usedPath: string | null = null;
@@ -63,7 +68,7 @@ export function loadConfig(configPath?: string): ArtemisConfig {
     if (!brain) {
       throw new Error(
         "No daedalus.config.yaml found and BRAIN_PATH is not set. Create a config file at " +
-          `${path.join(userDir, "config.yaml")} (per-user) or ./daedalus.config.yaml (project-local), ` +
+          `${path.join(userConfigDir(), "config.yaml")} (per-user) or ./daedalus.config.yaml (project-local), ` +
           "or export BRAIN_PATH.",
       );
     }
