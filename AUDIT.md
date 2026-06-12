@@ -47,7 +47,7 @@
 | SEC-11 | Security | Medium | `brain/skill-bootstrap.ts:116-125` | ✅ **DONE** — `bootstrap.sh` runs unsandboxed with full `process.env` |
 | SEC-12 | Security | Medium | `channels/format/telegram-html.ts:135-137` | ✅ **DONE** — Link href not attribute-escaped for `"`, no scheme allowlist → HTML attribute injection |
 | SEC-13 | Security | Medium | `cli/update.ts:66-69` | `dae update` runs `npm install -g <tarball>` with no checksum/signature check |
-| SEC-14 | Security | Medium | `setup/env-file.ts:44-47` | Newline in a secret value injects a spurious env var on round-trip |
+| SEC-14 | Security | Medium | `setup/env-file.ts:44-47` | ✅ **DONE** — Newline in a secret value injects a spurious env var on round-trip |
 | SEC-15 | Security | Medium | `mcp/loader.ts:13`, `mcp/client.ts:79-88` | MCP `url` only syntactically validated; SSRF-capable and bypasses the OneCLI proxy |
 | SEC-16 | Security | Low | `brain/skills.ts:18`, `brain/agents.ts:13`, `brain/commands.ts:37` | Latent path traversal in name→path resolution (not currently reachable) |
 | SEC-17 | Security | Low | `web/search/duckduckgo.ts:37-39` | DDG `uddg` redirect target emitted without scheme/host validation |
@@ -189,7 +189,7 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Pass a minimal allowlisted env (PATH + the two `DAE_*` vars); document/enforce trusted-brain provenance.
 
 ### SEC-12 (Medium) — HTML attribute injection in Telegram formatter
-**Status: ✅ DONE** — Commit `<pending>`. The link replacer now escapes `"` → `&quot;` in the URL (the other entities were already encoded upstream) and only emits an `<a>` for safe schemes (`http`/`https`/`tg`/`mailto`); anything else (`javascript:`, `data:`, scheme-less) renders as the plain label. Closes the href attribute break-out and unsafe-scheme links from agent output that quotes attacker-influenced URLs. Verified by `smoke-telegram-format` (quote escaped; `javascript:`/`data:` → plain text; `mailto:` allowed).
+**Status: ✅ DONE** — Commit `4dfe0b7`. The link replacer now escapes `"` → `&quot;` in the URL (the other entities were already encoded upstream) and only emits an `<a>` for safe schemes (`http`/`https`/`tg`/`mailto`); anything else (`javascript:`, `data:`, scheme-less) renders as the plain label. Closes the href attribute break-out and unsafe-scheme links from agent output that quotes attacker-influenced URLs. Verified by `smoke-telegram-format` (quote escaped; `javascript:`/`data:` → plain text; `mailto:` allowed).
 
 **What:** Markdown link URLs are inserted into `href="..."` unescaped for `"`; `htmlEscape` only handles `& < >` (`channels/format/telegram-html.ts:135-137,267`). A URL containing `"` breaks out of the attribute; `javascript:`/`data:` schemes also pass through unvalidated.
 **Why it matters:** Agent output that quotes attacker-influenced URLs (e.g. from a fetched page) can inject attributes/markup into outbound Telegram messages, or produce messages Telegram rejects.
@@ -201,6 +201,8 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Publish + verify a SHA-256 (or sigstore provenance) before install; validate `tag_name` against a strict semver regex.
 
 ### SEC-14 (Medium) — Env-file value injection via newline
+**Status: ✅ DONE** — Commit `<pending>`. `quoteValue` now escapes `\n`/`\r` (so a value stays on one physical line — no injected `KEY=` entry), and the backend's `unquote` decodes them with a single-pass unescape (also fixing the prior sequential double-unescape fragility for `\\`/`\"`). dotenv (the other reader) already decodes `\n` in double-quoted values. `install.ts`'s separate `readEnvFile` left untouched (that's BUG-06). Verified by `smoke-env-file-roundtrip` (a newline-bearing "injection" value round-trips and produces no spurious entry; quotes/backslashes/CR round-trip).
+
 **What:** `quoteValue` (`setup/env-file.ts:44-47`) escapes `\` and `"` but not newlines; a value containing `\n` is written verbatim inside quotes, so re-parsing splits it into a spurious second `KEY=...` line.
 **Why it matters:** A newline in one secret value can inject an arbitrary additional env var or truncate the intended one on the next round-trip.
 **Fix (described):** Reject/strip control characters in `quoteValue`, or encode `\n`/`\r` as escapes and decode on read.

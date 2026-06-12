@@ -28,6 +28,7 @@ const CI_SAFE = [
   "smoke-disable",
   "smoke-dispatcher",
   "smoke-empty-assistant",
+  "smoke-env-file-roundtrip",
   "smoke-error-humanize",
   "smoke-export-mempalace",
   "smoke-frontmatter",

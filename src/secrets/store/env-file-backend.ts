@@ -75,7 +75,11 @@ function escapeRegex(s: string): string {
 
 function unquote(v: string): string {
   if (v.startsWith('"') && v.endsWith('"')) {
-    return v.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    // SEC-14: single-pass unescape so an escaped backslash isn't confused with an escape
+    // sequence (the old sequential replaces could double-decode). Handles \\ \" \n \r.
+    return v.slice(1, -1).replace(/\\([\\"nr])/g, (_, c: string) =>
+      c === "n" ? "\n" : c === "r" ? "\r" : c,
+    );
   }
   return v;
 }
