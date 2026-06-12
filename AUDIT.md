@@ -46,7 +46,7 @@
 | SEC-10 | Security | Medium | `brain/skills.ts:22`, `brain/agents.ts:16`, `brain/commands.ts:40` | ✅ **DONE** — gray-matter `---js` front-matter `eval()`s arbitrary code at file-load |
 | SEC-11 | Security | Medium | `brain/skill-bootstrap.ts:116-125` | ✅ **DONE** — `bootstrap.sh` runs unsandboxed with full `process.env` |
 | SEC-12 | Security | Medium | `channels/format/telegram-html.ts:135-137` | ✅ **DONE** — Link href not attribute-escaped for `"`, no scheme allowlist → HTML attribute injection |
-| SEC-13 | Security | Medium | `cli/update.ts:66-69` | `dae update` runs `npm install -g <tarball>` with no checksum/signature check |
+| SEC-13 | Security | Medium | `cli/update.ts:66-69` | 🟡 **PARTIAL** — `dae update` runs `npm install -g <tarball>` with no checksum/signature check (tag validated; artifact signing deferred to release pipeline) |
 | SEC-14 | Security | Medium | `setup/env-file.ts:44-47` | ✅ **DONE** — Newline in a secret value injects a spurious env var on round-trip |
 | SEC-15 | Security | Medium | `mcp/loader.ts:13`, `mcp/client.ts:79-88` | MCP `url` only syntactically validated; SSRF-capable and bypasses the OneCLI proxy |
 | SEC-16 | Security | Low | `brain/skills.ts:18`, `brain/agents.ts:13`, `brain/commands.ts:37` | Latent path traversal in name→path resolution (not currently reachable) |
@@ -196,12 +196,14 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Use an attribute-escaper that also encodes `"` → `&quot;` for the href, and allowlist `http`/`https`/`tg`/`mailto` (drop the link, keep label text, otherwise).
 
 ### SEC-13 (Medium) — Unverified self-update
+**Status: 🟡 PARTIAL** — Commit `<pending>`. Added `isValidReleaseTag()` — `dae update` now refuses any GitHub `tag_name` that isn't a strict `vMAJOR.MINOR.PATCH[-BUILD]` before it flows into the download URL / install command (verified by `smoke-update-tag`, incl. shell-/path-injection-shaped tags). **The real fix (artifact integrity) is a release-pipeline change, not runtime code** — the latest release publishes only `.tgz` assets (no checksum/signature), and a checksum from the same pipeline wouldn't defend against a GitHub-artifact swap. _Follow-up (needs CI decision): publish a SHA-256 alongside the tarball and verify it in `runUpdate`, or switch to `npm publish --provenance` / sigstore. HTTPS from github.com is the current trust boundary._
+
 **What:** `dae update` builds `https://github.com/.../daedalus-<tag>.tgz` from the GitHub API `tag_name` and runs `npm install -g <tarball>` (which executes install scripts) with no checksum/signature verification (`cli/update.ts:66-69`); `tag_name` is also used unsanitised in the URL.
 **Why it matters:** The installed code is whatever that URL serves; a compromised/MITM'd artifact runs with no detection (HTTPS is the only control).
 **Fix (described):** Publish + verify a SHA-256 (or sigstore provenance) before install; validate `tag_name` against a strict semver regex.
 
 ### SEC-14 (Medium) — Env-file value injection via newline
-**Status: ✅ DONE** — Commit `<pending>`. `quoteValue` now escapes `\n`/`\r` (so a value stays on one physical line — no injected `KEY=` entry), and the backend's `unquote` decodes them with a single-pass unescape (also fixing the prior sequential double-unescape fragility for `\\`/`\"`). dotenv (the other reader) already decodes `\n` in double-quoted values. `install.ts`'s separate `readEnvFile` left untouched (that's BUG-06). Verified by `smoke-env-file-roundtrip` (a newline-bearing "injection" value round-trips and produces no spurious entry; quotes/backslashes/CR round-trip).
+**Status: ✅ DONE** — Commit `de30dbd`. `quoteValue` now escapes `\n`/`\r` (so a value stays on one physical line — no injected `KEY=` entry), and the backend's `unquote` decodes them with a single-pass unescape (also fixing the prior sequential double-unescape fragility for `\\`/`\"`). dotenv (the other reader) already decodes `\n` in double-quoted values. `install.ts`'s separate `readEnvFile` left untouched (that's BUG-06). Verified by `smoke-env-file-roundtrip` (a newline-bearing "injection" value round-trips and produces no spurious entry; quotes/backslashes/CR round-trip).
 
 **What:** `quoteValue` (`setup/env-file.ts:44-47`) escapes `\` and `"` but not newlines; a value containing `\n` is written verbatim inside quotes, so re-parsing splits it into a spurious second `KEY=...` line.
 **Why it matters:** A newline in one secret value can inject an arbitrary additional env var or truncate the intended one on the next round-trip.

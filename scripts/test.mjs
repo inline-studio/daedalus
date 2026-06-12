@@ -59,6 +59,7 @@ const CI_SAFE = [
   "smoke-terminal-modes",
   "smoke-uninstall",
   "smoke-update-inferred",
+  "smoke-update-tag",
   "smoke-wildcard",
   "smoke-wizard-defaults",
   "smoke-wizard-shell",

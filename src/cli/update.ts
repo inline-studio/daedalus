@@ -16,6 +16,13 @@ function currentVersion(): string {
   return pkg.version;
 }
 
+// SEC-13: only accept a strict version tag before using it to build the artifact download URL,
+// so a malformed/hostile GitHub API response can't steer the path. Matches vMAJOR.MINOR.PATCH
+// with an optional -BUILD suffix (the project's tag shape, e.g. v0.1.0-134). Exported for tests.
+export function isValidReleaseTag(tag: string): boolean {
+  return /^v?\d+\.\d+\.\d+(?:-\d+)?$/.test(tag);
+}
+
 function semverGt(a: string, b: string): boolean {
   const parse = (v: string) => {
     const s = v.replace(/^v/, "");
@@ -47,6 +54,13 @@ export async function runUpdate(opts: { check?: boolean; config?: string } = {})
   } catch (err) {
     process.stdout.write("failed\n");
     console.error(`Could not check for updates: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  // SEC-13: validate the tag before it flows into the download URL / install command.
+  if (!isValidReleaseTag(release.tag_name)) {
+    process.stdout.write("failed\n");
+    console.error(`Refusing to update: release tag '${release.tag_name}' is not a valid version string.`);
     process.exit(1);
   }
 
