@@ -66,8 +66,8 @@
 | BUG-10 | Bug | Low | `web/markdown.ts:69-82` | ✅ **DONE** — `byteLength` reported pre-truncation when content was truncated |
 | BUG-11 | Bug | Low | `web/fetch.ts:52-61` | ✅ **DONE** — Byte-cap truncation can split a multibyte UTF-8 sequence |
 | BUG-12 | Bug | Low | `attachments/store.ts:36-40` | `putBuffer` check-then-act, non-atomic write (partial-read race) |
-| BUG-13 | Bug | Low | `channels/telegram.ts:124,158` | Caption + failed media download silently drops the media |
-| BUG-14 | Bug | Low | `channels/whatsapp.ts:39-54` | Outbound send ignores `res.ok` → failed WhatsApp sends vanish silently |
+| BUG-13 | Bug | Low | `channels/telegram.ts:124,158` | ✅ **DONE** — Caption + failed media download silently drops the media |
+| BUG-14 | Bug | Low | `channels/whatsapp.ts:39-54` | ✅ **DONE** — Outbound send ignores `res.ok` → failed WhatsApp sends vanish silently |
 | BUG-15 | Bug | Low | `kernel/agent-turn.ts:99` | `runSkillBootstraps` result discarded → bootstrap failures invisible to the turn |
 | BUG-16 | Bug | Low | `config/load.ts:18-22` | Unresolved `${VAR}` becomes `""` → missing secrets pass schema validation |
 | BUG-17 | Bug | Low | `dispatch/container.ts:100-121` | Container only force-removed on timeout; other failure paths can leak containers |
@@ -303,13 +303,13 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Include the cache token fields in normalized usage.
 
 ### BUG-08 (Low) — `claimDue` returns stale status
-**Status: ✅ DONE** — Commit `<pending-bugsched>`. `claimDue` now returns each claimed row with `status: "firing"` (the just-applied transition). Verified.
+**Status: ✅ DONE** — Commit `2c20f56`. `claimDue` now returns each claimed row with `status: "firing"` (the just-applied transition). Verified.
 **What:** `out.push(rowToScheduledMessage(row))` pushes the pre-UPDATE SELECT row whose `status` is still `"pending"` after the row was flipped to `"firing"` (`sessions/schedule-store.ts:213`).
 **Why it matters:** Harmless today (the poller never reads it) but a latent trap for any future consumer.
 **Fix (described):** Overwrite `status: "firing"` on the returned object after a successful update.
 
 ### BUG-09 (Low) — Misleading cron parse error
-**Status: ✅ DONE** — Commit `<pending-bugsched>`. Only the croner *parse* stays in the try (genuine syntax errors → "couldn't parse"); a valid-but-never-firing cron (`nextRun → null`) now gets its own clear "valid but has no upcoming fire time" message. Verified (`0 0 30 2 *` → no-fire message; garbage → parse error).
+**Status: ✅ DONE** — Commit `2c20f56`. Only the croner *parse* stays in the try (genuine syntax errors → "couldn't parse"); a valid-but-never-firing cron (`nextRun → null`) now gets its own clear "valid but has no upcoming fire time" message. Verified (`0 0 30 2 *` → no-fire message; garbage → parse error).
 **What:** The `if (!next) throw …"no future fire"` is inside the try whose catch rewrites every error to "must be in N minutes/…" (`scheduler/parse-when.ts:53-61`).
 **Why it matters:** A valid-but-never-firing cron is reported as unparseable.
 **Fix (described):** Move the `!next` check outside the try/catch.
@@ -332,11 +332,13 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Write to a temp file + atomic `rename`, or use the `wx` flag and ignore `EEXIST`.
 
 ### BUG-13 (Low) — Silent media drop on failed download
+**Status: ✅ DONE** — Commit `<pending-bugchan>`. `handleMessage` tracks a `mediaFailed` flag across the photo/voice/document download branches and, when a download returns null, appends a note to the message text ("a file was attached but couldn't be downloaded — ask the user to resend") instead of acting on the caption alone.
 **What:** A caption-only message whose media download returns null (`channels/telegram.ts:124,158`) is published as text with the media silently dropped (warn-logged only).
 **Why it matters:** Silent data loss with no user-visible signal.
 **Fix (described):** Append a "[attachment failed to download]" note, or retry.
 
 ### BUG-14 (Low) — WhatsApp send ignores HTTP status
+**Status: ✅ DONE** — Commit `<pending-bugchan>`. `send` now awaits the fetch in a try/catch (network errors logged) and checks `res.ok`, logging the status + body on a 4xx/5xx so a failed send is diagnosable.
 **What:** The outbound POST `.catch()`es network errors but never checks `res.ok` (`channels/whatsapp.ts:39-54`), so a 4xx/5xx (bad/expired token, rate-limit) is silently ignored.
 **Why it matters:** Failed sends vanish with zero diagnostics, unlike the telegram path.
 **Fix (described):** Check `res.ok` and log status+body on failure.

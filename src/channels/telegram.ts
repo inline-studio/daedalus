@@ -155,28 +155,21 @@ export class TelegramChannel implements Channel {
       return;
     }
     const externalMessageId = String(m.message_id);
-    const text = m.text ?? m.caption ?? "";
+    let text = m.text ?? m.caption ?? "";
     const attachments: IncomingAttachment[] = [];
+    let mediaFailed = false;
 
     if (m.photo && m.photo.length) {
       // Telegram returns multiple sizes; pick the largest.
       const best = m.photo[m.photo.length - 1]!;
       const data = await this.downloadFile(best.file_id);
-      if (data)
-        attachments.push({
-          kind: "image",
-          mediaType: "image/jpeg",
-          data,
-        });
+      if (data) attachments.push({ kind: "image", mediaType: "image/jpeg", data });
+      else mediaFailed = true;
     }
     if (m.voice) {
       const data = await this.downloadFile(m.voice.file_id);
-      if (data)
-        attachments.push({
-          kind: "audio",
-          mediaType: m.voice.mime_type ?? "audio/ogg",
-          data,
-        });
+      if (data) attachments.push({ kind: "audio", mediaType: m.voice.mime_type ?? "audio/ogg", data });
+      else mediaFailed = true;
     }
     if (m.document) {
       const data = await this.downloadFile(m.document.file_id);
@@ -187,6 +180,15 @@ export class TelegramChannel implements Channel {
           ...(m.document.file_name ? { filename: m.document.file_name } : {}),
           data,
         });
+      else mediaFailed = true;
+    }
+
+    // BUG-13: a file was attached but couldn't be downloaded — don't silently drop it; tell the
+    // agent so it can ask the user to resend, rather than acting on the caption alone.
+    if (mediaFailed) {
+      text =
+        (text ? text + "\n\n" : "") +
+        "[A file was attached to this message but couldn't be downloaded — ask the user to resend it.]";
     }
 
     if (!text && attachments.length === 0) return;

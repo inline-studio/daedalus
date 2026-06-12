@@ -39,17 +39,29 @@ export class WhatsappChannel implements Channel {
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {
     if (!msg.text) return;
     const url = `https://graph.facebook.com/v20.0/${this.phoneNumberId}/messages`;
-    await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.accessToken}`,
-      },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: externalUserId,
-        text: { body: msg.text },
-      }),
-    }).catch((err) => log.error({ err }, "whatsapp send failed"));
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.accessToken}`,
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to: externalUserId,
+          text: { body: msg.text },
+        }),
+      });
+    } catch (err) {
+      log.error({ err }, "whatsapp send failed (network error)");
+      return;
+    }
+    // BUG-14: a 4xx/5xx (bad/expired token, rate-limit) was silently swallowed before; surface
+    // it with the status + body so a failed send is diagnosable.
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      log.error({ status: res.status, body }, "whatsapp send failed");
+    }
   }
 }
