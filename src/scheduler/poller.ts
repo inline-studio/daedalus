@@ -64,8 +64,19 @@ export function startSchedulePoller(
       log.info({ count: due.length }, "schedule poller: firing due rows");
       for (const row of due) {
         await fireOne(row, deps).catch((err) => {
-          log.error({ id: row.id, err }, "schedule fire failed; will retry");
-          deps.store.markFailed(row.id);
+          // BUG-04: back off + dead-letter instead of re-firing every tick forever.
+          const outcome = deps.store.markFailed(row.id);
+          if (outcome.deadLettered) {
+            log.error(
+              { id: row.id, err, attempts: outcome.attempts },
+              "schedule fire failed — dead-lettered after max attempts",
+            );
+          } else {
+            log.warn(
+              { id: row.id, err, attempts: outcome.attempts, nextDueAt: outcome.nextDueAt },
+              "schedule fire failed — backing off and will retry",
+            );
+          }
         });
       }
     } finally {

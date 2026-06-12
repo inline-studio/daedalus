@@ -63,6 +63,17 @@ export const RuntimeConfigSchema = z.object({
       containerPath: z.string().default("/shared"),
     })
     .default({ enabled: true, hostPath: "./data/shared", containerPath: "/shared" }),
+  // SEC-03: default resource limits applied to EVERY agent container. Deliberately
+  // CONSERVATIVE (1 CPU / 1 GB / 512 pids) so a runaway agent can't starve co-located
+  // services or take down the host — an agent that needs more raises them in its own
+  // `container:` frontmatter. cap-drop=ALL + no-new-privileges are always on (not configurable).
+  limits: z
+    .object({
+      memory: z.coerce.string().default("1g"), // docker --memory
+      cpus: z.coerce.string().default("1"), // docker --cpus (string permits "1.5")
+      pidsLimit: z.coerce.number().int().positive().default(512), // docker --pids-limit
+    })
+    .default({ memory: "1g", cpus: "1", pidsLimit: 512 }),
 });
 export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
 
@@ -103,7 +114,6 @@ export type SecretsConfig = z.infer<typeof SecretsConfigSchema>;
 
 export const McpConfigSchema = z.object({
   configPath: z.string().optional(), // file or directory of *.json
-  inline: z.record(z.unknown()).optional(), // { servers: { name: { command, args, env, transport } } }
 });
 export type McpConfig = z.infer<typeof McpConfigSchema>;
 
@@ -247,6 +257,9 @@ export const ChannelsConfigSchema = z.object({
       enabled: z.boolean().default(false),
       defaultAgent: z.string(),
       token: z.string(),
+      // Sender allowlist (fail-closed). Only these Telegram chat ids may drive the agent;
+      // UNSET or empty ⇒ ALL inbound messages are rejected. Find your id via @userinfobot.
+      allowedChatIds: z.array(z.coerce.string()).optional(),
     })
     .optional(),
   whatsapp: z
@@ -282,10 +295,23 @@ export const WebConfigSchema = z.object({
       maxBytes: z.number().int().positive().default(1_000_000),
       timeoutMs: z.number().int().positive().default(20_000),
       userAgent: z.string().optional(),
+      // SEC-04: web_fetch blocks private/loopback/link-local/metadata destinations by default.
+      // List exact hostnames here to explicitly permit an internal host (e.g. a self-hosted
+      // service the agent must reach via web_fetch). Empty = deny all internal.
+      allowHosts: z.array(z.string()).default([]),
     })
     .default({ maxBytes: 1_000_000, timeoutMs: 20_000 }),
 });
 export type WebConfig = z.infer<typeof WebConfigSchema>;
+
+// Limits for fetching inbound attachments supplied as a URL (rather than inline bytes).
+// SEC-05: the attachment fetch is SSRF-guarded (reusing web.fetch.allowHosts), size-capped,
+// and time-bounded. The cap defaults high enough for images/PDFs; raise it for video stores.
+export const AttachmentsConfigSchema = z.object({
+  maxFetchBytes: z.number().int().positive().default(25_000_000), // 25 MB
+  fetchTimeoutMs: z.number().int().positive().default(30_000),
+});
+export type AttachmentsConfig = z.infer<typeof AttachmentsConfigSchema>;
 
 export const BrainConfigSchema = z.object({
   path: z.string(),
@@ -342,6 +368,7 @@ export const ArtemisConfigSchema = z.object({
     search: { provider: "none" },
     fetch: { maxBytes: 1_000_000, timeoutMs: 20_000 },
   }),
+  attachments: AttachmentsConfigSchema.default({}),
 });
 export type ArtemisConfig = z.infer<typeof ArtemisConfigSchema>;
 
@@ -352,8 +379,34 @@ export const AgentContainerSchema = z.object({
   bind: z.array(z.string()).default([]), // "host:container[:ro]"
   env: z.record(z.string()).default({}),
   network: z.string().optional(),
+  // SEC-03: per-agent resource overrides. Omit to inherit the conservative global defaults
+  // (runtime.limits → 1 CPU / 1 GB / 512 pids). Raise for heavy leaves (builds, media).
+  memory: z.coerce.string().optional(), // docker --memory, e.g. "4g"
+  cpus: z.coerce.string().optional(), // docker --cpus, e.g. "2"
+  pidsLimit: z.coerce.number().int().positive().optional(),
 });
 export type AgentContainer = z.infer<typeof AgentContainerSchema>;
+
+// SEC-03: resolve a container's effective resource limits — a per-agent `container:` override
+// falls back to the conservative global defaults (runtime.limits). Used by both container
+// launch paths (the per-turn dispatcher container and the host-mode DockerRuntime).
+export interface ResolvedLimits {
+  memory: string;
+  cpus: string;
+  pidsLimit: number;
+}
+export function resolveContainerLimits(
+  container:
+    | { memory?: string | undefined; cpus?: string | undefined; pidsLimit?: number | undefined }
+    | undefined,
+  defaults: ResolvedLimits,
+): ResolvedLimits {
+  return {
+    memory: container?.memory ?? defaults.memory,
+    cpus: container?.cpus ?? defaults.cpus,
+    pidsLimit: container?.pidsLimit ?? defaults.pidsLimit,
+  };
+}
 
 export const AgentManifestSchema = z.object({
   name: z.string(),

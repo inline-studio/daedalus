@@ -37,6 +37,9 @@ export class DuckDuckGoProvider implements SearchProvider {
       const m = href.match(/[?&]uddg=([^&]+)/);
       if (m) href = decodeURIComponent(m[1]!);
       if (href.startsWith("//")) href = "https:" + href;
+      // SEC-17: only emit http/https results — a scraped redirect target could otherwise carry
+      // a javascript:/data:/internal-scheme URL that later flows into web_fetch.
+      if (href && !/^https?:\/\//i.test(href)) continue;
       const snippet = el.querySelector(".result__snippet")?.text.trim() ?? "";
       const source = el.querySelector(".result__url")?.text.trim() ?? "";
       if (title && href) out.push({ title, url: href, snippet, source });

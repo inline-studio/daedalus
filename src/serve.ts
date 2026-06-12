@@ -152,6 +152,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     attachments,
     transcriber,
     dispatcher,
+    bus, // IMP-10: lets a schedule with `deliverTo` push its reply to a real channel/user
   });
 
   // Runtime scheduling: poll the ScheduleStore for due rows armed by agents

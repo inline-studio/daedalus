@@ -21,7 +21,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   readonly id: string;
   readonly capabilities: ProviderCapabilities = {
     tools: true,
-    streaming: true,
+    streaming: false, // BUG-05: complete() is a single blocking call — no streaming path exists
     vision: false, // depends on backend; mark per model later
     systemPromptAsField: false, // OpenAI uses a system message
   };

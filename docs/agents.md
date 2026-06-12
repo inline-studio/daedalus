@@ -84,7 +84,7 @@ filename, so any value set in frontmatter is ignored.)
 | `personas` | No | string[] — `[]` | Role framing from `brain/personas/`. Same empty=all rule. |
 | `standards` | No | string[] — `[]` | Cross-cutting rules from `brain/standards/`. Empty = all. |
 | `operations` | No | string[] — `[]` | Playbooks from `brain/operations/`. Empty = all. |
-| `container` | No | object | Run this agent's `bash` in a specific image — see below. Omit to run in the warm agent runtime. |
+| `container` | No | object | Run this agent's `bash` in a specific image, and set per-agent resource limits (`memory`/`cpus`/`pidsLimit`) — see below. Omit to run in the warm agent runtime (still subject to the conservative default limits). |
 | `timeAware` | No | bool — `true` | Inject the current date/time into the prompt each turn. |
 | `timezone` | No | string — system tz | IANA tz (e.g. `Europe/London`); defaults to the system tz. |
 
@@ -101,6 +101,9 @@ container:
   bind: ["/host/path:/in/container:ro"]
   env: { FOO: bar }
   network: some-network      # optional
+  memory: 4g                 # optional — overrides the global default (1g)
+  cpus: 2                    # optional — overrides the global default (1)
+  pidsLimit: 1024            # optional — overrides the global default (512)
 ```
 
 This controls **where the agent's `bash` runs** — and it's a real tradeoff:
@@ -119,6 +122,29 @@ This controls **where the agent's `bash` runs** — and it's a real tradeoff:
 Rule of thumb: **orchestrator / browser / interactive work → omit `container.image`**
 (runs warm). **Per-language build/test leaves → set `container.image`** to the right
 toolchain image (`dev-node`, `dev-python`, `dev-php-8.3`, …).
+
+#### Resource limits & hardening
+
+> ⚠️ **Every agent container runs with conservative resource limits by default.** This is
+> deliberate: a runaway agent must not be able to exhaust the host and take down co-located
+> services (e.g. your DNS resolver) or the whole box.
+
+| Limit | **Default** | Per-agent override | Global default |
+|---|---|---|---|
+| Memory (`--memory`) | **1 GB** | `container.memory` (e.g. `4g`) | `runtime.limits.memory` |
+| CPUs (`--cpus`) | **1** | `container.cpus` (e.g. `2`) | `runtime.limits.cpus` |
+| PIDs (`--pids-limit`) | **512** | `container.pidsLimit` | `runtime.limits.pidsLimit` |
+
+An agent that omits `container:` entirely **still gets these defaults**. Raise them per-agent
+for heavy leaves (a `cypher-php8.5` doing a big build might want `memory: 4g`, `cpus: 2`);
+leave a light agent like `triage` on the 1 CPU / 1 GB default. Change the global floor under
+`runtime.limits` in `daedalus.config.yaml`.
+
+Every container is also hardened with `--cap-drop=ALL` and `--security-opt=no-new-privileges`
+(always on, not configurable). Containers run as **non-root (uid 1000)**, so this closes
+residual privilege-escalation paths without affecting normal userspace work. A command that
+needs elevated privileges (e.g. `apt-get install` at runtime) **fails by design** — bake the
+tooling your agents need into the image rather than installing it per-turn.
 
 #### In-line.studio default images
 

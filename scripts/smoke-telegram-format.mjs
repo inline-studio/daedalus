@@ -68,6 +68,28 @@ eq("__bold__ -> <b>", markdownToTelegramHtml("a __b__ c"), "a <b>b</b> c");
 eq("*italic* -> <i>", markdownToTelegramHtml("a *b* c"), "a <i>b</i> c");
 eq("~~strike~~ -> <s>", markdownToTelegramHtml("a ~~b~~ c"), "a <s>b</s> c");
 eq("[label](url) -> <a>", markdownToTelegramHtml("see [docs](https://x.com/d)"), 'see <a href="https://x.com/d">docs</a>');
+// SEC-12: a quote in the URL must be escaped so it can't break out of the href attribute.
+eq(
+  "SEC-12: quote in URL is escaped (no attribute break-out)",
+  markdownToTelegramHtml('[a](https://a.com/x"y)'),
+  '<a href="https://a.com/x&quot;y">a</a>',
+);
+// SEC-12: unsafe / scheme-less URLs render as the plain label, never a link.
+eq(
+  "SEC-12: javascript: link renders as plain text",
+  markdownToTelegramHtml("click [here](javascript:alert)"),
+  "click here",
+);
+eq(
+  "SEC-12: data: link renders as plain text",
+  markdownToTelegramHtml("[x](data:foo)"),
+  "x",
+);
+eq(
+  "SEC-12: mailto link is allowed",
+  markdownToTelegramHtml("[mail](mailto:a@b.com)"),
+  '<a href="mailto:a@b.com">mail</a>',
+);
 eq("`inline code` -> <code>", markdownToTelegramHtml("use `cd /tmp`"), "use <code>cd /tmp</code>");
 
 // ─── 3. order — bold before italic ───────────────────────────────────────────

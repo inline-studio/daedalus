@@ -1,27 +1,27 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import matter from "gray-matter";
+import { parseFrontmatter } from "./frontmatter.js";
+import { assertUnderBrain } from "./safe-path.js";
 import { SkillManifestSchema, type SkillManifest } from "../config/schema.js";
 
 export interface LoadedSkill {
   manifest: SkillManifest;
   body: string;
   rootPath: string; // skill directory
-  readOnly: boolean;
 }
 
 export async function loadSkill(
   brainPath: string,
   skillName: string,
-  writable: boolean,
 ): Promise<LoadedSkill | null> {
   const root = path.join(brainPath, "skills", skillName);
   const skillFile = path.join(root, "SKILL.md");
   try {
+    assertUnderBrain(brainPath, root);
     const text = await fs.readFile(skillFile, "utf8");
-    const fm = matter(text);
+    const fm = parseFrontmatter(text);
     const manifest = SkillManifestSchema.parse({ ...(fm.data as object), name: skillName });
-    return { manifest, body: fm.content.trim(), rootPath: root, readOnly: !writable };
+    return { manifest, body: fm.content.trim(), rootPath: root };
   } catch {
     return null;
   }

@@ -36,7 +36,12 @@ export class AttachmentStore {
     try {
       await fs.access(file);
     } catch {
-      await fs.writeFile(file, data);
+      // BUG-12: write to a temp file then atomically rename, so a concurrent reader never sees a
+      // partially-written file. Content is sha-addressed, so a writer race just means one wins
+      // (identical bytes); rename is atomic and overwrites.
+      const tmp = `${file}.tmp-${crypto.randomBytes(6).toString("hex")}`;
+      await fs.writeFile(tmp, data);
+      await fs.rename(tmp, file);
     }
     return {
       ref: `sha256:${sha}`,

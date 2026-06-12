@@ -66,6 +66,7 @@ export function buildChannels(
       new TelegramChannel({
         defaultAgent: config.telegram.defaultAgent,
         token: config.telegram.token,
+        ...(config.telegram.allowedChatIds ? { allowedChatIds: config.telegram.allowedChatIds } : {}),
       }),
     );
   }

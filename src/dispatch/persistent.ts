@@ -1,6 +1,7 @@
 import { Agent } from "undici";
 import type { ArtemisConfig } from "../config/schema.js";
 import type { AgentDispatcher, DispatchArgs, DispatchResult } from "./base.js";
+import { originFields } from "./base.js";
 import { log } from "../log.js";
 
 // The worker POST must bypass the global undici dispatcher. The supervisor applies
@@ -32,10 +33,7 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
       sessionId: args.sessionId,
       userId: args.userId,
       isSubagent: args.isSubagent,
-      ...(args.originChannel ? { originChannel: args.originChannel } : {}),
-      ...(args.originExternalUserId
-        ? { originExternalUserId: args.originExternalUserId }
-        : {}),
+      ...originFields(args),
     });
 
     // A turn can take a while (LLM + tools), so don't impose a tight timeout —
@@ -77,7 +75,14 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
         }
         throw new Error(`agent worker turn failed (HTTP ${res.status}): ${detail}`);
       }
-      return (await res.json()) as DispatchResult;
+      // BUG-18: validate the worker response shape before trusting it as a DispatchResult.
+      const parsed = (await res.json()) as DispatchResult;
+      if (parsed?.status !== "complete" && parsed?.status !== "pending_question") {
+        throw new Error(
+          `agent worker returned an invalid result shape: ${JSON.stringify(parsed)?.slice(0, 200)}`,
+        );
+      }
+      return parsed;
     }
     throw new Error(
       `agent worker unreachable at ${this.url}: ${(lastErr as Error)?.message ?? "unknown error"}`,

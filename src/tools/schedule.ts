@@ -1,6 +1,25 @@
 import type { ToolImpl, ToolContext } from "./base.js";
 import { ScheduleStore } from "../sessions/schedule-store.js";
 import { parseWhen } from "../scheduler/parse-when.js";
+import { loadAgent, listAgents } from "../brain/agents.js";
+
+// SEC-06: an agent may schedule a turn only for itself or for an agent it is allowed to
+// spawn (its manifest `subagents`, with `*` meaning every agent). This mirrors the
+// spawn_subagent trust edge exactly, so scheduling grants no reach the caller doesn't
+// already have synchronously. Pure + exported so the policy is unit-testable without a
+// brain on disk.
+export function scheduleTargetAllowed(
+  callerName: string,
+  target: string,
+  callerSubagents: string[],
+  allAgents: string[],
+): boolean {
+  if (target === callerName) return true; // self-scheduling (reminders) is always allowed
+  const spawnable = callerSubagents.includes("*")
+    ? allAgents.filter((n) => n !== callerName)
+    : callerSubagents;
+  return spawnable.includes(target);
+}
 
 // Built-in tools that let an agent arm runtime callbacks: a one-shot reminder,
 // a recurring poll ("update me every 10 minutes"), or cancel/list its own.
@@ -47,7 +66,8 @@ export function scheduleMessageTool(store: ScheduleStore): ToolImpl {
           agent: {
             type: "string",
             description:
-              "Which agent to deliver the prompt to. Defaults to the calling agent.",
+              "Which agent to deliver the prompt to. Defaults to the calling agent. You may " +
+              "only target yourself or one of your own subagents.",
           },
         },
         required: ["when", "prompt"],
@@ -60,6 +80,30 @@ export function scheduleMessageTool(store: ScheduleStore): ToolImpl {
       const agentName = (input.agent as string | undefined) ?? ctx.agentName;
       if (!prompt.trim()) {
         return { content: "schedule_message: prompt is required", isError: true };
+      }
+      // SEC-06: authorize the target. An agent may schedule only itself or an agent it could
+      // spawn (its subagents). Fail closed if the caller's manifest can't be loaded.
+      if (agentName !== ctx.agentName) {
+        let callerSubagents: string[] = [];
+        let allAgents: string[] = [];
+        try {
+          callerSubagents = (await loadAgent(ctx.brainPath, ctx.agentName)).manifest.subagents;
+          if (callerSubagents.includes("*")) allAgents = await listAgents(ctx.brainPath);
+        } catch {
+          callerSubagents = []; // can't verify delegation rights → deny cross-agent target
+        }
+        if (!scheduleTargetAllowed(ctx.agentName, agentName, callerSubagents, allAgents)) {
+          return {
+            content:
+              `schedule_message: not permitted to schedule agent '${agentName}'. You may only ` +
+              `schedule yourself or one of your own subagents` +
+              (callerSubagents.length && !callerSubagents.includes("*")
+                ? ` (${callerSubagents.join(", ")})`
+                : "") +
+              `.`,
+            isError: true,
+          };
+        }
       }
       let parsed;
       try {

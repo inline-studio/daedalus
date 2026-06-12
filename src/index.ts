@@ -34,6 +34,7 @@ import { buildSecretsBackend } from "./secrets/store/factory.js";
 import { SecretsOpUnsupported } from "./secrets/store/base.js";
 import { initUserConfig } from "./init.js";
 import { runInstall, findComposeFile } from "./install.js";
+import { DISPATCH_RESULT_SENTINEL } from "./dispatch/base.js";
 import { exportMempalace } from "./cli/export-mempalace.js";
 import { runUpdate } from "./cli/update.js";
 import prompts from "prompts";
@@ -96,9 +97,10 @@ program
             ? { originExternalUserId: opts.originExternalUser }
             : {}),
         });
-        // The container dispatcher scans stdout bottom-up for the JSON line.
-        // Keep this the LAST thing we write.
-        process.stdout.write(JSON.stringify(result) + "\n");
+        // The container dispatcher parses the sentinel-framed result line (BUG-01). The leading
+        // newline guarantees the sentinel begins a fresh line even if prior output didn't end in
+        // one. Keep this the LAST thing we write.
+        process.stdout.write("\n" + DISPATCH_RESULT_SENTINEL + JSON.stringify(result) + "\n");
       } catch (err) {
         log.error({ err, agent: opts.agent }, "agent-turn failed");
         process.exit(1);

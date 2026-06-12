@@ -107,6 +107,12 @@ export class Kernel {
             turn: turns,
             inputTokens: result.usage.inputTokens,
             outputTokens: result.usage.outputTokens,
+            ...(result.usage.cacheReadTokens != null
+              ? { cacheReadTokens: result.usage.cacheReadTokens }
+              : {}),
+            ...(result.usage.cacheCreationTokens != null
+              ? { cacheCreationTokens: result.usage.cacheCreationTokens }
+              : {}),
           },
           "llm usage",
         );

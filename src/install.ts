@@ -6,7 +6,7 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { execa } from "execa";
 import prompts from "prompts";
-import { loadConfig } from "./config/load.js";
+import { loadConfig, configCandidates } from "./config/load.js";
 import type { ArtemisConfig } from "./config/schema.js";
 import { initUserConfig } from "./init.js";
 import { confirm } from "./setup/base.js";
@@ -889,12 +889,8 @@ async function captureOnecliEncryptionKey(
 // Ensure a config file exists, bootstrapping one at ~/.daedalus/config.yaml if
 // the user agrees. Returns the resolved config path, or null if cancelled.
 async function ensureConfig(configFlag?: string): Promise<string | null> {
-  const candidates = [
-    configFlag,
-    process.env.DAE_CONFIG,
-    path.join(process.cwd(), "daedalus.config.yaml"),
-    path.join(os.homedir(), ".daedalus", "config.yaml"),
-  ].filter((p): p is string => Boolean(p));
+  // IMP-03: look in exactly the same places loadConfig checks (the lists had drifted).
+  const candidates = [configFlag, ...configCandidates()].filter((p): p is string => Boolean(p));
 
   for (const c of candidates) {
     if (await exists(c)) return c;

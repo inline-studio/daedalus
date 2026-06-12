@@ -51,7 +51,20 @@ export interface ScheduledMessage {
   lastFiredAt: string | null;
   // Number of successful fires so far.
   fireCount: number;
+  // BUG-04: consecutive failed-fire attempts since the last success — drives backoff + dead-letter.
+  fireAttempts: number;
 }
+
+// BUG-04: outcome of markFailed, so the poller can log a retry vs a dead-letter accurately.
+export interface FireFailureOutcome {
+  attempts: number;
+  deadLettered: boolean;
+  nextDueAt?: string;
+}
+
+// BUG-04: dead-letter a schedule after this many consecutive failed fires (prevents a poison
+// row from re-firing every poll tick forever).
+const MAX_FIRE_ATTEMPTS = 5;
 
 export interface EnqueueArgs {
   agentName: string;
@@ -131,7 +144,8 @@ export class ScheduleStore {
         status TEXT NOT NULL CHECK (status IN ('pending','firing','done','cancelled')),
         created_at TEXT NOT NULL,
         last_fired_at TEXT,
-        fire_count INTEGER NOT NULL DEFAULT 0
+        fire_count INTEGER NOT NULL DEFAULT 0,
+        fire_attempts INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_scheduled_messages_due
         ON scheduled_messages(status, due_at);
@@ -148,6 +162,12 @@ export class ScheduleStore {
     if (!cols.some((c) => c.name === "channel")) {
       this.db.exec(
         `ALTER TABLE scheduled_messages ADD COLUMN channel TEXT NOT NULL DEFAULT 'scheduled'`,
+      );
+    }
+    // BUG-04: legacy tables predate fire_attempts (the failure backoff / dead-letter counter).
+    if (!cols.some((c) => c.name === "fire_attempts")) {
+      this.db.exec(
+        `ALTER TABLE scheduled_messages ADD COLUMN fire_attempts INTEGER NOT NULL DEFAULT 0`,
       );
     }
   }
@@ -210,7 +230,9 @@ export class ScheduleStore {
            WHERE id = ? AND status = 'pending'`,
         )
         .run(id);
-      if (r.changes > 0) out.push(rowToScheduledMessage(row));
+      // BUG-08: the SELECTed `row` still says status='pending'; reflect the just-applied
+      // 'firing' transition on the returned object so consumers don't see a stale status.
+      if (r.changes > 0) out.push({ ...rowToScheduledMessage(row), status: "firing" });
     }
     return out;
   }
@@ -223,7 +245,8 @@ export class ScheduleStore {
         `UPDATE scheduled_messages
          SET status = 'done',
              last_fired_at = ?,
-             fire_count = fire_count + 1
+             fire_count = fire_count + 1,
+             fire_attempts = 0
          WHERE id = ?`,
       )
       .run(firedAt.toISOString(), id);
@@ -238,21 +261,43 @@ export class ScheduleStore {
          SET status = 'pending',
              due_at = ?,
              last_fired_at = ?,
-             fire_count = fire_count + 1
+             fire_count = fire_count + 1,
+             fire_attempts = 0
          WHERE id = ?`,
       )
       .run(nextDueAt, firedAt.toISOString(), id);
   }
 
-  // If a fire fails, return the row to pending so the next tick retries. Simple
-  // for now; could add backoff / max-retries later.
-  markFailed(id: string): void {
+  // BUG-04: a failed fire used to return straight to 'pending' with the same due_at, so a
+  // poison row re-fired every poll tick (30s) forever. Now we count the attempt, back off
+  // (push due_at forward, exponentially), and after MAX_FIRE_ATTEMPTS dead-letter the row so it
+  // stops being claimed. A success (markFired / reschedule) resets fire_attempts. Dead-lettering
+  // reuses the terminal 'cancelled' status to avoid a CHECK-constraint table rebuild; the
+  // poller's log + fire_attempts distinguish it from a user cancellation.
+  markFailed(id: string, failedAt = new Date()): FireFailureOutcome {
     this.ensureFreshConnection();
+    const row = this.get(id);
+    if (!row || row.status !== "firing") {
+      return { attempts: row?.fireAttempts ?? 0, deadLettered: false };
+    }
+    const attempts = row.fireAttempts + 1;
+    if (attempts >= MAX_FIRE_ATTEMPTS) {
+      this.db
+        .prepare(
+          `UPDATE scheduled_messages SET status = 'cancelled', fire_attempts = ? WHERE id = ? AND status = 'firing'`,
+        )
+        .run(attempts, id);
+      return { attempts, deadLettered: true };
+    }
+    // Exponential backoff: 2, 4, 8, 16 min … capped at 1h.
+    const backoffMs = Math.min(2 ** attempts * 60_000, 60 * 60_000);
+    const nextDueAt = new Date(failedAt.getTime() + backoffMs).toISOString();
     this.db
       .prepare(
-        `UPDATE scheduled_messages SET status = 'pending' WHERE id = ? AND status = 'firing'`,
+        `UPDATE scheduled_messages SET status = 'pending', due_at = ?, fire_attempts = ? WHERE id = ? AND status = 'firing'`,
       )
-      .run(id);
+      .run(nextDueAt, attempts, id);
+    return { attempts, deadLettered: false, nextDueAt };
   }
 
   cancel(id: string, byAgent: string): boolean {
@@ -305,5 +350,6 @@ function rowToScheduledMessage(row: Record<string, unknown>): ScheduledMessage {
     createdAt: row.created_at as string,
     lastFiredAt: (row.last_fired_at as string | null) ?? null,
     fireCount: row.fire_count as number,
+    fireAttempts: (row.fire_attempts as number | null) ?? 0,
   };
 }

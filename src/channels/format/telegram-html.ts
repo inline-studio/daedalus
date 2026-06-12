@@ -130,10 +130,14 @@ export function markdownToTelegramHtml(md: string): string {
   s = s.replace(/(^|[^\w*])\*([^\s*][^*\n]*?)\*(?=$|[^\w*])/g, "$1<i>$2</i>");
   s = s.replace(/~~([\s\S]+?)~~/g, "<s>$1</s>");
 
-  // 5. Links. The URL captured here was htmlEscape'd in step 2, which means
-  //    `&` already became `&amp;`. That's correct for inserting into an href.
+  // 5. Links. The URL captured here was htmlEscape'd in step 2, so `&`/`<`/`>` are already
+  //    entity-encoded — but NOT the quote, which would let a URL containing `"` break out of
+  //    the href attribute (SEC-12). Escape the quote, and only emit a link for safe schemes
+  //    (http/https/tg/mailto); anything else (javascript:, data:, scheme-less) renders as the
+  //    plain label so a crafted URL can't inject markup or an unsafe scheme.
   s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (_, label: string, url: string) => {
-    return `<a href="${url}">${label}</a>`;
+    if (!/^(https?|tg|mailto):/i.test(url)) return label;
+    return `<a href="${url.replace(/"/g, "&quot;")}">${label}</a>`;
   });
 
   // 6. Restore placeholders.

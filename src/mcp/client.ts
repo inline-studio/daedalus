@@ -6,6 +6,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Agent } from "undici";
 import type { McpServerDef } from "./loader.js";
 import type { ToolDefinition } from "../types.js";
+import { safeChildEnv } from "../secrets/safe-env.js";
 import { log } from "../log.js";
 
 // MCP HTTP/SSE transports must bypass the global undici dispatcher. When OneCLI
@@ -29,6 +30,7 @@ export interface ConnectedServer {
   tools: ToolDefinition[];
   close(): Promise<void>;
 }
+
 
 export async function connectMcpServer(name: string, def: McpServerDef): Promise<ConnectedServer> {
   const client = new Client({ name: "daedalus", version: "0.1.0" }, { capabilities: {} });
@@ -68,7 +70,11 @@ async function buildTransport(def: McpServerDef) {
       return new StdioClientTransport({
         command: def.command,
         args: def.args,
-        env: { ...process.env, ...def.env } as Record<string, string>,
+        // SEC-07: a stdio MCP server is a child process — don't hand it the supervisor's
+        // entire environment (every API key/token). Pass only operational vars + OneCLI
+        // proxy/CA plumbing, plus whatever the server explicitly declares. A server needing
+        // a specific secret must declare it in its own `env:` (e.g. FOO: "${FOO}").
+        env: { ...safeChildEnv(), ...def.env } as Record<string, string>,
         ...(def.cwd ? { cwd: def.cwd } : {}),
       });
     }

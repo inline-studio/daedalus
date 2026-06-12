@@ -33,6 +33,13 @@ runtime:
     hostPath: ./data/shared      # writable cross-agent persistent storage; gitignored
     containerPath: /shared       # mount point inside Docker agents
                                  # the path is exposed to bash via $DAE_SHARED
+  # Default resource limits for EVERY agent container (override per-agent in the manifest's
+  # `container:` block). Conservative on purpose — a runaway agent must not starve the host.
+  # cap-drop=ALL + no-new-privileges are always applied (not configurable).
+  limits:
+    memory: 1g                   # docker --memory
+    cpus: "1"                    # docker --cpus (quote so YAML keeps it a string; allows "1.5")
+    pidsLimit: 512               # docker --pids-limit (fork-bomb guard)
 
 onecli:
   enabled: false
@@ -91,6 +98,9 @@ channels:
   #   enabled: true
   #   defaultAgent: orchestrator
   #   token: ${TELEGRAM_BOT_TOKEN}
+  #   # Fail-closed sender allowlist — REQUIRED, or the bot rejects every message.
+  #   # Get your chat id from @userinfobot on Telegram.
+  #   allowedChatIds: ["123456789"]
   # whatsapp:
   #   enabled: true
   #   defaultAgent: orchestrator
@@ -112,3 +122,12 @@ web:
   fetch:
     maxBytes: 1000000       # hard cap on body size; truncated above this
     timeoutMs: 20000
+    # web_fetch blocks private/loopback/link-local/metadata hosts by default (SSRF guard).
+    # List exact hostnames to explicitly permit an internal host; also applies to attachment
+    # URL downloads. Empty = deny all internal.
+    # allowHosts: ["internal-docs.lan"]
+
+# Inbound attachment URL downloads (SSRF-guarded, size-capped, time-bounded).
+attachments:
+  maxFetchBytes: 25000000   # 25 MB; raise for large media (e.g. a video store)
+  fetchTimeoutMs: 30000

@@ -1,5 +1,6 @@
 import type { ArtemisConfig } from "../config/schema.js";
 import type { AgentDispatcher, DispatchArgs, DispatchResult } from "./base.js";
+import { originFields } from "./base.js";
 import { runAgentTurn } from "../kernel/agent-turn.js";
 
 // Runs one agent turn directly in this Node process. Used by:
@@ -15,10 +16,7 @@ export class InProcessAgentDispatcher implements AgentDispatcher {
       sessionId: args.sessionId,
       userId: args.userId,
       isSubagent: args.isSubagent,
-      ...(args.originChannel ? { originChannel: args.originChannel } : {}),
-      ...(args.originExternalUserId
-        ? { originExternalUserId: args.originExternalUserId }
-        : {}),
+      ...originFields(args),
     });
   }
 }

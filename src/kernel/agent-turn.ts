@@ -88,7 +88,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       : agent.skills;
     const skills = (
       await Promise.all(
-        skillNames.map((s) => loadSkill(config.brain.path, s, config.brain.writable)),
+        skillNames.map((s) => loadSkill(config.brain.path, s)),
       )
     ).filter((s): s is NonNullable<typeof s> => s !== null);
     await hydrateSkillSecrets(config, skills);

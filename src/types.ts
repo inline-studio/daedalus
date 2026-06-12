@@ -78,5 +78,11 @@ export interface CompletionEvent {
 export interface CompletionResult {
   message: Message;
   stopReason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | "error";
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    // BUG-07: cache tokens (Anthropic prompt caching) — present when the provider reports them.
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+  };
 }

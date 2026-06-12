@@ -1,8 +1,10 @@
 import { execa } from "execa";
 import path from "node:path";
-import type { ArtemisConfig } from "../config/schema.js";
+import type { ArtemisConfig, ResolvedLimits } from "../config/schema.js";
+import { resolveContainerLimits } from "../config/schema.js";
 import { loadAgent } from "../brain/agents.js";
 import type { AgentDispatcher, DispatchArgs, DispatchResult } from "./base.js";
+import { DISPATCH_RESULT_SENTINEL } from "./base.js";
 import { log } from "../log.js";
 
 // Spawns one short-lived container per agent turn via the local docker socket.
@@ -23,7 +25,7 @@ import { log } from "../log.js";
 //   - shared         → /shared               (rw — cross-agent scratch)
 //   - sessions.db    → /data/sessions.sqlite (rw)
 //   - attachments    → /data/attachments     (rw)
-//   - docker.sock    → /var/run/docker.sock  (rw, so nested subagent spawns work)
+//   - docker.sock    → /var/run/docker.sock  (rw, ONLY for agents that spawn subagents)
 //   - config dir     → /etc/daedalus         (ro — config + .env)
 //   - dae-runtime    → /dae-runtime          (ro — injected node + daedalus)
 //
@@ -80,8 +82,16 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     const loaded = await loadAgent(this.config.brain.path, args.agentName).catch(() => null);
     const image = loaded?.manifest.container?.image ?? this.opts.defaultImage;
 
+    // SEC-02: the host docker socket is root-equivalent, so only mount it for agents that
+    // actually spawn subagents (they need the daemon to launch child containers). Leaf
+    // agents — the ones running bash over untrusted web content — go without. Fail closed:
+    // if the manifest didn't load, assume no spawn and withhold the socket.
+    const mountDockerSock = (loaded?.manifest.subagents?.length ?? 0) > 0;
+    // SEC-03: per-agent resource limits (manifest override → conservative global default).
+    const limits = resolveContainerLimits(loaded?.manifest.container, this.config.runtime.limits);
+
     const containerName = `dae-${sanitize(args.agentName)}-${Date.now().toString(36)}`;
-    const dockerArgs = this.buildArgs({ containerName, image, args });
+    const dockerArgs = this.buildArgs({ containerName, image, args, mountDockerSock, limits });
 
     log.info(
       { agent: args.agentName, image, container: containerName },
@@ -89,41 +99,55 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     );
 
     const bin = this.opts.bin ?? "docker";
+    // SEC-09: secrets are forwarded by NAME on the argv (-e KEY); supply their VALUES here in
+    // the docker CLI's environment so they never appear in the world-readable process args.
+    const forwardedSecrets: Record<string, string> = {
+      ...(this.opts.onecliApiKey ? { ONECLI_API_KEY: this.opts.onecliApiKey } : {}),
+      ...(this.opts.forwardEnv ?? {}),
+    };
     const result = await execa(bin, dockerArgs, {
       timeout: args.timeoutMs ?? 5 * 60_000,
       reject: false,
+      env: { ...process.env, ...forwardedSecrets },
       // The agent container reads nothing from stdin (it pulls all state from
       // the mounted session DB). Close stdin immediately so it doesn't block.
       input: "",
     });
 
-    if (result.timedOut) {
-      // Best-effort kill; the container may already be gone.
+    // BUG-17: remove the container on EVERY failure path (timeout / non-zero exit / unparseable
+    // result), not only timeout. `--rm` covers a clean exit but not a wedged container; this
+    // catch is belt-and-suspenders for the throw paths.
+    try {
+      if (result.timedOut) {
+        throw new Error(`agent container '${containerName}' timed out`);
+      }
+      if (result.exitCode !== 0) {
+        // The real failure is the LAST line of the container's output (the agent-turn
+        // error), not the first — early lines are just OneCLI/bootstrap startup noise.
+        // Show the TAIL, and log the larger tail at error level so `docker compose logs`
+        // surfaces it without the supervisor truncating away the actual exception.
+        const out = (result.stderr ?? "").trim() || (result.stdout ?? "").trim();
+        log.error(
+          { container: containerName, exitCode: result.exitCode, output: tailOf(out, 4000) },
+          "agent container exited non-zero",
+        );
+        throw new Error(
+          `agent container '${containerName}' exited ${result.exitCode}: ${tailOf(out, 600)}`,
+        );
+      }
+      return parseDispatchResult(result.stdout ?? "");
+    } catch (err) {
       await execa(bin, ["rm", "-f", containerName]).catch(() => undefined);
-      throw new Error(`agent container '${containerName}' timed out`);
+      throw err;
     }
-    if (result.exitCode !== 0) {
-      // The real failure is the LAST line of the container's output (the agent-turn
-      // error), not the first — early lines are just OneCLI/bootstrap startup noise.
-      // Show the TAIL, and log the larger tail at error level so `docker compose logs`
-      // surfaces it without the supervisor truncating away the actual exception.
-      const out = (result.stderr ?? "").trim() || (result.stdout ?? "").trim();
-      log.error(
-        { container: containerName, exitCode: result.exitCode, output: tailOf(out, 4000) },
-        "agent container exited non-zero",
-      );
-      throw new Error(
-        `agent container '${containerName}' exited ${result.exitCode}: ${tailOf(out, 600)}`,
-      );
-    }
-
-    return parseDispatchResult(result.stdout ?? "");
   }
 
   private buildArgs(opts: {
     containerName: string;
     image: string;
     args: DispatchArgs;
+    mountDockerSock: boolean;
+    limits: ResolvedLimits;
   }): string[] {
     return buildContainerArgs({
       containerName: opts.containerName,
@@ -131,6 +155,8 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
       dispatchArgs: opts.args,
       opts: this.opts,
       brainWritable: this.config.brain.writable,
+      mountDockerSock: opts.mountDockerSock,
+      limits: opts.limits,
     });
   }
 }
@@ -144,12 +170,26 @@ export function buildContainerArgs(input: {
   dispatchArgs: DispatchArgs;
   opts: ContainerDispatcherOptions;
   brainWritable: boolean;
+  // SEC-02: whether to bind-mount the host docker socket. Only true for agents that spawn
+  // subagents; see the dispatch() call site for the rationale.
+  mountDockerSock: boolean;
+  // SEC-03: resolved per-agent resource limits (manifest override → conservative default).
+  limits: ResolvedLimits;
 }): string[] {
-  const { containerName, image, dispatchArgs, opts, brainWritable } = input;
+  const { containerName, image, dispatchArgs, opts, brainWritable, mountDockerSock, limits } = input;
   const a: string[] = [];
   if (opts.socket) a.push("-H", opts.socket);
   a.push("run", "--rm", "-i", "--name", containerName);
   a.push("--network", opts.network);
+
+  // SEC-03: hardening + resource limits on every agent container. cap-drop=ALL +
+  // no-new-privileges close residual escalation paths (the container is non-root uid 1000);
+  // memory/cpu/pids are conservative by default (runtime.limits) unless the manifest raises them.
+  a.push("--cap-drop", "ALL");
+  a.push("--security-opt", "no-new-privileges");
+  a.push("--pids-limit", String(limits.pidsLimit));
+  a.push("--memory", limits.memory);
+  a.push("--cpus", limits.cpus);
 
   // Mounts — host paths come from supervisor env; container-side paths are the
   // conventional /brain, /shared, /data, /etc/daedalus.
@@ -158,7 +198,12 @@ export function buildContainerArgs(input: {
   a.push("-v", `${opts.hostSharedPath}:/shared:rw`);
   a.push("-v", `${opts.hostDataPath}:/data:rw`);
   a.push("-v", `${opts.hostConfigDir}:/etc/daedalus:ro`);
-  a.push("-v", "/var/run/docker.sock:/var/run/docker.sock");
+  // SEC-02: root-equivalent — mounted ONLY for spawning agents. A spawning agent still has
+  // full host access via the raw socket; the broker follow-up (AUDIT.md SEC-02) closes that.
+  // This only shrinks the blast radius to agents that genuinely need to launch children.
+  if (mountDockerSock) {
+    a.push("-v", "/var/run/docker.sock:/var/run/docker.sock");
+  }
 
   // Injectable runtime — the Node binary + daedalus install the agent will
   // actually execute. With this, the user's image needs only a posix shell
@@ -183,7 +228,10 @@ export function buildContainerArgs(input: {
     a.push("-e", `DAE_AGENT_RUNTIME_VOLUME=${opts.runtimeVolume}`);
   }
   if (opts.onecliApiKey) {
-    a.push("-e", `ONECLI_API_KEY=${opts.onecliApiKey}`);
+    // SEC-09: forward by NAME so the secret value isn't on the world-readable docker argv
+    // (/proc/<pid>/cmdline). docker pulls the value from the CLI's own env, which the
+    // dispatcher sets explicitly — the value lives in /proc/<pid>/environ (owner-only) instead.
+    a.push("-e", "ONECLI_API_KEY");
   }
   // Override the OneCLI agent identifier with THIS specific agent's name so
   // OneCLI scopes injection to whatever credentials this agent has been
@@ -191,9 +239,10 @@ export function buildContainerArgs(input: {
   a.push("-e", `DAE_ONECLI_AGENT=${dispatchArgs.agentName}`);
 
   // Local-service secrets (e.g. MEMPALACE_TOKEN) that aren't injected via OneCLI,
-  // so MCP defs using ${VAR} expansion resolve inside the container.
-  for (const [k, v] of Object.entries(opts.forwardEnv ?? {})) {
-    a.push("-e", `${k}=${v}`);
+  // so MCP defs using ${VAR} expansion resolve inside the container. SEC-09: forwarded by
+  // name (value supplied via the dispatcher's env), so it never lands in the argv.
+  for (const k of Object.keys(opts.forwardEnv ?? {})) {
+    a.push("-e", k);
   }
 
   // Entrypoint override. With the injected runtime, we ignore the image's
@@ -240,25 +289,27 @@ function tailOf(s: string, n: number): string {
   return s.length > n ? "…" + s.slice(-n) : s;
 }
 
-// The agent container is expected to print a single JSON DispatchResult on the
-// last non-empty line of stdout. We tolerate prior log lines (e.g. OneCLI proxy
-// info) by scanning bottom-up for the first parseable JSON object.
-function parseDispatchResult(stdout: string): DispatchResult {
-  const lines = stdout.split(/\r?\n/).filter((l) => l.trim().length > 0);
+// BUG-01: the agent-turn entrypoint frames its DispatchResult with DISPATCH_RESULT_SENTINEL.
+// Scan bottom-up for the sentinel-framed line and parse only that — arbitrary JSON or startup
+// noise on stdout (or a process writing to the container's fd 1) can no longer be mistaken for,
+// or forge, the turn result. Exported for tests.
+export function parseDispatchResult(stdout: string): DispatchResult {
+  const lines = stdout.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]!.trim();
-    if (!line.startsWith("{")) continue;
+    const idx = lines[i]!.indexOf(DISPATCH_RESULT_SENTINEL);
+    if (idx === -1) continue;
+    const json = lines[i]!.slice(idx + DISPATCH_RESULT_SENTINEL.length).trim();
     try {
-      const parsed = JSON.parse(line) as DispatchResult;
+      const parsed = JSON.parse(json) as DispatchResult;
       if (parsed.status === "complete" || parsed.status === "pending_question") {
         return parsed;
       }
     } catch {
-      // not JSON; keep scanning
+      // sentinel present but payload not parseable — keep scanning (defensive).
     }
   }
   throw new Error(
-    `agent container produced no parseable DispatchResult. Last 500 bytes: ${truncate(stdout, 500)}`,
+    `agent container produced no sentinel-framed DispatchResult. Last 500 bytes: ${truncate(stdout, 500)}`,
   );
 }
 

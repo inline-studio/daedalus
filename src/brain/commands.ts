@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import matter from "gray-matter";
+import { parseFrontmatter } from "./frontmatter.js";
+import { assertUnderBrain } from "./safe-path.js";
+import { listMarkdownNames } from "./list-markdown.js";
 import { z } from "zod";
 
 // Slash-commands ("/ship", "/standup", …) — single-file prompt templates the
@@ -30,31 +32,23 @@ export type CommandManifest = z.infer<typeof CommandManifestSchema>;
 export interface LoadedCommand {
   manifest: CommandManifest;
   body: string;
-  sourcePath: string;
 }
 
 export async function loadCommand(brainPath: string, name: string): Promise<LoadedCommand | null> {
   const file = path.join(brainPath, "commands", `${name}.md`);
   try {
+    assertUnderBrain(brainPath, file);
     const text = await fs.readFile(file, "utf8");
-    const fm = matter(text);
+    const fm = parseFrontmatter(text);
     const manifest = CommandManifestSchema.parse({ ...(fm.data as object), name });
-    return { manifest, body: fm.content.trim(), sourcePath: file };
+    return { manifest, body: fm.content.trim() };
   } catch {
     return null;
   }
 }
 
 export async function listCommandNames(brainPath: string): Promise<string[]> {
-  const dir = path.join(brainPath, "commands");
-  try {
-    const files = await fs.readdir(dir);
-    return files
-      .filter((f) => f.endsWith(".md"))
-      .map((f) => f.replace(/\.md$/, ""));
-  } catch {
-    return [];
-  }
+  return listMarkdownNames(path.join(brainPath, "commands"));
 }
 
 // Resolve the agent's declared `commands:` list (which may be `['*']`) against

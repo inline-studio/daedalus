@@ -156,6 +156,24 @@ echo "v2" > "$DAE_SKILL_PATH_DIR/alpha-installed-v2"
   );
 }
 
+// 7. SEC-11: the supervisor's secrets are NOT visible to the bootstrap script — only the
+// allowlisted operational env passes through. An allowlisted var (LANG) IS still visible.
+{
+  process.env.SEC11_FAKE_SECRET = "topsecret-value";
+  process.env.LANG = process.env.LANG || "en_US.UTF-8";
+  const skill = makeSkill(
+    brainRoot,
+    "epsilon",
+    `#!/bin/sh\nprintf '%s' "$SEC11_FAKE_SECRET" > "$DAE_SKILL_PATH_DIR/secret.out"\nprintf '%s' "$LANG" > "$DAE_SKILL_PATH_DIR/lang.out"\n`,
+  );
+  await runSkillBootstraps([skill], dataDir);
+  const secretOut = readFileSync(join(sharedBinDir(dataDir), "secret.out"), "utf8");
+  const langOut = readFileSync(join(sharedBinDir(dataDir), "lang.out"), "utf8");
+  expect("SEC-11: supervisor secret NOT visible to bootstrap script", secretOut === "");
+  expect("SEC-11: allowlisted LANG still visible to bootstrap script", langOut.length > 0);
+  delete process.env.SEC11_FAKE_SECRET;
+}
+
 rmSync(dataDir, { recursive: true, force: true });
 rmSync(brainRoot, { recursive: true, force: true });
 
