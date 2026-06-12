@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import path from "node:path";
+import { atomicWrite } from "./atomic-write.js";
 
 // Minimal .env writer that preserves unrelated keys and comments.
 // Format: KEY=value, one per line. Quotes are added if value contains spaces or special chars.
@@ -37,15 +37,11 @@ export async function upsertEnvFile(filePath: string, updates: Record<string, st
   // Trim trailing empties to one
   while (out.length > 1 && out[out.length - 1] === "" && out[out.length - 2] === "") out.pop();
 
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
   const body = out.join("\n") + (out.length && out[out.length - 1] !== "" ? "\n" : "");
-  // SEC-08: this file holds secrets (.env.local, compose .env). Create it owner-only (0600)
-  // and tighten an existing file that an earlier version may have left world-readable (0644).
-  // `mode` on writeFile only applies on CREATE, so the explicit chmod covers a pre-existing
-  // file. These files are read host-side only (the dae CLI + `docker compose`), never inside
-  // a container, so 0600 is safe. The chmod is best-effort so an exotic fs can't break setup.
-  await fs.writeFile(filePath, body, { mode: 0o600, encoding: "utf8" });
-  await fs.chmod(filePath, 0o600).catch(() => undefined);
+  // SEC-08: this file holds secrets (.env.local, compose .env) — write it owner-only (0600).
+  // IMP-04: atomically (temp + rename) so an interrupted write can't truncate it / lose secrets.
+  // Safe at 0600: read host-side only (the dae CLI + `docker compose`), never inside a container.
+  await atomicWrite(filePath, body, { mode: 0o600 });
 }
 
 function quoteValue(value: string): string {

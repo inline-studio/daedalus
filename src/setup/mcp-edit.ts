@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { atomicWrite } from "./atomic-write.js";
 
 // Add or replace an MCP server entry in the configured MCP config.
 // `configPath` may be a file (Claude-Desktop-style mcpServers map) or a directory of *.json
@@ -26,26 +27,29 @@ export async function upsertMcpServer(
   if (stat?.isDirectory()) {
     const file = path.join(configPath, `${name}.json`);
     const json = { mcpServers: { [name]: entry } };
-    await fs.writeFile(file, JSON.stringify(json, null, 2) + "\n", "utf8");
+    await atomicWrite(file, JSON.stringify(json, null, 2) + "\n");
     return;
   }
 
   // File mode (or doesn't exist yet — create it).
   let doc: { mcpServers?: Record<string, McpServerEntry>; servers?: Record<string, McpServerEntry> } = {};
   if (stat?.isFile()) {
-    try {
-      doc = JSON.parse(await fs.readFile(configPath, "utf8"));
-    } catch {
-      doc = {};
+    const raw = await fs.readFile(configPath, "utf8");
+    if (raw.trim()) {
+      try {
+        doc = JSON.parse(raw);
+      } catch (err) {
+        // IMP-04: don't silently reset a non-empty-but-malformed MCP config to {} — that would
+        // wipe every existing server on the next upsert. Surface it so the operator fixes it.
+        throw new Error(`MCP config at ${configPath} is not valid JSON: ${(err as Error).message}`);
+      }
     }
-  } else {
-    await fs.mkdir(path.dirname(configPath), { recursive: true });
   }
   const map = doc.mcpServers ?? doc.servers ?? {};
   map[name] = entry;
   doc.mcpServers = map;
   delete doc.servers;
-  await fs.writeFile(configPath, JSON.stringify(doc, null, 2) + "\n", "utf8");
+  await atomicWrite(configPath, JSON.stringify(doc, null, 2) + "\n");
 }
 
 export async function removeMcpServer(configPath: string, name: string): Promise<void> {
@@ -70,7 +74,7 @@ export async function removeMcpServer(configPath: string, name: string): Promise
   delete map[name];
   doc.mcpServers = map;
   delete doc.servers;
-  await fs.writeFile(configPath, JSON.stringify(doc, null, 2) + "\n", "utf8");
+  await atomicWrite(configPath, JSON.stringify(doc, null, 2) + "\n");
 }
 
 export async function hasMcpServer(configPath: string, name: string): Promise<boolean> {

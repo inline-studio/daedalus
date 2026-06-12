@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import YAML, { type Document, type YAMLMap, type Node } from "yaml";
+import { atomicWrite } from "./atomic-write.js";
 
 // Comment-preserving YAML edit. Reads the file as a Document, applies a mutator,
 // writes back with comments and formatting intact.
@@ -10,7 +11,8 @@ export async function editYamlFile(
   const text = await fs.readFile(filePath, "utf8");
   const doc = YAML.parseDocument(text);
   await mutate(doc);
-  await fs.writeFile(filePath, doc.toString({ lineWidth: 0 }), "utf8");
+  // IMP-04: atomic write so an interrupted edit can't truncate the config.
+  await atomicWrite(filePath, doc.toString({ lineWidth: 0 }));
 }
 
 // Helper: ensure a path exists as a YAMLMap, creating intermediates.
