@@ -48,6 +48,7 @@ const CI_SAFE = [
   "smoke-persistent-dispatcher",
   "smoke-runtime-scheduling",
   "smoke-schedule-authz",
+  "smoke-schedule-retry",
   "smoke-ssrf",
   "smoke-skill-bootstrap",
   "smoke-skill-disclosure",

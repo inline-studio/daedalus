@@ -57,7 +57,7 @@
 | BUG-01 | Bug | Medium | `dispatch/container.ts:246-263` | ✅ **DONE** (implemented, commit pending) — Forgeable DispatchResult: any JSON line on agent stdout can spoof the turn result |
 | BUG-02 | Bug | Medium | `scheduler/poller.ts:143` | ⚫ **OBSOLETE** (not a bug) — Recurring fires anchored on wall-clock `now`, not `due_at` → schedule drift |
 | BUG-03 | Bug | Medium | `scheduler/parse-when.ts:50,67`, `scheduler/cron.ts:76` | ⚫ **OBSOLETE** (not a bug) — No timezone passed to croner → schedules fire in host TZ (usually UTC) |
-| BUG-04 | Bug | Medium | `scheduler/poller.ts:68`, `sessions/schedule-store.ts:249-256` | Failed fire returns to `pending` with same `due_at` → infinite retry, no backoff |
+| BUG-04 | Bug | Medium | `scheduler/poller.ts:68`, `sessions/schedule-store.ts:249-256` | ✅ **DONE** — Failed fire returns to `pending` with same `due_at` → infinite retry, no backoff |
 | BUG-05 | Bug | Medium | `providers/anthropic.ts:20`, `providers/openai.ts:24` | ✅ **DONE** (implemented, commit pending) — Providers advertise `streaming: true` but never stream |
 | BUG-06 | Bug | Medium | `channels/telegram.ts:42-44,101` | ✅ **DONE** (implemented, commit pending) — `stop()` doesn't abort the in-flight long-poll → up to 30s hang + post-stop dispatch |
 | BUG-07 | Bug | Low | `providers/anthropic.ts:65-67` | Usage parsing ignores cache token fields → understated input usage |
@@ -267,6 +267,8 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Thread a configured timezone (per-agent `timezone` already exists on the manifest, or a global config) into all croner call sites.
 
 ### BUG-04 (Medium) — Failing schedule retries forever
+**Status: ✅ DONE** — Commit `<pending>`. Added a `fire_attempts` column (schema + back-compat `ALTER` migration). `markFailed` now increments the counter, **backs off exponentially** (2/4/8/16 min, capped 1h) by pushing `due_at` forward, and **dead-letters** after `MAX_FIRE_ATTEMPTS` (5) so a poison row stops being claimed; it returns a `FireFailureOutcome` the poller logs as retry-vs-dead-letter. A success (`markFired`/`reschedule`) resets `fire_attempts`. Dead-lettering reuses the terminal `cancelled` status to avoid a CHECK-constraint table rebuild (the log + `fire_attempts` distinguish it from a user cancellation). Verified by `smoke-schedule-retry` (backoff each attempt, dead-letter at 5 → not re-claimed, counter resets on success). **DB migration** (additive column) — flagged + approved.
+
 **What:** On any fire exception, `markFailed` flips the row back to `pending` with `due_at` unchanged (`poller.ts:68`, `schedule-store.ts:249-256`), so `claimDue` re-claims it every 30s indefinitely.
 **Why it matters:** A poison row (missing agent image, always-erroring prompt) becomes an infinite hot loop dispatching real container runs every tick.
 **Fix (described):** Add an attempts/backoff column and dead-letter after N failures (the store comment already flags this).
