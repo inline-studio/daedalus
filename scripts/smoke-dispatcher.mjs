@@ -154,6 +154,7 @@ function fakeConfig() {
     opts,
     brainWritable: false,
     mountDockerSock: false,
+    limits: { memory: "1g", cpus: "1", pidsLimit: 512 },
   });
   expect(
     "runtime mount present",
@@ -205,6 +206,7 @@ function fakeConfig() {
     opts,
     brainWritable: false,
     mountDockerSock: false,
+    limits: { memory: "1g", cpus: "1", pidsLimit: 512 },
   });
   expect("no --entrypoint override in legacy path", !args.includes("--entrypoint"));
   expect("dae prefix present in legacy path", args.includes("dae"));
@@ -230,6 +232,7 @@ function fakeConfig() {
     opts,
     brainWritable: false,
     mountDockerSock: false,
+    limits: { memory: "1g", cpus: "1", pidsLimit: 512 },
   });
   expect(
     "forwardEnv MEMPALACE_TOKEN passed as -e to the container",
@@ -255,6 +258,7 @@ function fakeConfig() {
     dispatchArgs: { agentName: "artemis", sessionId: "s", userId: "u", isSubagent: false },
     opts,
     brainWritable: false,
+    limits: { memory: "1g", cpus: "1", pidsLimit: 512 },
   };
   const withSock = buildContainerArgs({ ...base, mountDockerSock: true });
   const withoutSock = buildContainerArgs({ ...base, mountDockerSock: false });
@@ -266,6 +270,41 @@ function fakeConfig() {
     "docker.sock NOT mounted when mountDockerSock=false (leaf agent)",
     !withoutSock.includes("/var/run/docker.sock:/var/run/docker.sock"),
   );
+}
+
+// 12. SEC-03: every agent container is hardened (cap-drop ALL + no-new-privileges) and gets
+// resource limits — the conservative default unless the manifest raises them.
+{
+  const opts = {
+    defaultImage: "ghcr.io/test/daedalus:test",
+    network: "daedalus",
+    hostBrainPath: "/host/brain",
+    hostSharedPath: "/host/shared",
+    hostDataPath: "/host/data",
+    hostConfigDir: "/host/etc",
+  };
+  const base = {
+    containerName: "dae-lim",
+    image: "ghcr.io/test/daedalus:test",
+    dispatchArgs: { agentName: "artemis", sessionId: "s", userId: "u", isSubagent: false },
+    opts,
+    brainWritable: false,
+    mountDockerSock: false,
+  };
+  // Default (conservative) limits.
+  const def = buildContainerArgs({ ...base, limits: { memory: "1g", cpus: "1", pidsLimit: 512 } });
+  const pair = (flag, val) => def.some((v, i) => def[i - 1] === flag && v === val);
+  expect("cap-drop ALL present", pair("--cap-drop", "ALL"));
+  expect("no-new-privileges present", pair("--security-opt", "no-new-privileges"));
+  expect("default memory 1g", pair("--memory", "1g"));
+  expect("default cpus 1", pair("--cpus", "1"));
+  expect("default pids-limit 512", pair("--pids-limit", "512"));
+  // Per-agent override flows through.
+  const big = buildContainerArgs({ ...base, limits: { memory: "4g", cpus: "2", pidsLimit: 1024 } });
+  const bigPair = (flag, val) => big.some((v, i) => big[i - 1] === flag && v === val);
+  expect("override memory 4g", bigPair("--memory", "4g"));
+  expect("override cpus 2", bigPair("--cpus", "2"));
+  expect("override pids-limit 1024", bigPair("--pids-limit", "1024"));
 }
 
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);

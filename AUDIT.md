@@ -36,7 +36,7 @@
 |---|---|---|---|---|
 | SEC-01 | Security | Critical | `channels/telegram.ts:121` | ✅ **DONE** — No sender allowlist — any Telegram user can drive the agent |
 | SEC-02 | Security | Critical | `dispatch/container.ts:161` | 🟡 **PARTIAL** — Host docker.sock mounted rw into every agent container (interim mitigation applied; broker follow-up deferred) |
-| SEC-03 | Security | High | `dispatch/container.ts:151-207`, `runtime/docker.ts:27-54` | No container hardening (cap-drop, no-new-privileges, pids/memory/cpu limits) |
+| SEC-03 | Security | High | `dispatch/container.ts:151-207`, `runtime/docker.ts:27-54` | ✅ **DONE** — No container hardening (cap-drop, no-new-privileges, pids/memory/cpu limits) |
 | SEC-04 | Security | High | `web/fetch.ts:22-34` | ✅ **DONE** — SSRF: no private-IP/metadata/scheme/redirect validation in web_fetch |
 | SEC-05 | Security | High | `kernel/ingest.ts:209-218` | ✅ **DONE** — Attachment fetch: SSRF + no size cap + no timeout |
 | SEC-06 | Security | High | `tools/schedule.ts:60` | ✅ **DONE** — `schedule_message` target agent unvalidated → cross-agent privilege escalation |
@@ -73,7 +73,7 @@
 | BUG-17 | Bug | Low | `dispatch/container.ts:100-121` | Container only force-removed on timeout; other failure paths can leak containers |
 | BUG-18 | Bug | Low | `dispatch/persistent.ts:80` | Worker HTTP response cast to `DispatchResult` with no shape validation |
 | DEAD-01 | Dead | Low | `config/schema.ts:106` | `mcp.inline` config field parsed but never consumed |
-| DEAD-02 | Dead | Low | `runtime/base.ts:12-14` | `ExecOptions.memory`/`cpus` never set by any caller (limit plumbing dead) |
+| DEAD-02 | Dead | Low | `runtime/base.ts:12-14` | ✅ **DONE** (via SEC-03) — `ExecOptions.memory`/`cpus` never set by any caller (limit plumbing dead) |
 | DEAD-03 | Dead | Low | `channels/base.ts:51` | `OutgoingMessage.toExternalUserId` declared but never read |
 | DEAD-04 | Dead | Low | `brain/skills.ts:10,24` | `LoadedSkill.readOnly` set but never read |
 | DEAD-05 | Dead | Low | `brain/agents.ts:9,17`, `brain/commands.ts:33,42` | `sourcePath` on LoadedAgent/LoadedCommand never consumed |
@@ -122,6 +122,8 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Don't mount the raw socket. Route subagent spawns through a restricted socket proxy (e.g. `tecnativa/docker-socket-proxy` limited to `container create/start`), or only mount it for agents whose manifest actually declares subagents, and even then read-only behind a proxy. Make it explicit opt-in, off by default.
 
 ### SEC-03 (High) — No container hardening or resource limits
+**Status: ✅ DONE** — Commit `<pending>`. Both container launch paths (`buildContainerArgs` for the per-turn/subagent container, and `DockerRuntime.exec` for host-mode per-command containers) now add `--cap-drop=ALL`, `--security-opt=no-new-privileges`, `--pids-limit`, `--memory`, and `--cpus`. **Resource limits are per-agent**: new `container.memory`/`cpus`/`pidsLimit` manifest fields override the **conservative global defaults** (`runtime.limits` → **1 CPU / 1 GB / 512 PIDs**); an agent with no `container:` block still gets the defaults. Resolved by a shared `resolveContainerLimits()`. cap-drop+no-new-privileges are always on (safe — containers are non-root uid 1000). Wires up the dead `ExecOptions.memory/cpus` (**DEAD-02**). Documented prominently in `README.md`, `docs/agents.md`, and `examples/daedalus.config.yaml`. Verified by `smoke-dispatcher` (flags + default vs per-agent override) + full CI-safe suite (56/56). _Pairs with SEC-02-BROKER, which will reuse this same `buildContainerArgs`. Validate on colima before live._
+
 **What:** Neither the dispatcher's `docker run` (`container.ts:151-207`) nor `DockerRuntime.exec` (`runtime/docker.ts:27-54`) set `--cap-drop`, `--security-opt no-new-privileges`, `--read-only`, `--pids-limit`, `--memory`, or `--cpus`. The `ExecOptions.memory`/`cpus` fields exist but are never populated (see DEAD-02), so the limit branches are dead.
 **Why it matters:** Default-capability containers have a large kernel attack surface; with no PID/memory limit a single agent turn can fork-bomb or OOM the whole host stack.
 **Fix (described):** Add `--cap-drop=ALL` (re-add only what's needed), `--security-opt=no-new-privileges`, `--pids-limit`, and default `--memory`/`--cpus`; wire `config.runtime` limits through `buildRuntime` into `DockerRuntime`.
@@ -148,7 +150,7 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Validate `input.agent` against an explicit allowlist of agents the caller may target (e.g. only the orchestrator may target other agents; subagents may only self-schedule).
 
 ### SEC-07 (High) — stdio MCP servers inherit all host secrets
-**Status: ✅ DONE** — Commit `<pending>`. Replaced the `{ ...process.env, ...def.env }` spread with an allowlisted `baseMcpEnv()` (PATH/HOME/locale/TZ/TMPDIR + OneCLI proxy & MITM-CA vars) layered with the server's own `def.env`. Secrets (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `WEB_*`, `SECRET_ENCRYPTION_KEY`, `MEMPALACE_TOKEN`, `ONECLI_API_KEY`, …) are no longer auto-shared. Verified by `scripts/smoke-mcp-env.mjs`. **Current live impact: none** — all configured MCP servers are http/sse (no stdio child is spawned); this is forward-hardening. The `mcp.passEnv` escape-hatch was intentionally **not** added (would be dead config with no stdio servers; trivial to add later). **Behaviour note:** any future stdio server that relied on an *inherited* secret must declare it explicitly (`env: { FOO: "${FOO}" }`).
+**Status: ✅ DONE** — Commit `72973d3`. Replaced the `{ ...process.env, ...def.env }` spread with an allowlisted `baseMcpEnv()` (PATH/HOME/locale/TZ/TMPDIR + OneCLI proxy & MITM-CA vars) layered with the server's own `def.env`. Secrets (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `WEB_*`, `SECRET_ENCRYPTION_KEY`, `MEMPALACE_TOKEN`, `ONECLI_API_KEY`, …) are no longer auto-shared. Verified by `scripts/smoke-mcp-env.mjs`. **Current live impact: none** — all configured MCP servers are http/sse (no stdio child is spawned); this is forward-hardening. The `mcp.passEnv` escape-hatch was intentionally **not** added (would be dead config with no stdio servers; trivial to add later). **Behaviour note:** any future stdio server that relied on an *inherited* secret must declare it explicitly (`env: { FOO: "${FOO}" }`).
 
 **What:** Every stdio MCP child is spawned with `env: { ...process.env, ...def.env }` (`mcp/client.ts:71`); the JSON config is also `${VAR}`-expanded at load (`mcp/loader.ts:64`).
 **Why it matters:** Each MCP server process receives the supervisor's entire environment — every API key, bearer token, and the encryption key. A single malicious/compromised MCP entry exfiltrates all credentials. Acceptable only if the MCP config file is fully operator-owned and never agent-writable; confirm that provenance.

@@ -9,6 +9,10 @@ export interface DockerRuntimeOptions {
   // Path to the docker binary. If unset, falls back to env DOCKER_BIN, then "docker" on PATH.
   bin?: string;
   socket?: string; // optional DOCKER_HOST override (-H ...)
+  // SEC-03: resource limits applied to every exec (resolved per-agent → global default).
+  memory?: string;
+  cpus?: string;
+  pidsLimit?: number;
 }
 
 // Runs each command in `docker run --rm` against the agent's declared image.
@@ -43,8 +47,13 @@ export class DockerRuntime implements Runtime {
     if (opts.network ?? this.opts.defaultNetwork) {
       args.push("--network", opts.network ?? this.opts.defaultNetwork!);
     }
-    if (opts.memory) args.push("--memory", opts.memory);
-    if (opts.cpus) args.push("--cpus", opts.cpus);
+    // SEC-03: hardening + resource limits on every docker-runtime exec (non-root uid 1000).
+    args.push("--cap-drop", "ALL", "--security-opt", "no-new-privileges");
+    const memory = opts.memory ?? this.opts.memory;
+    const cpus = opts.cpus ?? this.opts.cpus;
+    if (memory) args.push("--memory", memory);
+    if (cpus) args.push("--cpus", cpus);
+    if (this.opts.pidsLimit) args.push("--pids-limit", String(this.opts.pidsLimit));
     // On Linux, host.docker.internal isn't mapped automatically (unlike macOS/Windows Docker
     // Desktop). Add the mapping so containers can reach host services via that hostname.
     if (process.platform === "linux") {

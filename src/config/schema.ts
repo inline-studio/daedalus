@@ -63,6 +63,17 @@ export const RuntimeConfigSchema = z.object({
       containerPath: z.string().default("/shared"),
     })
     .default({ enabled: true, hostPath: "./data/shared", containerPath: "/shared" }),
+  // SEC-03: default resource limits applied to EVERY agent container. Deliberately
+  // CONSERVATIVE (1 CPU / 1 GB / 512 pids) so a runaway agent can't starve co-located
+  // services or take down the host — an agent that needs more raises them in its own
+  // `container:` frontmatter. cap-drop=ALL + no-new-privileges are always on (not configurable).
+  limits: z
+    .object({
+      memory: z.coerce.string().default("1g"), // docker --memory
+      cpus: z.coerce.string().default("1"), // docker --cpus (string permits "1.5")
+      pidsLimit: z.coerce.number().int().positive().default(512), // docker --pids-limit
+    })
+    .default({ memory: "1g", cpus: "1", pidsLimit: 512 }),
 });
 export type RuntimeConfig = z.infer<typeof RuntimeConfigSchema>;
 
@@ -369,8 +380,34 @@ export const AgentContainerSchema = z.object({
   bind: z.array(z.string()).default([]), // "host:container[:ro]"
   env: z.record(z.string()).default({}),
   network: z.string().optional(),
+  // SEC-03: per-agent resource overrides. Omit to inherit the conservative global defaults
+  // (runtime.limits → 1 CPU / 1 GB / 512 pids). Raise for heavy leaves (builds, media).
+  memory: z.coerce.string().optional(), // docker --memory, e.g. "4g"
+  cpus: z.coerce.string().optional(), // docker --cpus, e.g. "2"
+  pidsLimit: z.coerce.number().int().positive().optional(),
 });
 export type AgentContainer = z.infer<typeof AgentContainerSchema>;
+
+// SEC-03: resolve a container's effective resource limits — a per-agent `container:` override
+// falls back to the conservative global defaults (runtime.limits). Used by both container
+// launch paths (the per-turn dispatcher container and the host-mode DockerRuntime).
+export interface ResolvedLimits {
+  memory: string;
+  cpus: string;
+  pidsLimit: number;
+}
+export function resolveContainerLimits(
+  container:
+    | { memory?: string | undefined; cpus?: string | undefined; pidsLimit?: number | undefined }
+    | undefined,
+  defaults: ResolvedLimits,
+): ResolvedLimits {
+  return {
+    memory: container?.memory ?? defaults.memory,
+    cpus: container?.cpus ?? defaults.cpus,
+    pidsLimit: container?.pidsLimit ?? defaults.pidsLimit,
+  };
+}
 
 export const AgentManifestSchema = z.object({
   name: z.string(),

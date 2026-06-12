@@ -33,7 +33,8 @@ Daedalus inverts all of that:
   surfaces.
 - **Per-agent containers.** Give a coder agent `node:24-alpine`, a php agent
   `php:8-cli`. Tool execution runs in the right runtime; the brain repo auto-mounts
-  read-only into every agent.
+  read-only into every agent. Each container is **resource-limited and hardened by
+  default** (see below).
 - **Real memory.** A [Graphiti](https://github.com/getzep/graphiti) temporal
   knowledge-graph MCP. Entities, relationships, and decisions are extracted from each
   turn, with validity tracked over time. Fully local + leak-free — extraction LLM
@@ -97,6 +98,13 @@ What `dae install` brings up:
 Why all-container — isolation of model-generated `bash`, reproducibility, turnkey
 bring-up, and a single portable config. Dispatch architecture, per-agent mounts, and the
 SSH-key auto-mount: [docs/docker-mode.md](docs/docker-mode.md).
+
+> ⚠️ **Container resource limits — conservative by default.** Every agent container runs
+> capped at **1 CPU / 1 GB RAM / 512 PIDs** unless its manifest raises the limit, and is
+> hardened with `--cap-drop=ALL` + `--security-opt=no-new-privileges`. This stops a runaway
+> agent from starving the host (or co-located services). Override per-agent in the manifest's
+> `container:` block (`memory`/`cpus`/`pidsLimit`) or globally under `runtime.limits`. See
+> [docs/agents.md → Resource limits & hardening](docs/agents.md).
 
 ---
 

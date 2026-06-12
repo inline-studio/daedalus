@@ -1,6 +1,7 @@
 import { execa } from "execa";
 import path from "node:path";
-import type { ArtemisConfig } from "../config/schema.js";
+import type { ArtemisConfig, ResolvedLimits } from "../config/schema.js";
+import { resolveContainerLimits } from "../config/schema.js";
 import { loadAgent } from "../brain/agents.js";
 import type { AgentDispatcher, DispatchArgs, DispatchResult } from "./base.js";
 import { log } from "../log.js";
@@ -85,9 +86,11 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     // agents — the ones running bash over untrusted web content — go without. Fail closed:
     // if the manifest didn't load, assume no spawn and withhold the socket.
     const mountDockerSock = (loaded?.manifest.subagents?.length ?? 0) > 0;
+    // SEC-03: per-agent resource limits (manifest override → conservative global default).
+    const limits = resolveContainerLimits(loaded?.manifest.container, this.config.runtime.limits);
 
     const containerName = `dae-${sanitize(args.agentName)}-${Date.now().toString(36)}`;
-    const dockerArgs = this.buildArgs({ containerName, image, args, mountDockerSock });
+    const dockerArgs = this.buildArgs({ containerName, image, args, mountDockerSock, limits });
 
     log.info(
       { agent: args.agentName, image, container: containerName },
@@ -131,6 +134,7 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     image: string;
     args: DispatchArgs;
     mountDockerSock: boolean;
+    limits: ResolvedLimits;
   }): string[] {
     return buildContainerArgs({
       containerName: opts.containerName,
@@ -139,6 +143,7 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
       opts: this.opts,
       brainWritable: this.config.brain.writable,
       mountDockerSock: opts.mountDockerSock,
+      limits: opts.limits,
     });
   }
 }
@@ -155,12 +160,23 @@ export function buildContainerArgs(input: {
   // SEC-02: whether to bind-mount the host docker socket. Only true for agents that spawn
   // subagents; see the dispatch() call site for the rationale.
   mountDockerSock: boolean;
+  // SEC-03: resolved per-agent resource limits (manifest override → conservative default).
+  limits: ResolvedLimits;
 }): string[] {
-  const { containerName, image, dispatchArgs, opts, brainWritable, mountDockerSock } = input;
+  const { containerName, image, dispatchArgs, opts, brainWritable, mountDockerSock, limits } = input;
   const a: string[] = [];
   if (opts.socket) a.push("-H", opts.socket);
   a.push("run", "--rm", "-i", "--name", containerName);
   a.push("--network", opts.network);
+
+  // SEC-03: hardening + resource limits on every agent container. cap-drop=ALL +
+  // no-new-privileges close residual escalation paths (the container is non-root uid 1000);
+  // memory/cpu/pids are conservative by default (runtime.limits) unless the manifest raises them.
+  a.push("--cap-drop", "ALL");
+  a.push("--security-opt", "no-new-privileges");
+  a.push("--pids-limit", String(limits.pidsLimit));
+  a.push("--memory", limits.memory);
+  a.push("--cpus", limits.cpus);
 
   // Mounts — host paths come from supervisor env; container-side paths are the
   // conventional /brain, /shared, /data, /etc/daedalus.

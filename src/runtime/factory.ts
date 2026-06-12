@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentManifest, ArtemisConfig } from "../config/schema.js";
+import { resolveContainerLimits } from "../config/schema.js";
 import { HostRuntime } from "./host.js";
 import { DockerRuntime } from "./docker.js";
 import type { Runtime } from "./base.js";
@@ -43,6 +44,8 @@ export function buildRuntime(agent: AgentManifest, config: ArtemisConfig): Runti
       const absHost = path.isAbsolute(host) ? host : path.resolve(process.cwd(), host);
       binds.push({ host: absHost, container, readOnly: flag === "ro" });
     }
+    // SEC-03: per-agent limits (manifest override → conservative global default).
+    const limits = resolveContainerLimits(agent.container, config.runtime.limits);
     return new DockerRuntime({
       image: agent.container.image,
       ...(agent.container.network ? { defaultNetwork: agent.container.network } : {}),
@@ -50,6 +53,9 @@ export function buildRuntime(agent: AgentManifest, config: ArtemisConfig): Runti
       workdir: agent.container.workdir,
       ...(config.runtime.docker?.bin ? { bin: config.runtime.docker.bin } : {}),
       ...(config.runtime.docker?.socket ? { socket: config.runtime.docker.socket } : {}),
+      memory: limits.memory,
+      cpus: limits.cpus,
+      pidsLimit: limits.pidsLimit,
     });
   }
 
