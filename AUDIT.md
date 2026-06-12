@@ -41,7 +41,7 @@
 | SEC-05 | Security | High | `kernel/ingest.ts:209-218` | Attachment fetch: SSRF + no size cap + no timeout |
 | SEC-06 | Security | High | `tools/schedule.ts:60` | `schedule_message` target agent unvalidated → cross-agent privilege escalation |
 | SEC-07 | Security | High | `mcp/client.ts:71` | stdio MCP servers inherit the supervisor's entire `process.env` (all secrets) |
-| SEC-08 | Security | High | `setup/env-file.ts:40-41` | Secret files written world-readable (no chmod 600) |
+| SEC-08 | Security | High | `setup/env-file.ts:40-41` | ✅ **DONE** — Secret files written world-readable (no chmod 600) |
 | SEC-09 | Security | Medium | `dispatch/container.ts:185-197,284-293` | Secrets passed as `-e KEY=VALUE` argv, visible via `ps`/`/proc/<pid>/cmdline` |
 | SEC-10 | Security | Medium | `brain/skills.ts:22`, `brain/agents.ts:16`, `brain/commands.ts:40` | gray-matter `---js` front-matter `eval()`s arbitrary code at file-load |
 | SEC-11 | Security | Medium | `brain/skill-bootstrap.ts:116-125` | `bootstrap.sh` runs unsandboxed with full `process.env` |
@@ -104,7 +104,7 @@
 **Fix (described):** Add `allowedChatIds: string[]` (and/or `allowedUserIds`) to the telegram/whatsapp config schema; in `handleMessage`, drop messages whose `m.chat.id` isn't in the list (log at info). Fail closed when the list is empty *and* the channel is reachable beyond localhost.
 
 ### SEC-02 (Critical) — Host Docker socket mounted into every agent container
-**Status: 🟡 PARTIAL (interim mitigation applied; broker follow-up deferred)** — Commit `<pending>`. The `docker.sock` mount is now gated on `manifest.subagents.length > 0` (`dispatch/container.ts` — `dispatch()` derives `mountDockerSock`, threaded through `buildContainerArgs`; fail-closed if the manifest can't load). Leaf agents (e.g. `cypher-php8.5`) — the ones running bash over untrusted web content — no longer receive the host socket; only spawning agents (`artemis`, `cypher`) do, so the cascade still works. Regression coverage added in `scripts/smoke-dispatcher.mjs` (block 11, both branches); smoke + typecheck clean.
+**Status: 🟡 PARTIAL (interim mitigation applied; broker follow-up deferred)** — Commit `2a7ede0`. The `docker.sock` mount is now gated on `manifest.subagents.length > 0` (`dispatch/container.ts` — `dispatch()` derives `mountDockerSock`, threaded through `buildContainerArgs`; fail-closed if the manifest can't load). Leaf agents (e.g. `cypher-php8.5`) — the ones running bash over untrusted web content — no longer receive the host socket; only spawning agents (`artemis`, `cypher`) do, so the cascade still works. Regression coverage added in `scripts/smoke-dispatcher.mjs` (block 11, both branches); smoke + typecheck clean.
 
 **⚠️ This does NOT fully close the finding.** A spawning agent still has the raw socket = host root. See the follow-up below.
 
@@ -147,6 +147,12 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Inject only an explicit allowlist (`PATH`, the specific `DAE_*` the server needs) plus `def.env` into stdio children, not all of `process.env`.
 
 ### SEC-08 (High) — Secret files written world-readable
+**Status: ✅ DONE (scoped to the env files; config.yaml/mcp.json deliberately excluded)** — Commit `<pending>`. `upsertEnvFile` now writes `0600` + `chmod`s an existing (possibly `0644`) file + creates the parent dir `0700`. This covers BOTH secret files (`.env.local` and the compose `.env`) in one place, since `install.ts` writes both via `upsertEnvFile`. Verified by trace (new file `0600`; pre-existing `0644` tightened; content preserved) and the secrets smoke test.
+
+**Why `yaml-edit.ts` / `mcp-edit.ts` were NOT changed (deviation from the original fix text, on purpose):** the container image runs as **non-root uid 1000** (`Dockerfile:91`) and the config dir is bind-mounted **read-only** into the supervisor + agent containers (`docker-compose.yml:104,167`). `config.yaml` IS read in-container (`DAE_CONFIG=/etc/daedalus/config.yaml`), so `chmod 0600` (owned by the host user) would make it unreadable to uid 1000 and break the stack unless the host uid is exactly 1000. The env files, by contrast, are read host-side only — the containers load `.env.local` relative to CWD `/app` (not the `/etc/daedalus` mount) and get secrets via compose-passed env vars — so `0600` on them is safe. Hardening config.yaml/mcp.json would need ownership/uid alignment and is left as a separate, deliberate decision.
+
+**Operator hygiene note (no code change):** the live `config.yaml` inlines the Telegram bot token in plaintext while `.env.local` already defines `TELEGRAM_BOT_TOKEN`. Switching that line to `token: ${TELEGRAM_BOT_TOKEN}` removes the only raw secret from config.yaml (needs the var present in the container env).
+
 **What:** `upsertEnvFile` (`setup/env-file.ts:40-41`) and the YAML/MCP writers (`setup/yaml-edit.ts:13`, `setup/mcp-edit.ts:29,48,73`) call `fs.writeFile` with no `mode`. These hold `WEB_SESSION_SECRET`, `WEB_PASSWORD_HASH`, `TELEGRAM_BOT_TOKEN`, `ONECLI_API_KEY`, `SECRET_ENCRYPTION_KEY`, `GRAPHITI_REMOTE_TOKEN`. At default umask they land `0644`.
 **Why it matters:** Any local user can read the session-signing secret (forge login cookies), the at-rest encryption key, and bot tokens.
 **Fix (described):** Write with `{ mode: 0o600 }`, `fs.chmod` existing files after each write, and `0o700` the parent dir.
