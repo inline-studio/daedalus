@@ -4,6 +4,7 @@ import path from "node:path";
 import { execa } from "execa";
 import { createHash } from "node:crypto";
 import type { LoadedSkill } from "./skills.js";
+import { safeChildEnv } from "../secrets/safe-env.js";
 import { log } from "../log.js";
 
 // Skill bootstrap convention.
@@ -114,12 +115,17 @@ async function runOne(
   // 5-minute hard cap — generous for an apt-get / npm install / binary
   // download; long enough that a stuck script won't wedge an agent turn.
   const result = await execa("/bin/sh", [scriptPath], {
+    // SEC-11: hand the script only allowlisted operational env (PATH/HOME/locale + OneCLI
+    // proxy/CA so npm/curl/gh still work), NOT the supervisor's secrets. The DAE_SKILL_* vars
+    // and the bin-dir PATH prefix layer on top. extendEnv:false is REQUIRED — execa otherwise
+    // merges the full process.env back in, defeating the allowlist.
     env: {
-      ...process.env,
+      ...safeChildEnv(),
       DAE_SKILL_BIN: skillDir,
       DAE_SKILL_PATH_DIR: binDir,
       PATH: `${binDir}:${process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
     },
+    extendEnv: false,
     timeout: 5 * 60_000,
     reject: false,
   });

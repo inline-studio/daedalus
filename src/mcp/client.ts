@@ -6,6 +6,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Agent } from "undici";
 import type { McpServerDef } from "./loader.js";
 import type { ToolDefinition } from "../types.js";
+import { safeChildEnv } from "../secrets/safe-env.js";
 import { log } from "../log.js";
 
 // MCP HTTP/SSE transports must bypass the global undici dispatcher. When OneCLI
@@ -30,27 +31,6 @@ export interface ConnectedServer {
   close(): Promise<void>;
 }
 
-// SEC-07: operational env vars a spawned stdio MCP server may legitimately need — never the
-// supervisor's secrets. Includes OneCLI proxy + MITM-CA vars so the child's own outbound is
-// proxied/injected correctly. The LC_* locale family is matched by prefix below.
-const MCP_ENV_PASSTHROUGH = new Set([
-  "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM",
-  "LANG", "TZ", "TMPDIR", "TEMP",
-  "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-  "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-  "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE", "SSL_CERT_FILE",
-]);
-
-// Build the base environment for a stdio MCP child: only allowlisted operational vars from the
-// supervisor's environment. Exported for tests. A server's own `def.env` is layered on top.
-export function baseMcpEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(env)) {
-    if (v === undefined) continue;
-    if (MCP_ENV_PASSTHROUGH.has(k) || k.startsWith("LC_")) out[k] = v;
-  }
-  return out;
-}
 
 export async function connectMcpServer(name: string, def: McpServerDef): Promise<ConnectedServer> {
   const client = new Client({ name: "daedalus", version: "0.1.0" }, { capabilities: {} });
@@ -94,7 +74,7 @@ async function buildTransport(def: McpServerDef) {
         // entire environment (every API key/token). Pass only operational vars + OneCLI
         // proxy/CA plumbing, plus whatever the server explicitly declares. A server needing
         // a specific secret must declare it in its own `env:` (e.g. FOO: "${FOO}").
-        env: { ...baseMcpEnv(), ...def.env } as Record<string, string>,
+        env: { ...safeChildEnv(), ...def.env } as Record<string, string>,
         ...(def.cwd ? { cwd: def.cwd } : {}),
       });
     }

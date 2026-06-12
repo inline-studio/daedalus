@@ -44,7 +44,7 @@
 | SEC-08 | Security | High | `setup/env-file.ts:40-41` | ✅ **DONE** — Secret files written world-readable (no chmod 600) |
 | SEC-09 | Security | Medium | `dispatch/container.ts:185-197,284-293` | ✅ **DONE** — Secrets passed as `-e KEY=VALUE` argv, visible via `ps`/`/proc/<pid>/cmdline` |
 | SEC-10 | Security | Medium | `brain/skills.ts:22`, `brain/agents.ts:16`, `brain/commands.ts:40` | ✅ **DONE** — gray-matter `---js` front-matter `eval()`s arbitrary code at file-load |
-| SEC-11 | Security | Medium | `brain/skill-bootstrap.ts:116-125` | `bootstrap.sh` runs unsandboxed with full `process.env` |
+| SEC-11 | Security | Medium | `brain/skill-bootstrap.ts:116-125` | ✅ **DONE** — `bootstrap.sh` runs unsandboxed with full `process.env` |
 | SEC-12 | Security | Medium | `channels/format/telegram-html.ts:135-137` | Link href not attribute-escaped for `"`, no scheme allowlist → HTML attribute injection |
 | SEC-13 | Security | Medium | `cli/update.ts:66-69` | `dae update` runs `npm install -g <tarball>` with no checksum/signature check |
 | SEC-14 | Security | Medium | `setup/env-file.ts:44-47` | Newline in a secret value injects a spurious env var on round-trip |
@@ -175,13 +175,15 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Pass via `--env-file` or `-e KEY` (value inherited from the already-set dispatcher env) so the value never appears in argv.
 
 ### SEC-10 (Medium) — gray-matter JS front-matter `eval()`
-**Status: ✅ DONE** — Commit `<pending>`. All three brain loaders now parse through a shared `parseFrontmatter()` (`src/brain/frontmatter.ts`) that disables gray-matter's `javascript` engine (replaced with one that throws), so a `---js` brain file is refused instead of `eval`'d. Empirically confirmed the default path executes the eval and the guarded path doesn't (`PWNED` flag). Verified by `scripts/smoke-frontmatter.mjs` + the brain-loader smokes (commands/skill-triggers/wildcard still load real files). Gated on trusted-brain anyway, but the eval path is now closed.
+**Status: ✅ DONE** — Commit `edc7e5b`. All three brain loaders now parse through a shared `parseFrontmatter()` (`src/brain/frontmatter.ts`) that disables gray-matter's `javascript` engine (replaced with one that throws), so a `---js` brain file is refused instead of `eval`'d. Empirically confirmed the default path executes the eval and the guarded path doesn't (`PWNED` flag). Verified by `scripts/smoke-frontmatter.mjs` + the brain-loader smokes (commands/skill-triggers/wildcard still load real files). Gated on trusted-brain anyway, but the eval path is now closed.
 
 **What:** `matter(text)` is called with default options in `brain/skills.ts:22`, `brain/agents.ts:16`, `brain/commands.ts:40`. gray-matter 4.0.3's `javascript` engine runs `---js` front-matter through `eval()` at parse time.
 **Why it matters:** Any brain `.md` file opening with a `---js` block executes arbitrary Node in-process at load — a second code-execution surface beyond `bootstrap.sh`. Gated on the brain being trusted, but it's an unnecessary one.
 **Fix (described):** Pass `matter(text, { language: "yaml", engines: { javascript: () => { throw … } } })` at every call site to disable the JS engine.
 
 ### SEC-11 (Medium) — `bootstrap.sh` runs unsandboxed with full env
+**Status: ✅ DONE** — Commit `<pending>`. The SEC-07 allowlist is extracted to a shared `src/secrets/safe-env.ts` (`safeChildEnv()`); both `mcp/client.ts` (SEC-07) and `skill-bootstrap.ts` now use it. The bootstrap `execa` call passes `safeChildEnv()` + the explicit `DAE_SKILL_*`/`PATH` vars **with `extendEnv: false`** — the critical fix, since execa otherwise merges the full `process.env` back in (an integration test caught exactly that). Bootstrap scripts keep PATH/HOME/locale/proxy/CA (npm/curl/gh still work) but no longer see the supervisor's secrets. Verified by `smoke-skill-bootstrap` (a parent-env secret is invisible to the script; `LANG` still visible) + `smoke-mcp-env` (now testing `safeChildEnv`). _Note: SEC-07's MCP path was confirmed correct independently — the MCP SDK spawns with `{...getDefaultEnvironment(), ...serverParams.env}` and does not merge `process.env`._
+
 **What:** Each skill's `bootstrap.sh` runs via `execa("/bin/sh", [scriptPath])` with `env: { ...process.env, … }` on the host (`brain/skill-bootstrap.ts:116-125`). The content-hash marker only prevents *re-runs*, not malicious content.
 **Why it matters:** A skill script gets full host execution and read access to every secret in the environment. Same trust caveat as SEC-10.
 **Fix (described):** Pass a minimal allowlisted env (PATH + the two `DAE_*` vars); document/enforce trusted-brain provenance.

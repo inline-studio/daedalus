@@ -1,8 +1,9 @@
-// SEC-07: stdio MCP child processes must NOT inherit the supervisor's whole environment
-// (every API key/token). baseMcpEnv passes only operational vars + OneCLI proxy/CA plumbing;
-// secrets are excluded, and a server's own def.env is layered on top by the caller.
+// SEC-07 / SEC-11: spawned children (stdio MCP servers, skill bootstrap.sh) must NOT inherit
+// the supervisor's whole environment (every API key/token). safeChildEnv passes only
+// operational vars + OneCLI proxy/CA plumbing; secrets are excluded, and the caller layers its
+// own explicit vars (def.env / DAE_SKILL_*) on top.
 
-import { baseMcpEnv } from "../dist/mcp/client.js";
+import { safeChildEnv } from "../dist/secrets/safe-env.js";
 
 let pass = true;
 const expect = (label, ok, detail = "") => {
@@ -30,7 +31,7 @@ const fakeEnv = {
   RANDOM_THING: "whatever",
 };
 
-const out = baseMcpEnv(fakeEnv);
+const out = safeChildEnv(fakeEnv);
 
 // Operational vars pass through:
 for (const k of ["PATH", "HOME", "LANG", "LC_TIME", "TZ", "HTTPS_PROXY", "https_proxy", "NODE_EXTRA_CA_CERTS"]) {
@@ -44,7 +45,7 @@ for (const k of [
   expect(`strips ${k}`, !(k in out));
 }
 // def.env layering is the caller's job — baseMcpEnv only returns the allowlisted base.
-expect("undefined values are skipped", baseMcpEnv({ PATH: undefined, HOME: "/h" }).PATH === undefined);
+expect("undefined values are skipped", safeChildEnv({ PATH: undefined, HOME: "/h" }).PATH === undefined);
 
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);
