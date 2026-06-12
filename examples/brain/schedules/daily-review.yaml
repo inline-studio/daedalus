@@ -5,3 +5,8 @@ prompt: |
   Summarise yesterday's work. Check for unresolved follow-ups in the
   memory store and surface anything that should not be lost.
 enabled: false
+# Optional: deliver the agent's reply to a real channel/user (e.g. DM the summary).
+# Omit for a pure background job (the reply is just logged). Only delivers under `dae serve`.
+# deliverTo:
+#   channel: telegram
+#   externalUserId: "8724271796"
