@@ -66,11 +66,13 @@ export function htmlToMarkdown(html: string, sourceUrl: string, maxBytes = 200_0
   // Collapse 3+ blank lines to 2.
   md = md.replace(/\n{3,}/g, "\n\n");
 
-  const byteLength = Buffer.byteLength(md, "utf8");
-  const wasTruncated = byteLength > maxBytes;
+  const wasTruncated = Buffer.byteLength(md, "utf8") > maxBytes;
   if (wasTruncated) {
     md = md.slice(0, maxBytes) + "\n\n[truncated]";
   }
+  // BUG-10: report the length of the content actually returned (post-truncation), not the
+  // pre-truncation size.
+  const byteLength = Buffer.byteLength(md, "utf8");
 
   return {
     url: sourceUrl,

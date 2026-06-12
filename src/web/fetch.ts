@@ -74,6 +74,13 @@ async function readCapped(res: Response, maxBytes: number): Promise<Buffer> {
   return Buffer.concat(chunks.map((c) => Buffer.from(c)));
 }
 
+// BUG-11: decode UTF-8 dropping an incomplete multibyte sequence at the end. A byte-capped read
+// can split a character; TextDecoder with {stream:true} buffers the partial trailing code point
+// and — since we never flush — drops it cleanly instead of emitting a U+FFFD replacement char.
+function decodeUtf8(buf: Buffer): string {
+  return new TextDecoder("utf-8").decode(buf, { stream: true });
+}
+
 export async function fetchUrl(url: string, opts: FetchOptions = {}): Promise<FetchResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 20_000);
@@ -85,7 +92,7 @@ export async function fetchUrl(url: string, opts: FetchOptions = {}): Promise<Fe
     });
     const contentType = res.headers.get("content-type") ?? "";
     const buf = await readCapped(res, opts.maxBytes ?? 1_000_000);
-    return finalize(finalUrl, res.status, contentType, buf.toString("utf8"), opts);
+    return finalize(finalUrl, res.status, contentType, decodeUtf8(buf), opts);
   } finally {
     clearTimeout(timer);
   }

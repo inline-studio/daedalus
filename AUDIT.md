@@ -63,8 +63,8 @@
 | BUG-07 | Bug | Low | `providers/anthropic.ts:65-67` | Usage parsing ignores cache token fields → understated input usage |
 | BUG-08 | Bug | Low | `sessions/schedule-store.ts:213` | `claimDue` returns rows with stale `status: "pending"` after flipping to `firing` |
 | BUG-09 | Bug | Low | `scheduler/parse-when.ts:53-61` | Valid cron with no future fire reported as a generic parse error |
-| BUG-10 | Bug | Low | `web/markdown.ts:69-82` | `byteLength` reported pre-truncation when content was truncated |
-| BUG-11 | Bug | Low | `web/fetch.ts:52-61` | Byte-cap truncation can split a multibyte UTF-8 sequence |
+| BUG-10 | Bug | Low | `web/markdown.ts:69-82` | ✅ **DONE** — `byteLength` reported pre-truncation when content was truncated |
+| BUG-11 | Bug | Low | `web/fetch.ts:52-61` | ✅ **DONE** — Byte-cap truncation can split a multibyte UTF-8 sequence |
 | BUG-12 | Bug | Low | `attachments/store.ts:36-40` | `putBuffer` check-then-act, non-atomic write (partial-read race) |
 | BUG-13 | Bug | Low | `channels/telegram.ts:124,158` | Caption + failed media download silently drops the media |
 | BUG-14 | Bug | Low | `channels/whatsapp.ts:39-54` | Outbound send ignores `res.ok` → failed WhatsApp sends vanish silently |
@@ -217,14 +217,14 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Restrict allowed schemes/hosts, or require explicit operator opt-in for non-loopback MCP URLs.
 
 ### SEC-16 (Low) — Latent path traversal in name→path resolution
-**Status: ✅ DONE** — Commit `<pending>`. Added `assertUnderBrain()` (`brain/safe-path.ts`); `loadAgent`/`loadSkill`/`loadCommand` now assert the resolved path stays under the brain dir before reading. Not reachable today (names are listing/enum-constrained) but closes the latent traversal. Verified by `smoke-safe-path` (incl. the sibling-prefix `/srv/brain2` case).
+**Status: ✅ DONE** — Commit `52b74c0`. Added `assertUnderBrain()` (`brain/safe-path.ts`); `loadAgent`/`loadSkill`/`loadCommand` now assert the resolved path stays under the brain dir before reading. Not reachable today (names are listing/enum-constrained) but closes the latent traversal. Verified by `smoke-safe-path` (incl. the sibling-prefix `/srv/brain2` case).
 
 **What:** `loadSkill`/`loadAgent`/`loadCommand` build paths via `path.join(brainPath, …, name)` with no containment check (`brain/skills.ts:18`, `agents.ts:13`, `commands.ts:37`). Today every `name` is a directory-listing result or an enum-constrained manifest entry, so it isn't reachable from untrusted input.
 **Why it matters:** A future caller passing a user-influenced name (e.g. `../../etc/...`) would escape the brain dir.
 **Fix (described):** After resolving, assert `path.resolve(file).startsWith(path.resolve(brainRoot) + path.sep)` and reject otherwise.
 
 ### SEC-17 (Low) — DDG redirect target not validated
-**Status: ✅ DONE** — Commit `<pending>`. The DDG scraper now drops any unwrapped result URL that isn't http/https, so a `javascript:`/`data:`/internal-scheme target can't flow into `web_fetch` (which now also has its own SSRF guard from SEC-04 as a second net).
+**Status: ✅ DONE** — Commit `52b74c0`. The DDG scraper now drops any unwrapped result URL that isn't http/https, so a `javascript:`/`data:`/internal-scheme target can't flow into `web_fetch` (which now also has its own SSRF guard from SEC-04 as a second net).
 
 **What:** The decoded `uddg` value is emitted as the result URL with only a `//host` → `https://host` rewrite, no scheme/host check (`web/search/duckduckgo.ts:37-39`).
 **Why it matters:** A scraped result could carry a `javascript:`/`data:`/internal-host URL that later flows into `web_fetch` (chains with SEC-04).
@@ -238,14 +238,14 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Keep the token out of any logged object; scrub URLs before logging.
 
 ### SEC-19 (Low) — Fetched content returned without untrusted-content framing (informational)
-**Status: ✅ DONE** — Commit `<pending>`. `web_fetch` output now wraps the page body in explicit `[BEGIN/END UNTRUSTED WEB CONTENT …]` markers instructing the model to treat it as data, not instructions — defence-in-depth against indirect prompt injection. Verified by a live trace (markers present in the returned content).
+**Status: ✅ DONE** — Commit `52b74c0`. `web_fetch` output now wraps the page body in explicit `[BEGIN/END UNTRUSTED WEB CONTENT …]` markers instructing the model to treat it as data, not instructions — defence-in-depth against indirect prompt injection. Verified by a live trace (markers present in the returned content).
 
 **What:** Fetched HTML→markdown is returned verbatim into the model context with no provenance markers (`web/fetch.ts:80` → `tools/web.ts`).
 **Why it matters:** Classic indirect prompt injection — page content becomes model instructions; chains with SEC-04.
 **Fix (described):** Wrap tool output in clearly-delimited "untrusted external content" framing.
 
 ### SEC-20 (Low) — Bootstrap change-detection hash truncated to 64 bits
-**Status: ✅ DONE** — Commit `<pending>`. The bootstrap change-detection marker now uses a 128-bit slice (32 hex chars, was 16/64-bit). Existing 16-char markers no longer match, so each skill bootstrap re-runs once after the upgrade (idempotent).
+**Status: ✅ DONE** — Commit `52b74c0`. The bootstrap change-detection marker now uses a 128-bit slice (32 hex chars, was 16/64-bit). Existing 16-char markers no longer match, so each skill bootstrap re-runs once after the upgrade (idempotent).
 
 **What:** The "already ran" marker uses `sha256(...).slice(0,16)` (`brain/skill-bootstrap.ts:100`).
 **Why it matters:** Not security-critical (change detection, not auth), but a 64-bit truncation needlessly weakens skip-detection.
@@ -313,11 +313,13 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Move the `!next` check outside the try/catch.
 
 ### BUG-10 (Low) — Wrong `byteLength` after truncation
+**Status: ✅ DONE** — Commit `<pending-bugweb>`. `htmlToMarkdown` computes `byteLength` from the final (post-truncation) markdown now.
 **What:** `byteLength` is computed before `md.slice(0, maxBytes)` and returned as-is (`web/markdown.ts:69-82`).
 **Why it matters:** Callers logging/deciding on `byteLength` (e.g. `tools/web.ts`) report a misleading size.
 **Fix (described):** Recompute from the final markdown.
 
 ### BUG-11 (Low) — UTF-8 split on byte-cap truncation
+**Status: ✅ DONE** — Commit `<pending-bugweb>`. `fetchUrl`'s text path decodes via a streaming `TextDecoder` (`{stream:true}`, never flushed), dropping an incomplete trailing multibyte sequence instead of emitting `U+FFFD`. Verified with a split `🎉`.
 **What:** The byte cap slices the last chunk at an arbitrary byte offset, then `toString("utf8")` can corrupt a multibyte char straddling the boundary (`web/fetch.ts:52-61`).
 **Why it matters:** Truncated non-ASCII pages can end in a replacement char.
 **Fix (described):** Use a streaming `TextDecoder` (buffers partial code points) or trim back to a code-point boundary.
