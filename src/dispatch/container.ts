@@ -4,6 +4,7 @@ import type { ArtemisConfig, ResolvedLimits } from "../config/schema.js";
 import { resolveContainerLimits } from "../config/schema.js";
 import { loadAgent } from "../brain/agents.js";
 import type { AgentDispatcher, DispatchArgs, DispatchResult } from "./base.js";
+import { DISPATCH_RESULT_SENTINEL } from "./base.js";
 import { log } from "../log.js";
 
 // Spawns one short-lived container per agent turn via the local docker socket.
@@ -283,25 +284,27 @@ function tailOf(s: string, n: number): string {
   return s.length > n ? "…" + s.slice(-n) : s;
 }
 
-// The agent container is expected to print a single JSON DispatchResult on the
-// last non-empty line of stdout. We tolerate prior log lines (e.g. OneCLI proxy
-// info) by scanning bottom-up for the first parseable JSON object.
-function parseDispatchResult(stdout: string): DispatchResult {
-  const lines = stdout.split(/\r?\n/).filter((l) => l.trim().length > 0);
+// BUG-01: the agent-turn entrypoint frames its DispatchResult with DISPATCH_RESULT_SENTINEL.
+// Scan bottom-up for the sentinel-framed line and parse only that — arbitrary JSON or startup
+// noise on stdout (or a process writing to the container's fd 1) can no longer be mistaken for,
+// or forge, the turn result. Exported for tests.
+export function parseDispatchResult(stdout: string): DispatchResult {
+  const lines = stdout.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]!.trim();
-    if (!line.startsWith("{")) continue;
+    const idx = lines[i]!.indexOf(DISPATCH_RESULT_SENTINEL);
+    if (idx === -1) continue;
+    const json = lines[i]!.slice(idx + DISPATCH_RESULT_SENTINEL.length).trim();
     try {
-      const parsed = JSON.parse(line) as DispatchResult;
+      const parsed = JSON.parse(json) as DispatchResult;
       if (parsed.status === "complete" || parsed.status === "pending_question") {
         return parsed;
       }
     } catch {
-      // not JSON; keep scanning
+      // sentinel present but payload not parseable — keep scanning (defensive).
     }
   }
   throw new Error(
-    `agent container produced no parseable DispatchResult. Last 500 bytes: ${truncate(stdout, 500)}`,
+    `agent container produced no sentinel-framed DispatchResult. Last 500 bytes: ${truncate(stdout, 500)}`,
   );
 }
 
