@@ -16,6 +16,11 @@ export class TelegramChannel implements Channel {
   private offset = 0;
   private running = false;
   private apiBase: string;
+  // BUG-06: lets stop() abort the in-flight long-poll (otherwise shutdown hangs up to ~30s on
+  // the open getUpdates request) and await the poll loop's exit so no further update batch is
+  // dispatched after stop.
+  private abort: AbortController | null = null;
+  private pollLoopDone: Promise<void> | null = null;
   // Sender allowlist (fail-closed): only these chat ids may drive the agent. Null when no
   // allowlist is configured, in which case ALL inbound is rejected — see handleMessage.
   private allowedChatIds: Set<string> | null;
@@ -40,7 +45,8 @@ export class TelegramChannel implements Channel {
     }
 
     this.running = true;
-    void this.pollLoop(ctx);
+    this.abort = new AbortController();
+    this.pollLoopDone = this.pollLoop(ctx);
     log.info({ channel: this.id }, "telegram long-polling started");
     if (!this.allowedChatIds) {
       log.warn(
@@ -52,7 +58,12 @@ export class TelegramChannel implements Channel {
   }
 
   async stop(): Promise<void> {
+    // Order matters: clear `running` first so the abort-triggered getUpdates rejection isn't
+    // treated as a transient error (no backoff), then abort the open long-poll and await the
+    // loop's exit so stop() doesn't return while a batch is still being dispatched.
     this.running = false;
+    this.abort?.abort();
+    await this.pollLoopDone?.catch(() => undefined);
   }
 
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {
@@ -113,8 +124,9 @@ export class TelegramChannel implements Channel {
   private async pollLoop(ctx: ChannelContext): Promise<void> {
     while (this.running) {
       try {
-        const updates = await this.getUpdates(this.offset, 30);
+        const updates = await this.getUpdates(this.offset, 30, this.abort?.signal);
         for (const u of updates) {
+          if (!this.running) break; // stop() called mid-batch — don't dispatch the rest
           this.offset = u.update_id + 1;
           if (!u.message) continue;
           await this.handleMessage(ctx, u.message).catch((err) =>
@@ -189,9 +201,13 @@ export class TelegramChannel implements Channel {
     });
   }
 
-  private async getUpdates(offset: number, timeoutSec: number): Promise<TelegramUpdate[]> {
+  private async getUpdates(
+    offset: number,
+    timeoutSec: number,
+    signal?: AbortSignal,
+  ): Promise<TelegramUpdate[]> {
     const url = `${this.apiBase}/getUpdates?offset=${offset}&timeout=${timeoutSec}`;
-    const res = await fetch(url);
+    const res = await fetch(url, signal ? { signal } : {});
     if (!res.ok) throw new Error(`getUpdates HTTP ${res.status}`);
     const json = (await res.json()) as { ok: boolean; result?: TelegramUpdate[] };
     if (!json.ok) throw new Error("getUpdates returned ok=false");
