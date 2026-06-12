@@ -8,6 +8,7 @@ import { loadAgent } from "../brain/agents.js";
 import { loadAgentCommands, detectSlashCommand, resolveCommand } from "../brain/commands.js";
 import { loadSkill, listSkills, matchSkillTriggers } from "../brain/skills.js";
 import { log } from "../log.js";
+import { fetchBytes } from "../web/fetch.js";
 import type { ArtemisConfig } from "../config/schema.js";
 
 // Run by the SUPERVISOR before dispatching to an agent. Does all the IO-side work
@@ -87,7 +88,7 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
     for (const part of expanded) inboundParts.push(part);
   }
   for (const a of incoming.attachments ?? []) {
-    const buf = a.data ?? (a.url ? await fetchUrl(a.url) : null);
+    const buf = a.data ?? (a.url ? await fetchAttachmentBytes(a.url, args.config) : null);
     if (!buf) continue;
     const meta = await attachments.putBuffer(buf, a.mediaType, a.filename);
     if (a.kind === "image") {
@@ -206,13 +207,22 @@ function titleFromText(text: string): string {
   return collapsed.length > 50 ? collapsed.slice(0, 49).trimEnd() + "…" : collapsed;
 }
 
-async function fetchUrl(url: string): Promise<Buffer | null> {
+// SEC-05: fetch an inbound attachment URL with the SSRF guard, a size cap, and a timeout
+// (an inbound message's attachment.url is attacker-influenced). Returns null on any failure
+// — including a blocked internal/private host — so the attachment is simply skipped.
+async function fetchAttachmentBytes(
+  url: string,
+  config: ArtemisConfig | undefined,
+): Promise<Buffer | null> {
   try {
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    return Buffer.from(await res.arrayBuffer());
+    const { buffer } = await fetchBytes(url, {
+      ...(config ? { maxBytes: config.attachments.maxFetchBytes } : {}),
+      ...(config ? { timeoutMs: config.attachments.fetchTimeoutMs } : {}),
+      ...(config ? { allowHosts: config.web.fetch.allowHosts } : {}),
+    });
+    return buffer;
   } catch (err) {
-    log.warn({ url, err }, "fetch attachment failed");
+    log.warn({ url, err: (err as Error).message }, "fetch attachment failed");
     return null;
   }
 }

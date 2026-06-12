@@ -115,3 +115,12 @@ web:
   fetch:
     maxBytes: 1000000       # hard cap on body size; truncated above this
     timeoutMs: 20000
+    # web_fetch blocks private/loopback/link-local/metadata hosts by default (SSRF guard).
+    # List exact hostnames to explicitly permit an internal host; also applies to attachment
+    # URL downloads. Empty = deny all internal.
+    # allowHosts: ["internal-docs.lan"]
+
+# Inbound attachment URL downloads (SSRF-guarded, size-capped, time-bounded).
+attachments:
+  maxFetchBytes: 25000000   # 25 MB; raise for large media (e.g. a video store)
+  fetchTimeoutMs: 30000

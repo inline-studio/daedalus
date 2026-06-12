@@ -294,6 +294,15 @@ export const WebConfigSchema = z.object({
 });
 export type WebConfig = z.infer<typeof WebConfigSchema>;
 
+// Limits for fetching inbound attachments supplied as a URL (rather than inline bytes).
+// SEC-05: the attachment fetch is SSRF-guarded (reusing web.fetch.allowHosts), size-capped,
+// and time-bounded. The cap defaults high enough for images/PDFs; raise it for video stores.
+export const AttachmentsConfigSchema = z.object({
+  maxFetchBytes: z.number().int().positive().default(25_000_000), // 25 MB
+  fetchTimeoutMs: z.number().int().positive().default(30_000),
+});
+export type AttachmentsConfig = z.infer<typeof AttachmentsConfigSchema>;
+
 export const BrainConfigSchema = z.object({
   path: z.string(),
   writable: z.boolean().default(false),
@@ -349,6 +358,7 @@ export const ArtemisConfigSchema = z.object({
     search: { provider: "none" },
     fetch: { maxBytes: 1_000_000, timeoutMs: 20_000 },
   }),
+  attachments: AttachmentsConfigSchema.default({}),
 });
 export type ArtemisConfig = z.infer<typeof ArtemisConfigSchema>;
 
