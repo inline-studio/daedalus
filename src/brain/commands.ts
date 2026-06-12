@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import matter from "gray-matter";
+import { parseFrontmatter } from "./frontmatter.js";
 import { z } from "zod";
 
 // Slash-commands ("/ship", "/standup", …) — single-file prompt templates the
@@ -37,7 +37,7 @@ export async function loadCommand(brainPath: string, name: string): Promise<Load
   const file = path.join(brainPath, "commands", `${name}.md`);
   try {
     const text = await fs.readFile(file, "utf8");
-    const fm = matter(text);
+    const fm = parseFrontmatter(text);
     const manifest = CommandManifestSchema.parse({ ...(fm.data as object), name });
     return { manifest, body: fm.content.trim(), sourcePath: file };
   } catch {

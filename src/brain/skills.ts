@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import matter from "gray-matter";
+import { parseFrontmatter } from "./frontmatter.js";
 import { SkillManifestSchema, type SkillManifest } from "../config/schema.js";
 
 export interface LoadedSkill {
@@ -19,7 +19,7 @@ export async function loadSkill(
   const skillFile = path.join(root, "SKILL.md");
   try {
     const text = await fs.readFile(skillFile, "utf8");
-    const fm = matter(text);
+    const fm = parseFrontmatter(text);
     const manifest = SkillManifestSchema.parse({ ...(fm.data as object), name: skillName });
     return { manifest, body: fm.content.trim(), rootPath: root, readOnly: !writable };
   } catch {

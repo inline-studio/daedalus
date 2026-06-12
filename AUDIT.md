@@ -43,7 +43,7 @@
 | SEC-07 | Security | High | `mcp/client.ts:71` | ✅ **DONE** — stdio MCP servers inherit the supervisor's entire `process.env` (all secrets) |
 | SEC-08 | Security | High | `setup/env-file.ts:40-41` | ✅ **DONE** — Secret files written world-readable (no chmod 600) |
 | SEC-09 | Security | Medium | `dispatch/container.ts:185-197,284-293` | ✅ **DONE** — Secrets passed as `-e KEY=VALUE` argv, visible via `ps`/`/proc/<pid>/cmdline` |
-| SEC-10 | Security | Medium | `brain/skills.ts:22`, `brain/agents.ts:16`, `brain/commands.ts:40` | gray-matter `---js` front-matter `eval()`s arbitrary code at file-load |
+| SEC-10 | Security | Medium | `brain/skills.ts:22`, `brain/agents.ts:16`, `brain/commands.ts:40` | ✅ **DONE** — gray-matter `---js` front-matter `eval()`s arbitrary code at file-load |
 | SEC-11 | Security | Medium | `brain/skill-bootstrap.ts:116-125` | `bootstrap.sh` runs unsandboxed with full `process.env` |
 | SEC-12 | Security | Medium | `channels/format/telegram-html.ts:135-137` | Link href not attribute-escaped for `"`, no scheme allowlist → HTML attribute injection |
 | SEC-13 | Security | Medium | `cli/update.ts:66-69` | `dae update` runs `npm install -g <tarball>` with no checksum/signature check |
@@ -168,13 +168,15 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Write with `{ mode: 0o600 }`, `fs.chmod` existing files after each write, and `0o700` the parent dir.
 
 ### SEC-09 (Medium) — Secrets in docker run argv
-**Status: ✅ DONE** — Commit `<pending>`. `ONECLI_API_KEY` and the `forwardEnv` secrets (`MEMPALACE_TOKEN`) are now forwarded **by name** (`-e KEY`, no value) on the `docker run` argv; the dispatcher supplies their values via the `execa` call's `env`, so docker pulls them from its own environment. The values move off the world-readable `/proc/<pid>/cmdline` to the docker process's owner-only `/proc/<pid>/environ`. Non-secret `DAE_*` vars stay inline. `DockerRuntime.exec`'s `-e` only carries `DAE_SHARED` (non-secret), so it's out of scope. Verified by `smoke-dispatcher` (by-name form present; no secret values in argv).
+**Status: ✅ DONE** — Commit `c3b5408`. `ONECLI_API_KEY` and the `forwardEnv` secrets (`MEMPALACE_TOKEN`) are now forwarded **by name** (`-e KEY`, no value) on the `docker run` argv; the dispatcher supplies their values via the `execa` call's `env`, so docker pulls them from its own environment. The values move off the world-readable `/proc/<pid>/cmdline` to the docker process's owner-only `/proc/<pid>/environ`. Non-secret `DAE_*` vars stay inline. `DockerRuntime.exec`'s `-e` only carries `DAE_SHARED` (non-secret), so it's out of scope. Verified by `smoke-dispatcher` (by-name form present; no secret values in argv).
 
 **What:** Secrets are forwarded as `-e MEMPALACE_TOKEN=<value>` and `-e ONECLI_API_KEY=<value>` on the `docker run` command line (`container.ts:185-197`, env build `:284-293`).
 **Why it matters:** Command-line args are world-readable via `/proc/<pid>/cmdline` and `ps`, leaking bearer tokens to any local process and to the docker daemon's audit surface.
 **Fix (described):** Pass via `--env-file` or `-e KEY` (value inherited from the already-set dispatcher env) so the value never appears in argv.
 
 ### SEC-10 (Medium) — gray-matter JS front-matter `eval()`
+**Status: ✅ DONE** — Commit `<pending>`. All three brain loaders now parse through a shared `parseFrontmatter()` (`src/brain/frontmatter.ts`) that disables gray-matter's `javascript` engine (replaced with one that throws), so a `---js` brain file is refused instead of `eval`'d. Empirically confirmed the default path executes the eval and the guarded path doesn't (`PWNED` flag). Verified by `scripts/smoke-frontmatter.mjs` + the brain-loader smokes (commands/skill-triggers/wildcard still load real files). Gated on trusted-brain anyway, but the eval path is now closed.
+
 **What:** `matter(text)` is called with default options in `brain/skills.ts:22`, `brain/agents.ts:16`, `brain/commands.ts:40`. gray-matter 4.0.3's `javascript` engine runs `---js` front-matter through `eval()` at parse time.
 **Why it matters:** Any brain `.md` file opening with a `---js` block executes arbitrary Node in-process at load — a second code-execution surface beyond `bootstrap.sh`. Gated on the brain being trusted, but it's an unnecessary one.
 **Fix (described):** Pass `matter(text, { language: "yaml", engines: { javascript: () => { throw … } } })` at every call site to disable the JS engine.

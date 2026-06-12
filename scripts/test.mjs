@@ -30,6 +30,7 @@ const CI_SAFE = [
   "smoke-empty-assistant",
   "smoke-error-humanize",
   "smoke-export-mempalace",
+  "smoke-frontmatter",
   "smoke-glob-tool",
   "smoke-graphiti-memory",
   "smoke-history-compaction",

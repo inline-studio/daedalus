@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import matter from "gray-matter";
+import { parseFrontmatter } from "./frontmatter.js";
 import { AgentManifestSchema, type AgentManifest } from "../config/schema.js";
 
 export interface LoadedAgent {
@@ -12,7 +12,7 @@ export interface LoadedAgent {
 export async function loadAgent(brainPath: string, agentName: string): Promise<LoadedAgent> {
   const file = path.join(brainPath, "agents", `${agentName}.md`);
   const text = await fs.readFile(file, "utf8");
-  const fm = matter(text);
+  const fm = parseFrontmatter(text);
   const manifest = AgentManifestSchema.parse({ ...(fm.data as object), name: agentName });
   return { manifest, body: fm.content.trim(), sourcePath: file };
 }
