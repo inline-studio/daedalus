@@ -43,6 +43,7 @@ const CI_SAFE = [
   "smoke-outbound-attachment",
   "smoke-persistent-dispatcher",
   "smoke-runtime-scheduling",
+  "smoke-schedule-authz",
   "smoke-skill-bootstrap",
   "smoke-skill-disclosure",
   "smoke-skill-triggers",

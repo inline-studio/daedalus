@@ -39,7 +39,7 @@
 | SEC-03 | Security | High | `dispatch/container.ts:151-207`, `runtime/docker.ts:27-54` | No container hardening (cap-drop, no-new-privileges, pids/memory/cpu limits) |
 | SEC-04 | Security | High | `web/fetch.ts:22-34` | SSRF: no private-IP/metadata/scheme/redirect validation in web_fetch |
 | SEC-05 | Security | High | `kernel/ingest.ts:209-218` | Attachment fetch: SSRF + no size cap + no timeout |
-| SEC-06 | Security | High | `tools/schedule.ts:60` | `schedule_message` target agent unvalidated → cross-agent privilege escalation |
+| SEC-06 | Security | High | `tools/schedule.ts:60` | ✅ **DONE** — `schedule_message` target agent unvalidated → cross-agent privilege escalation |
 | SEC-07 | Security | High | `mcp/client.ts:71` | stdio MCP servers inherit the supervisor's entire `process.env` (all secrets) |
 | SEC-08 | Security | High | `setup/env-file.ts:40-41` | ✅ **DONE** — Secret files written world-readable (no chmod 600) |
 | SEC-09 | Security | Medium | `dispatch/container.ts:185-197,284-293` | Secrets passed as `-e KEY=VALUE` argv, visible via `ps`/`/proc/<pid>/cmdline` |
@@ -137,6 +137,8 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Route attachment fetches through one hardened fetch utility (see IMP-01) with the SSRF blocklist, a byte cap, and an `AbortController` timeout.
 
 ### SEC-06 (High) — Cross-agent scheduling = privilege escalation
+**Status: ✅ DONE** — Commit `<pending>`. `schedule_message` now authorizes the target: an agent may schedule only **itself** or an agent it could **spawn** (its `manifest.subagents`, `'*'` = all). This mirrors the `spawn_subagent` trust edge exactly, so scheduling grants no reach the caller doesn't already have synchronously — and enforces the hierarchy rule `artemis → cypher → cypher-php8.5` (an agent can schedule down/self, never up or sideways). Policy extracted as a pure exported `scheduleTargetAllowed()` and verified by `scripts/smoke-schedule-authz.mjs` against the full matrix; fails closed if the caller's manifest can't load. **Caveat (documented):** a mid-tier agent given `subagents: ['*']` could schedule *up* (because `'*'` = all-minus-self) — keep `'*'` to the top orchestrator only; scheduling faithfully mirrors whatever spawn rights are granted. _Optional follow-up: fire-time re-validation in the poller as defense-in-depth against any pre-existing escalated rows (enqueue-time is the primary fix)._
+
 **What:** `schedule_message` takes `agent = input.agent ?? ctx.agentName` verbatim with no allowlist (`tools/schedule.ts:60`) and stores it as the row's `agent_name`. At fire time the poller dispatches that agent (`poller.ts:125`) with the stored prompt. The `createdByAgent` scoping only governs `cancel`/`list`, not who runs.
 **Why it matters:** A low-privilege subagent can enqueue a deferred turn that executes under a *different, higher-privilege* agent's identity/image/brain mount, with a prompt it fully controls — a privilege-escalation + delayed-prompt-injection primitive.
 **Fix (described):** Validate `input.agent` against an explicit allowlist of agents the caller may target (e.g. only the orchestrator may target other agents; subagents may only self-schedule).
@@ -147,7 +149,7 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Inject only an explicit allowlist (`PATH`, the specific `DAE_*` the server needs) plus `def.env` into stdio children, not all of `process.env`.
 
 ### SEC-08 (High) — Secret files written world-readable
-**Status: ✅ DONE (scoped to the env files; config.yaml/mcp.json deliberately excluded)** — Commit `<pending>`. `upsertEnvFile` now writes `0600` + `chmod`s an existing (possibly `0644`) file + creates the parent dir `0700`. This covers BOTH secret files (`.env.local` and the compose `.env`) in one place, since `install.ts` writes both via `upsertEnvFile`. Verified by trace (new file `0600`; pre-existing `0644` tightened; content preserved) and the secrets smoke test.
+**Status: ✅ DONE (scoped to the env files; config.yaml/mcp.json deliberately excluded)** — Commit `4538642`. `upsertEnvFile` now writes `0600` + `chmod`s an existing (possibly `0644`) file + creates the parent dir `0700`. This covers BOTH secret files (`.env.local` and the compose `.env`) in one place, since `install.ts` writes both via `upsertEnvFile`. Verified by trace (new file `0600`; pre-existing `0644` tightened; content preserved) and the secrets smoke test.
 
 **Why `yaml-edit.ts` / `mcp-edit.ts` were NOT changed (deviation from the original fix text, on purpose):** the container image runs as **non-root uid 1000** (`Dockerfile:91`) and the config dir is bind-mounted **read-only** into the supervisor + agent containers (`docker-compose.yml:104,167`). `config.yaml` IS read in-container (`DAE_CONFIG=/etc/daedalus/config.yaml`), so `chmod 0600` (owned by the host user) would make it unreadable to uid 1000 and break the stack unless the host uid is exactly 1000. The env files, by contrast, are read host-side only — the containers load `.env.local` relative to CWD `/app` (not the `/etc/daedalus` mount) and get secrets via compose-passed env vars — so `0600` on them is safe. Hardening config.yaml/mcp.json would need ownership/uid alignment and is left as a separate, deliberate decision.
 
