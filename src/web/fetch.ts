@@ -1,4 +1,5 @@
 import { htmlToMarkdown, type ExtractedPage } from "./markdown.js";
+import { assertPublicHostAllowed } from "./ssrf.js";
 
 export interface FetchOptions {
   maxBytes?: number; // hard cap on body size before parsing
@@ -6,6 +7,8 @@ export interface FetchOptions {
   userAgent?: string;
   // If true, return raw text without HTML→markdown conversion (useful for JSON / RSS / robots.txt).
   raw?: boolean;
+  // SEC-04: exact-hostname allowlist that bypasses the SSRF guard (default none).
+  allowHosts?: string[];
 }
 
 export interface FetchResult {
@@ -23,17 +26,32 @@ export async function fetchUrl(url: string, opts: FetchOptions = {}): Promise<Fe
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 20_000);
   try {
-    const res = await fetch(url, {
-      headers: {
-        "User-Agent": opts.userAgent ?? DEFAULT_UA,
-        Accept: "text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-      redirect: "follow",
-      signal: controller.signal,
-    });
+    const allowHosts = opts.allowHosts ?? [];
+    // SEC-04: follow redirects MANUALLY so every hop is SSRF-checked — a public URL can 30x
+    // to an internal/metadata host. Each hop is a normal fetch() (still routed through the
+    // OneCLI proxy when enabled); the guard is only a go/no-go gate and never alters the request.
+    const maxHops = 5;
+    let currentUrl = url;
+    let res: Response;
+    for (let hop = 0; ; hop++) {
+      await assertPublicHostAllowed(currentUrl, allowHosts);
+      res = await fetch(currentUrl, {
+        headers: {
+          "User-Agent": opts.userAgent ?? DEFAULT_UA,
+          Accept: "text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+        },
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      const loc = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+      if (!loc) break;
+      if (hop >= maxHops) throw new Error(`web_fetch: too many redirects (>${maxHops})`);
+      await res.body?.cancel().catch(() => undefined); // free the socket before the next hop
+      currentUrl = new URL(loc, currentUrl).toString();
+    }
 
-    const finalUrl = res.url || url;
+    const finalUrl = currentUrl;
     const contentType = res.headers.get("content-type") ?? "";
     const maxBytes = opts.maxBytes ?? 1_000_000;
 

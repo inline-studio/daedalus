@@ -285,6 +285,10 @@ export const WebConfigSchema = z.object({
       maxBytes: z.number().int().positive().default(1_000_000),
       timeoutMs: z.number().int().positive().default(20_000),
       userAgent: z.string().optional(),
+      // SEC-04: web_fetch blocks private/loopback/link-local/metadata destinations by default.
+      // List exact hostnames here to explicitly permit an internal host (e.g. a self-hosted
+      // service the agent must reach via web_fetch). Empty = deny all internal.
+      allowHosts: z.array(z.string()).default([]),
     })
     .default({ maxBytes: 1_000_000, timeoutMs: 20_000 }),
 });

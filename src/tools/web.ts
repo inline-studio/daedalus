@@ -34,6 +34,7 @@ export function webFetchTool(config: WebConfig): ToolImpl {
           maxBytes: config.fetch.maxBytes,
           timeoutMs: config.fetch.timeoutMs,
           ...(config.fetch.userAgent ? { userAgent: config.fetch.userAgent } : {}),
+          allowHosts: config.fetch.allowHosts,
           raw: Boolean(input.raw),
         });
 
