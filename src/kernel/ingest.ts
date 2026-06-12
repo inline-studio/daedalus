@@ -250,7 +250,7 @@ async function maybeSkillTriggerPreamble(
   if (declared.length === 0) return null;
   const skillNames = declared.includes("*") ? await listSkills(config.brain.path) : declared;
   const skills = (
-    await Promise.all(skillNames.map((s) => loadSkill(config.brain.path, s, false)))
+    await Promise.all(skillNames.map((s) => loadSkill(config.brain.path, s)))
   ).filter((s): s is NonNullable<typeof s> => s !== null);
   const matches = matchSkillTriggers(text, skills.map((s) => s.manifest));
   if (matches.length === 0) return null;

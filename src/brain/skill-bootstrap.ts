@@ -50,7 +50,7 @@ export function sharedBinDir(dataDir: string): string {
   return path.join(skillBinRoot(dataDir), "bin");
 }
 
-export function perSkillDir(dataDir: string, skillName: string): string {
+function perSkillDir(dataDir: string, skillName: string): string {
   return path.join(skillBinRoot(dataDir), skillName);
 }
 

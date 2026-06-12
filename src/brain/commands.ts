@@ -30,7 +30,6 @@ export type CommandManifest = z.infer<typeof CommandManifestSchema>;
 export interface LoadedCommand {
   manifest: CommandManifest;
   body: string;
-  sourcePath: string;
 }
 
 export async function loadCommand(brainPath: string, name: string): Promise<LoadedCommand | null> {
@@ -39,7 +38,7 @@ export async function loadCommand(brainPath: string, name: string): Promise<Load
     const text = await fs.readFile(file, "utf8");
     const fm = parseFrontmatter(text);
     const manifest = CommandManifestSchema.parse({ ...(fm.data as object), name });
-    return { manifest, body: fm.content.trim(), sourcePath: file };
+    return { manifest, body: fm.content.trim() };
   } catch {
     return null;
   }

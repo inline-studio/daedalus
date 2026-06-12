@@ -72,15 +72,15 @@
 | BUG-16 | Bug | Low | `config/load.ts:18-22` | Unresolved `${VAR}` becomes `""` → missing secrets pass schema validation |
 | BUG-17 | Bug | Low | `dispatch/container.ts:100-121` | Container only force-removed on timeout; other failure paths can leak containers |
 | BUG-18 | Bug | Low | `dispatch/persistent.ts:80` | Worker HTTP response cast to `DispatchResult` with no shape validation |
-| DEAD-01 | Dead | Low | `config/schema.ts:106` | `mcp.inline` config field parsed but never consumed |
+| DEAD-01 | Dead | Low | `config/schema.ts:106` | ✅ **DONE** — `mcp.inline` config field parsed but never consumed |
 | DEAD-02 | Dead | Low | `runtime/base.ts:12-14` | ✅ **DONE** (via SEC-03) — `ExecOptions.memory`/`cpus` never set by any caller (limit plumbing dead) |
-| DEAD-03 | Dead | Low | `channels/base.ts:51` | `OutgoingMessage.toExternalUserId` declared but never read |
-| DEAD-04 | Dead | Low | `brain/skills.ts:10,24` | `LoadedSkill.readOnly` set but never read |
-| DEAD-05 | Dead | Low | `brain/agents.ts:9,17`, `brain/commands.ts:33,42` | `sourcePath` on LoadedAgent/LoadedCommand never consumed |
-| DEAD-06 | Dead | Low | `memory/base.ts:16-25`, `memory/brain-sync.ts:22` | brain-sync `recent()`/`append()` path unreachable with existing backends |
-| DEAD-07 | Dead | Low | `config/schema.ts:149-171` | `mempalace` config block deprecated, no consumer (kept for back-compat) |
-| DEAD-08 | Dead | Low | `attachments/whisper-provision.ts:11` | `whisperProvisionUrl` exported but only used internally |
-| DEAD-09 | Dead | Low | `brain/skill-bootstrap.ts:44-52` | `skillBinRoot`/`sharedBinDir`/`perSkillDir` exported, no external consumer |
+| DEAD-03 | Dead | Low | `channels/base.ts:51` | ✅ **DONE** — `OutgoingMessage.toExternalUserId` declared but never read |
+| DEAD-04 | Dead | Low | `brain/skills.ts:10,24` | ✅ **DONE** — `LoadedSkill.readOnly` set but never read |
+| DEAD-05 | Dead | Low | `brain/agents.ts:9,17`, `brain/commands.ts:33,42` | ✅ **DONE** — `sourcePath` on LoadedAgent/LoadedCommand never consumed |
+| DEAD-06 | Dead | Low | `memory/base.ts:16-25`, `memory/brain-sync.ts:22` | ⏸ **DEFERRED** — brain-sync `recent()`/`append()` path unreachable with existing backends |
+| DEAD-07 | Dead | Low | `config/schema.ts:149-171` | ⚪ **NOT DEAD** (false positive) — `mempalace` config block deprecated, no consumer (kept for back-compat) |
+| DEAD-08 | Dead | Low | `attachments/whisper-provision.ts:11` | ⚪ **NOT DEAD** (false positive) — `whisperProvisionUrl` exported but only used internally |
+| DEAD-09 | Dead | Low | `brain/skill-bootstrap.ts:44-52` | 🟡 **PARTIAL** — `skillBinRoot`/`sharedBinDir`/`perSkillDir` exported, no external consumer (only `perSkillDir` was truly unused) |
 | IMP-01 | Improvement | Medium | `web/fetch.ts:22` vs `kernel/ingest.ts:209` | ✅ **DONE** (via SEC-05) — Two divergent `fetchUrl` impls; the weaker one has no caps/SSRF guard |
 | IMP-02 | Improvement | Low | `dispatch/in-process.ts:12`, `container.ts:211`, `persistent.ts:30` | Dispatch payload construction hand-rolled 3× |
 | IMP-03 | Improvement | Low | `config/load.ts:36`, `install.ts:892,1043` | Config/compose path-candidate lists duplicated 3× and already drifting |
@@ -353,15 +353,15 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 
 All claims below were grep-verified across `src/` by the auditing pass; items touching runtime dispatch (string-keyed tool/registry lookups, route names, config lookups) were checked for dynamic references.
 
-- **DEAD-01** `config/schema.ts:106` — `mcp.inline` is parsed but no code reads it (only `mcp.configPath` is consumed). A user setting `mcp.inline` is silently ignored. *Fix:* wire it into `loadMcpConfig` or remove it.
+- **DEAD-01** `config/schema.ts:106` — `mcp.inline` is parsed but no code reads it (only `mcp.configPath` is consumed). A user setting `mcp.inline` is silently ignored. **✅ DONE — removed the field** (re-verified: zero consumers; the field was a silent no-op).
 - **DEAD-02** `runtime/base.ts:12-14` — `ExecOptions.memory`/`cpus` are never set by any caller (`bash.ts`/`buildRuntime` don't populate them), so the limit branches in `DockerRuntime` are unreachable. Reinforces SEC-03. *Fix:* wire `config.runtime` limits through, or remove the fields.
-- **DEAD-03** `channels/base.ts:51` — `OutgoingMessage.toExternalUserId` declared (and referenced in a `Channel.send` doc comment) but never read; routing uses the explicit `externalUserId` arg. *Fix:* remove the field and correct the doc comment.
-- **DEAD-04** `brain/skills.ts:10,24` — `LoadedSkill.readOnly` is populated but never read (write-protection is enforced via `ToolContext.brainWritable` in `tools/file.ts`). *Fix:* remove the field (and the now-unused `writable` param if no other use).
-- **DEAD-05** `brain/agents.ts:9,17`, `brain/commands.ts:33,42` — `sourcePath` set on both, zero readers. *Fix:* drop, or use it in error/log messages.
-- **DEAD-06** `memory/base.ts:16-25`, `memory/brain-sync.ts:22` — neither existing backend (`MempalaceMcpBackend`, `NoopMemoryBackend`) implements `recent()`/`append()`, so `startBrainSync` always early-returns; the whole brain-sync write path is dead. *Fix:* implement `recent()` on the mempalace backend or gate/remove brain-sync. *(Needs-confirmation — verify no third backend exists.)*
-- **DEAD-07** `config/schema.ts:149-171` — the `mempalace` config block is self-documented as deprecated and unread (the setup/export modules reference the MCP server *name*, not this block). Intentionally retained for back-compat validation; informational. *Fix:* leave until a config-version migration drops it.
-- **DEAD-08** `attachments/whisper-provision.ts:11` — `whisperProvisionUrl` is exported but its only caller is in-module. *Fix:* drop the `export`.
-- **DEAD-09** `brain/skill-bootstrap.ts:44-52` — `skillBinRoot`/`sharedBinDir`/`perSkillDir` exported with no external consumer (the bash tool recomputes its own skill-bin path). *Fix:* drop the `export`, or have the bash-tool PATH wiring reuse `sharedBinDir` for a single source of truth.
+- **DEAD-03** `channels/base.ts:51` — `OutgoingMessage.toExternalUserId` declared (and referenced in a `Channel.send` doc comment) but never read; routing uses the explicit `externalUserId` arg. **✅ DONE — removed the field and corrected the `Channel.send` doc comment.**
+- **DEAD-04** `brain/skills.ts:10,24` — `LoadedSkill.readOnly` is populated but never read (write-protection is enforced via `ToolContext.brainWritable` in `tools/file.ts`). **✅ DONE — removed the field and the now-orphaned `writable` param from `loadSkill`** (updated both callers: agent-turn, ingest).
+- **DEAD-05** `brain/agents.ts:9,17`, `brain/commands.ts:33,42` — `sourcePath` set on both, zero readers. **✅ DONE — removed from both `LoadedAgent`/`LoadedCommand` interfaces + returns.**
+- **DEAD-06** `memory/base.ts:16-25`, `memory/brain-sync.ts:22` — neither existing backend (`MempalaceMcpBackend`, `NoopMemoryBackend`) implements `recent()`/`append()`, so `startBrainSync` always early-returns; the whole brain-sync write path is dead. **⏸ DEFERRED** — this is feature-shaped (implement `recent()` vs gate/remove brain-sync), not a one-line removal; needs a separate decision. *Fix:* implement `recent()` on the mempalace backend or gate/remove brain-sync.
+- **DEAD-07** `config/schema.ts:149-171` — **⚪ NOT DEAD (false positive).** Re-verification: `config.mempalace.localHttp` IS read by `cli/export-mempalace.ts:46`. So the block isn't dead code — removing mempalace is a deliberate *feature-removal* (which the operator has flagged wanting), tracked separately, not a dead-code cleanup. No change.
+- **DEAD-08** `attachments/whisper-provision.ts:11` — **⚪ NOT DEAD (false positive).** Re-verification: `whisperProvisionUrl` is imported and exercised by `scripts/smoke-whisper-provision.mjs` (5 assertions). The `export` is needed. No change.
+- **DEAD-09** `brain/skill-bootstrap.ts:44-52` — **🟡 PARTIAL.** Re-verification: `skillBinRoot` and `sharedBinDir` are imported + used by `scripts/smoke-skill-bootstrap.mjs`, so their exports are needed (not dead). Only `perSkillDir` had no external consumer — **✅ dropped its `export`** (still used internally).
 
 ---
 

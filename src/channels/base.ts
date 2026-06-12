@@ -47,8 +47,6 @@ export interface OutgoingMessage {
   text?: string;
   parts?: ContentPart[];
   attachments?: OutgoingAttachment[];
-  // If unset, the channel will route to the user's last inbound channel.
-  toExternalUserId?: string;
   // Web-only: which conversation (session id) this reply belongs to, so the web channel
   // delivers it to the right open conversation/tab rather than broadcasting to all of the
   // user's connections. Other channels ignore it.
@@ -64,8 +62,7 @@ export interface Channel {
   readonly defaultAgent: string;
   start(ctx: ChannelContext): Promise<void>;
   stop(): Promise<void>;
-  // Send an outbound message to a specific external user. Implementations look up the
-  // platform-side address from `toExternalUserId`; the runner has already resolved which
-  // channel to use.
+  // Send an outbound message to a specific external user. The runner has already resolved
+  // which channel to use; the platform-side address is the `externalUserId` argument.
   send(externalUserId: string, msg: OutgoingMessage): Promise<void>;
 }

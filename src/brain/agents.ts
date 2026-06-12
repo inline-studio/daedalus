@@ -6,7 +6,6 @@ import { AgentManifestSchema, type AgentManifest } from "../config/schema.js";
 export interface LoadedAgent {
   manifest: AgentManifest;
   body: string; // markdown body, used as the agent's own system prompt segment
-  sourcePath: string;
 }
 
 export async function loadAgent(brainPath: string, agentName: string): Promise<LoadedAgent> {
@@ -14,7 +13,7 @@ export async function loadAgent(brainPath: string, agentName: string): Promise<L
   const text = await fs.readFile(file, "utf8");
   const fm = parseFrontmatter(text);
   const manifest = AgentManifestSchema.parse({ ...(fm.data as object), name: agentName });
-  return { manifest, body: fm.content.trim(), sourcePath: file };
+  return { manifest, body: fm.content.trim() };
 }
 
 export async function listAgents(brainPath: string): Promise<string[]> {

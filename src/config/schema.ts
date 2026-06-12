@@ -114,7 +114,6 @@ export type SecretsConfig = z.infer<typeof SecretsConfigSchema>;
 
 export const McpConfigSchema = z.object({
   configPath: z.string().optional(), // file or directory of *.json
-  inline: z.record(z.unknown()).optional(), // { servers: { name: { command, args, env, transport } } }
 });
 export type McpConfig = z.infer<typeof McpConfigSchema>;
 
