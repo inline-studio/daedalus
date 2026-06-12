@@ -68,8 +68,8 @@
 | BUG-12 | Bug | Low | `attachments/store.ts:36-40` | ✅ **DONE** — `putBuffer` check-then-act, non-atomic write (partial-read race) |
 | BUG-13 | Bug | Low | `channels/telegram.ts:124,158` | ✅ **DONE** — Caption + failed media download silently drops the media |
 | BUG-14 | Bug | Low | `channels/whatsapp.ts:39-54` | ✅ **DONE** — Outbound send ignores `res.ok` → failed WhatsApp sends vanish silently |
-| BUG-15 | Bug | Low | `kernel/agent-turn.ts:99` | `runSkillBootstraps` result discarded → bootstrap failures invisible to the turn |
-| BUG-16 | Bug | Low | `config/load.ts:18-22` | Unresolved `${VAR}` becomes `""` → missing secrets pass schema validation |
+| BUG-15 | Bug | Low | `kernel/agent-turn.ts:99` | ⚪ **ACCEPTED** — `runSkillBootstraps` result discarded → bootstrap failures invisible to the turn |
+| BUG-16 | Bug | Low | `config/load.ts:18-22` | ⏸ **DEFERRED** — Unresolved `${VAR}` becomes `""` → missing secrets pass schema validation |
 | BUG-17 | Bug | Low | `dispatch/container.ts:100-121` | ✅ **DONE** — Container only force-removed on timeout; other failure paths can leak containers |
 | BUG-18 | Bug | Low | `dispatch/persistent.ts:80` | ✅ **DONE** — Worker HTTP response cast to `DispatchResult` with no shape validation |
 | DEAD-01 | Dead | Low | `config/schema.ts:106` | ✅ **DONE** — `mcp.inline` config field parsed but never consumed |
@@ -298,7 +298,7 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Hold an `AbortController`, abort it in `stop()`, and await the poll-loop promise.
 
 ### BUG-07 (Low) — Anthropic usage drops cache tokens
-**Status: ✅ DONE** — Commit `<pending-bugrob>`. The normalized `usage` type gained optional `cacheReadTokens`/`cacheCreationTokens`; the Anthropic provider populates them from `cache_read_input_tokens`/`cache_creation_input_tokens` (verified present on the stable SDK 0.96 `Messages.Usage`), and the kernel's per-turn usage log surfaces them when present.
+**Status: ✅ DONE** — Commit `30c54e4`. The normalized `usage` type gained optional `cacheReadTokens`/`cacheCreationTokens`; the Anthropic provider populates them from `cache_read_input_tokens`/`cache_creation_input_tokens` (verified present on the stable SDK 0.96 `Messages.Usage`), and the kernel's per-turn usage log surfaces them when present.
 **What:** Only `input_tokens`/`output_tokens` are read; `cache_creation_input_tokens`/`cache_read_input_tokens` are ignored (`providers/anthropic.ts:65-67`).
 **Why it matters:** Usage/cost telemetry understates real input tokens on cached requests — relevant given the project's prompt-caching work.
 **Fix (described):** Include the cache token fields in normalized usage.
@@ -328,7 +328,7 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Use a streaming `TextDecoder` (buffers partial code points) or trim back to a code-point boundary.
 
 ### BUG-12 (Low) — Non-atomic attachment write
-**Status: ✅ DONE** — Commit `<pending-bugrob>`. `putBuffer` writes to a unique temp file then atomically `rename`s into place, so a concurrent reader never observes a partial file (content is sha-addressed, so a writer race is harmless — identical bytes, rename wins).
+**Status: ✅ DONE** — Commit `30c54e4`. `putBuffer` writes to a unique temp file then atomically `rename`s into place, so a concurrent reader never observes a partial file (content is sha-addressed, so a writer race is harmless — identical bytes, rename wins).
 **What:** `putBuffer` does `fs.access` then `fs.writeFile` with no lock (`attachments/store.ts:36-40`); a concurrent `readBuffer` could observe a partially-written file.
 **Why it matters:** Content is sha-addressed so the outcome is idempotent, but partial reads are possible.
 **Fix (described):** Write to a temp file + atomic `rename`, or use the `wx` flag and ignore `EEXIST`.
@@ -346,23 +346,27 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Check `res.ok` and log status+body on failure.
 
 ### BUG-15 (Low) — Bootstrap failures invisible to the turn
+**Status: ⚪ ACCEPTED (no change)** — Re-verified: `runSkillBootstraps` already logs each failed bootstrap (exit code + stderr tail) at `warn` *inside the runner*, so failures are not actually invisible — only the returned result map is unused. Surfacing the failure to the agent/user (skill menu note) is a UX enhancement, not a bug fix; not worth the added prompt surface. Left as-is.
+
 **What:** `await runSkillBootstraps(skills, dataDir)` discards the returned result map (`kernel/agent-turn.ts:99`), which carries exit codes / stderr tails.
 **Why it matters:** A failed bootstrap (non-zero exit) is only logged; the skill loads without its binary and the failure is easy to miss.
 **Fix (described):** Capture the map and surface a warning (skill menu or system note) for any non-zero/null exit.
 
 ### BUG-16 (Low) — Missing secrets silently become empty string
+**Status: ⏸ DEFERRED (needs a decision)** — "Fail loudly on an unresolved `${VAR}`" conflicts with the many config fields that are *legitimately* optional (an unset telegram token, etc. resolving to empty is the intended graceful-degradation). Changing `expandEnv` semantics risks breaking valid configs, so this needs an explicit decision (e.g. warn-only on unresolved refs, or a required-vs-optional distinction) rather than a blind fix.
+
 **What:** `expandEnv` resolves `${VAR}` to `""` when unset/empty and leaves no error for an unresolved reference (`config/load.ts:18-22`); the corresponding schema fields are `.optional()`.
 **Why it matters:** A required secret referenced as `${TELEGRAM_BOT_TOKEN}` that is unset passes validation as `""`, surfacing only as a downstream auth failure.
 **Fix (described):** Leave unresolved `${VAR}` intact (or throw) when no `:-` fallback is given, so missing secrets fail loudly.
 
 ### BUG-17 (Low) — Container leak on non-timeout failures
-**Status: ✅ DONE** — Commit `<pending-bugrob>`. The post-exec handling is wrapped in try/catch that best-effort `docker rm -f`s the container on *any* failure path (timeout, non-zero exit, unparseable result), not just timeout. (The deeper "supervisor dies mid-run" case can't be covered by in-process cleanup; `--rm` handles clean exits.)
+**Status: ✅ DONE** — Commit `30c54e4`. The post-exec handling is wrapped in try/catch that best-effort `docker rm -f`s the container on *any* failure path (timeout, non-zero exit, unparseable result), not just timeout. (The deeper "supervisor dies mid-run" case can't be covered by in-process cleanup; `--rm` handles clean exits.)
 **What:** Only the `result.timedOut` branch issues `docker rm -f` (`dispatch/container.ts:100-121`); other failure/throw paths rely solely on `--rm`, which doesn't fire if the daemon/container is wedged or the supervisor dies mid-run.
 **Why it matters:** Orphaned containers hold their mounts/resources.
 **Fix (described):** Wrap dispatch in try/finally that best-effort `docker rm -f <name>` on every exit path.
 
 ### BUG-18 (Low) — Worker response trusted without validation
-**Status: ✅ DONE** — Commit `<pending-bugrob>`. The persistent dispatcher now checks the parsed worker response has a valid `status` (`complete`/`pending_question`) before returning it; a malformed 200 throws a clear error at the boundary instead of propagating an untyped object.
+**Status: ✅ DONE** — Commit `30c54e4`. The persistent dispatcher now checks the parsed worker response has a valid `status` (`complete`/`pending_question`) before returning it; a malformed 200 throws a clear error at the boundary instead of propagating an untyped object.
 **What:** `return (await res.json()) as DispatchResult` casts the persistent worker's HTTP response with no shape check (`dispatch/persistent.ts:80`).
 **Why it matters:** A malformed 200 propagates an untyped object downstream as if valid, surfacing as a confusing failure far from the cause.
 **Fix (described):** Validate the parsed body against the `DispatchResult` union (zod or a `status` check) before returning.
