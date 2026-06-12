@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
+import { assertUnderBrain } from "./safe-path.js";
 import { AgentManifestSchema, type AgentManifest } from "../config/schema.js";
 
 export interface LoadedAgent {
@@ -10,6 +11,7 @@ export interface LoadedAgent {
 
 export async function loadAgent(brainPath: string, agentName: string): Promise<LoadedAgent> {
   const file = path.join(brainPath, "agents", `${agentName}.md`);
+  assertUnderBrain(brainPath, file);
   const text = await fs.readFile(file, "utf8");
   const fm = parseFrontmatter(text);
   const manifest = AgentManifestSchema.parse({ ...(fm.data as object), name: agentName });

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
+import { assertUnderBrain } from "./safe-path.js";
 import { z } from "zod";
 
 // Slash-commands ("/ship", "/standup", …) — single-file prompt templates the
@@ -35,6 +36,7 @@ export interface LoadedCommand {
 export async function loadCommand(brainPath: string, name: string): Promise<LoadedCommand | null> {
   const file = path.join(brainPath, "commands", `${name}.md`);
   try {
+    assertUnderBrain(brainPath, file);
     const text = await fs.readFile(file, "utf8");
     const fm = parseFrontmatter(text);
     const manifest = CommandManifestSchema.parse({ ...(fm.data as object), name });

@@ -49,11 +49,11 @@
 | SEC-13 | Security | Medium | `cli/update.ts:66-69` | 🟡 **PARTIAL** — `dae update` runs `npm install -g <tarball>` with no checksum/signature check (tag validated; artifact signing deferred to release pipeline) |
 | SEC-14 | Security | Medium | `setup/env-file.ts:44-47` | ✅ **DONE** — Newline in a secret value injects a spurious env var on round-trip |
 | SEC-15 | Security | Medium | `mcp/loader.ts:13`, `mcp/client.ts:79-88` | ⚪ **ACCEPTED** (won't-fix) — MCP `url` only syntactically validated; SSRF-capable and bypasses the OneCLI proxy |
-| SEC-16 | Security | Low | `brain/skills.ts:18`, `brain/agents.ts:13`, `brain/commands.ts:37` | Latent path traversal in name→path resolution (not currently reachable) |
-| SEC-17 | Security | Low | `web/search/duckduckgo.ts:37-39` | DDG `uddg` redirect target emitted without scheme/host validation |
-| SEC-18 | Security | Low | `channels/telegram.ts:23,185` | Bot token embedded in URL strings (latent log/stack-trace leak) |
-| SEC-19 | Security | Low | `web/fetch.ts:80` → `tools/web.ts` | Fetched web content returned to model with no untrusted-content framing (indirect injection) |
-| SEC-20 | Security | Low | `brain/skill-bootstrap.ts:100` | Bootstrap change-detection hash truncated to 64 bits |
+| SEC-16 | Security | Low | `brain/skills.ts:18`, `brain/agents.ts:13`, `brain/commands.ts:37` | ✅ **DONE** — Latent path traversal in name→path resolution (not currently reachable) |
+| SEC-17 | Security | Low | `web/search/duckduckgo.ts:37-39` | ✅ **DONE** — DDG `uddg` redirect target emitted without scheme/host validation |
+| SEC-18 | Security | Low | `channels/telegram.ts:23,185` | ⚪ **ACCEPTED** — Bot token embedded in URL strings (latent log/stack-trace leak) |
+| SEC-19 | Security | Low | `web/fetch.ts:80` → `tools/web.ts` | ✅ **DONE** — Fetched web content returned to model with no untrusted-content framing (indirect injection) |
+| SEC-20 | Security | Low | `brain/skill-bootstrap.ts:100` | ✅ **DONE** — Bootstrap change-detection hash truncated to 64 bits |
 | BUG-01 | Bug | Medium | `dispatch/container.ts:246-263` | ✅ **DONE** (implemented, commit pending) — Forgeable DispatchResult: any JSON line on agent stdout can spoof the turn result |
 | BUG-02 | Bug | Medium | `scheduler/poller.ts:143` | ⚫ **OBSOLETE** (not a bug) — Recurring fires anchored on wall-clock `now`, not `due_at` → schedule drift |
 | BUG-03 | Bug | Medium | `scheduler/parse-when.ts:50,67`, `scheduler/cron.ts:76` | ⚫ **OBSOLETE** (not a bug) — No timezone passed to croner → schedules fire in host TZ (usually UTC) |
@@ -217,26 +217,36 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Restrict allowed schemes/hosts, or require explicit operator opt-in for non-loopback MCP URLs.
 
 ### SEC-16 (Low) — Latent path traversal in name→path resolution
+**Status: ✅ DONE** — Commit `<pending>`. Added `assertUnderBrain()` (`brain/safe-path.ts`); `loadAgent`/`loadSkill`/`loadCommand` now assert the resolved path stays under the brain dir before reading. Not reachable today (names are listing/enum-constrained) but closes the latent traversal. Verified by `smoke-safe-path` (incl. the sibling-prefix `/srv/brain2` case).
+
 **What:** `loadSkill`/`loadAgent`/`loadCommand` build paths via `path.join(brainPath, …, name)` with no containment check (`brain/skills.ts:18`, `agents.ts:13`, `commands.ts:37`). Today every `name` is a directory-listing result or an enum-constrained manifest entry, so it isn't reachable from untrusted input.
 **Why it matters:** A future caller passing a user-influenced name (e.g. `../../etc/...`) would escape the brain dir.
 **Fix (described):** After resolving, assert `path.resolve(file).startsWith(path.resolve(brainRoot) + path.sep)` and reject otherwise.
 
 ### SEC-17 (Low) — DDG redirect target not validated
+**Status: ✅ DONE** — Commit `<pending>`. The DDG scraper now drops any unwrapped result URL that isn't http/https, so a `javascript:`/`data:`/internal-scheme target can't flow into `web_fetch` (which now also has its own SSRF guard from SEC-04 as a second net).
+
 **What:** The decoded `uddg` value is emitted as the result URL with only a `//host` → `https://host` rewrite, no scheme/host check (`web/search/duckduckgo.ts:37-39`).
 **Why it matters:** A scraped result could carry a `javascript:`/`data:`/internal-host URL that later flows into `web_fetch` (chains with SEC-04).
 **Fix (described):** Validate the unwrapped URL is http/https before emitting.
 
 ### SEC-18 (Low) — Bot token embedded in URLs
+**Status: ⚪ ACCEPTED (no change)** — The Telegram Bot API *requires* the token in the URL path (`/bot<token>/...`), so it can't be moved to a header. Re-verified the channel never logs these URLs (logs carry status/body only), so there's no actual leak. Accepted as an inherent API constraint; the mitigation is the existing "don't log the URL" discipline.
+
 **What:** The Telegram token is interpolated into `getUpdates`/`getFile`/file-download URLs (`channels/telegram.ts:23,185`). Current logs avoid the URL, but the pattern is fragile.
 **Why it matters:** Any future log of one of these URLs (or a fetch error embedding it) leaks the token.
 **Fix (described):** Keep the token out of any logged object; scrub URLs before logging.
 
 ### SEC-19 (Low) — Fetched content returned without untrusted-content framing (informational)
+**Status: ✅ DONE** — Commit `<pending>`. `web_fetch` output now wraps the page body in explicit `[BEGIN/END UNTRUSTED WEB CONTENT …]` markers instructing the model to treat it as data, not instructions — defence-in-depth against indirect prompt injection. Verified by a live trace (markers present in the returned content).
+
 **What:** Fetched HTML→markdown is returned verbatim into the model context with no provenance markers (`web/fetch.ts:80` → `tools/web.ts`).
 **Why it matters:** Classic indirect prompt injection — page content becomes model instructions; chains with SEC-04.
 **Fix (described):** Wrap tool output in clearly-delimited "untrusted external content" framing.
 
 ### SEC-20 (Low) — Bootstrap change-detection hash truncated to 64 bits
+**Status: ✅ DONE** — Commit `<pending>`. The bootstrap change-detection marker now uses a 128-bit slice (32 hex chars, was 16/64-bit). Existing 16-char markers no longer match, so each skill bootstrap re-runs once after the upgrade (idempotent).
+
 **What:** The "already ran" marker uses `sha256(...).slice(0,16)` (`brain/skill-bootstrap.ts:100`).
 **Why it matters:** Not security-critical (change detection, not auth), but a 64-bit truncation needlessly weakens skip-detection.
 **Fix (described):** Use the full digest (or ≥32 chars).

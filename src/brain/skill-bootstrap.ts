@@ -98,7 +98,8 @@ async function runOne(
   dataDir: string,
 ): Promise<SkillBootstrapResult> {
   const scriptBytes = await fsp.readFile(scriptPath);
-  const hash = createHash("sha256").update(scriptBytes).digest("hex").slice(0, 16);
+  // SEC-20: 128-bit slice (was 64) for the change-detection marker — negligible collision risk.
+  const hash = createHash("sha256").update(scriptBytes).digest("hex").slice(0, 32);
   const marker = markerPath(dataDir, skillName, hash);
   if (fs.existsSync(marker)) {
     return { ran: false, alreadyDone: true, exitCode: 0, stderrTail: "" };

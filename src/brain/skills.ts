@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
+import { assertUnderBrain } from "./safe-path.js";
 import { SkillManifestSchema, type SkillManifest } from "../config/schema.js";
 
 export interface LoadedSkill {
@@ -16,6 +17,7 @@ export async function loadSkill(
   const root = path.join(brainPath, "skills", skillName);
   const skillFile = path.join(root, "SKILL.md");
   try {
+    assertUnderBrain(brainPath, root);
     const text = await fs.readFile(skillFile, "utf8");
     const fm = parseFrontmatter(text);
     const manifest = SkillManifestSchema.parse({ ...(fm.data as object), name: skillName });
