@@ -77,7 +77,14 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
         }
         throw new Error(`agent worker turn failed (HTTP ${res.status}): ${detail}`);
       }
-      return (await res.json()) as DispatchResult;
+      // BUG-18: validate the worker response shape before trusting it as a DispatchResult.
+      const parsed = (await res.json()) as DispatchResult;
+      if (parsed?.status !== "complete" && parsed?.status !== "pending_question") {
+        throw new Error(
+          `agent worker returned an invalid result shape: ${JSON.stringify(parsed)?.slice(0, 200)}`,
+        );
+      }
+      return parsed;
     }
     throw new Error(
       `agent worker unreachable at ${this.url}: ${(lastErr as Error)?.message ?? "unknown error"}`,

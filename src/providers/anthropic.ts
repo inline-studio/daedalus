@@ -63,7 +63,19 @@ export class AnthropicProvider implements LLMProvider {
         message,
         stopReason: mapStopReason(res.stop_reason),
         ...(res.usage
-          ? { usage: { inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens } }
+          ? {
+              usage: {
+                inputTokens: res.usage.input_tokens,
+                outputTokens: res.usage.output_tokens,
+                // BUG-07: surface cache tokens so usage isn't understated on cached requests.
+                ...(res.usage.cache_read_input_tokens != null
+                  ? { cacheReadTokens: res.usage.cache_read_input_tokens }
+                  : {}),
+                ...(res.usage.cache_creation_input_tokens != null
+                  ? { cacheCreationTokens: res.usage.cache_creation_input_tokens }
+                  : {}),
+              },
+            }
           : {}),
       };
     } catch (err) {

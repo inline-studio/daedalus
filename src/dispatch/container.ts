@@ -114,27 +114,32 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
       input: "",
     });
 
-    if (result.timedOut) {
-      // Best-effort kill; the container may already be gone.
+    // BUG-17: remove the container on EVERY failure path (timeout / non-zero exit / unparseable
+    // result), not only timeout. `--rm` covers a clean exit but not a wedged container; this
+    // catch is belt-and-suspenders for the throw paths.
+    try {
+      if (result.timedOut) {
+        throw new Error(`agent container '${containerName}' timed out`);
+      }
+      if (result.exitCode !== 0) {
+        // The real failure is the LAST line of the container's output (the agent-turn
+        // error), not the first — early lines are just OneCLI/bootstrap startup noise.
+        // Show the TAIL, and log the larger tail at error level so `docker compose logs`
+        // surfaces it without the supervisor truncating away the actual exception.
+        const out = (result.stderr ?? "").trim() || (result.stdout ?? "").trim();
+        log.error(
+          { container: containerName, exitCode: result.exitCode, output: tailOf(out, 4000) },
+          "agent container exited non-zero",
+        );
+        throw new Error(
+          `agent container '${containerName}' exited ${result.exitCode}: ${tailOf(out, 600)}`,
+        );
+      }
+      return parseDispatchResult(result.stdout ?? "");
+    } catch (err) {
       await execa(bin, ["rm", "-f", containerName]).catch(() => undefined);
-      throw new Error(`agent container '${containerName}' timed out`);
+      throw err;
     }
-    if (result.exitCode !== 0) {
-      // The real failure is the LAST line of the container's output (the agent-turn
-      // error), not the first — early lines are just OneCLI/bootstrap startup noise.
-      // Show the TAIL, and log the larger tail at error level so `docker compose logs`
-      // surfaces it without the supervisor truncating away the actual exception.
-      const out = (result.stderr ?? "").trim() || (result.stdout ?? "").trim();
-      log.error(
-        { container: containerName, exitCode: result.exitCode, output: tailOf(out, 4000) },
-        "agent container exited non-zero",
-      );
-      throw new Error(
-        `agent container '${containerName}' exited ${result.exitCode}: ${tailOf(out, 600)}`,
-      );
-    }
-
-    return parseDispatchResult(result.stdout ?? "");
   }
 
   private buildArgs(opts: {

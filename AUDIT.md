@@ -60,18 +60,18 @@
 | BUG-04 | Bug | Medium | `scheduler/poller.ts:68`, `sessions/schedule-store.ts:249-256` | ✅ **DONE** — Failed fire returns to `pending` with same `due_at` → infinite retry, no backoff |
 | BUG-05 | Bug | Medium | `providers/anthropic.ts:20`, `providers/openai.ts:24` | ✅ **DONE** (implemented, commit pending) — Providers advertise `streaming: true` but never stream |
 | BUG-06 | Bug | Medium | `channels/telegram.ts:42-44,101` | ✅ **DONE** (implemented, commit pending) — `stop()` doesn't abort the in-flight long-poll → up to 30s hang + post-stop dispatch |
-| BUG-07 | Bug | Low | `providers/anthropic.ts:65-67` | Usage parsing ignores cache token fields → understated input usage |
+| BUG-07 | Bug | Low | `providers/anthropic.ts:65-67` | ✅ **DONE** — Usage parsing ignores cache token fields → understated input usage |
 | BUG-08 | Bug | Low | `sessions/schedule-store.ts:213` | ✅ **DONE** — `claimDue` returns rows with stale `status: "pending"` after flipping to `firing` |
 | BUG-09 | Bug | Low | `scheduler/parse-when.ts:53-61` | ✅ **DONE** — Valid cron with no future fire reported as a generic parse error |
 | BUG-10 | Bug | Low | `web/markdown.ts:69-82` | ✅ **DONE** — `byteLength` reported pre-truncation when content was truncated |
 | BUG-11 | Bug | Low | `web/fetch.ts:52-61` | ✅ **DONE** — Byte-cap truncation can split a multibyte UTF-8 sequence |
-| BUG-12 | Bug | Low | `attachments/store.ts:36-40` | `putBuffer` check-then-act, non-atomic write (partial-read race) |
+| BUG-12 | Bug | Low | `attachments/store.ts:36-40` | ✅ **DONE** — `putBuffer` check-then-act, non-atomic write (partial-read race) |
 | BUG-13 | Bug | Low | `channels/telegram.ts:124,158` | ✅ **DONE** — Caption + failed media download silently drops the media |
 | BUG-14 | Bug | Low | `channels/whatsapp.ts:39-54` | ✅ **DONE** — Outbound send ignores `res.ok` → failed WhatsApp sends vanish silently |
 | BUG-15 | Bug | Low | `kernel/agent-turn.ts:99` | `runSkillBootstraps` result discarded → bootstrap failures invisible to the turn |
 | BUG-16 | Bug | Low | `config/load.ts:18-22` | Unresolved `${VAR}` becomes `""` → missing secrets pass schema validation |
-| BUG-17 | Bug | Low | `dispatch/container.ts:100-121` | Container only force-removed on timeout; other failure paths can leak containers |
-| BUG-18 | Bug | Low | `dispatch/persistent.ts:80` | Worker HTTP response cast to `DispatchResult` with no shape validation |
+| BUG-17 | Bug | Low | `dispatch/container.ts:100-121` | ✅ **DONE** — Container only force-removed on timeout; other failure paths can leak containers |
+| BUG-18 | Bug | Low | `dispatch/persistent.ts:80` | ✅ **DONE** — Worker HTTP response cast to `DispatchResult` with no shape validation |
 | DEAD-01 | Dead | Low | `config/schema.ts:106` | ✅ **DONE** — `mcp.inline` config field parsed but never consumed |
 | DEAD-02 | Dead | Low | `runtime/base.ts:12-14` | ✅ **DONE** (via SEC-03) — `ExecOptions.memory`/`cpus` never set by any caller (limit plumbing dead) |
 | DEAD-03 | Dead | Low | `channels/base.ts:51` | ✅ **DONE** — `OutgoingMessage.toExternalUserId` declared but never read |
@@ -298,6 +298,7 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Hold an `AbortController`, abort it in `stop()`, and await the poll-loop promise.
 
 ### BUG-07 (Low) — Anthropic usage drops cache tokens
+**Status: ✅ DONE** — Commit `<pending-bugrob>`. The normalized `usage` type gained optional `cacheReadTokens`/`cacheCreationTokens`; the Anthropic provider populates them from `cache_read_input_tokens`/`cache_creation_input_tokens` (verified present on the stable SDK 0.96 `Messages.Usage`), and the kernel's per-turn usage log surfaces them when present.
 **What:** Only `input_tokens`/`output_tokens` are read; `cache_creation_input_tokens`/`cache_read_input_tokens` are ignored (`providers/anthropic.ts:65-67`).
 **Why it matters:** Usage/cost telemetry understates real input tokens on cached requests — relevant given the project's prompt-caching work.
 **Fix (described):** Include the cache token fields in normalized usage.
@@ -327,18 +328,19 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Use a streaming `TextDecoder` (buffers partial code points) or trim back to a code-point boundary.
 
 ### BUG-12 (Low) — Non-atomic attachment write
+**Status: ✅ DONE** — Commit `<pending-bugrob>`. `putBuffer` writes to a unique temp file then atomically `rename`s into place, so a concurrent reader never observes a partial file (content is sha-addressed, so a writer race is harmless — identical bytes, rename wins).
 **What:** `putBuffer` does `fs.access` then `fs.writeFile` with no lock (`attachments/store.ts:36-40`); a concurrent `readBuffer` could observe a partially-written file.
 **Why it matters:** Content is sha-addressed so the outcome is idempotent, but partial reads are possible.
 **Fix (described):** Write to a temp file + atomic `rename`, or use the `wx` flag and ignore `EEXIST`.
 
 ### BUG-13 (Low) — Silent media drop on failed download
-**Status: ✅ DONE** — Commit `<pending-bugchan>`. `handleMessage` tracks a `mediaFailed` flag across the photo/voice/document download branches and, when a download returns null, appends a note to the message text ("a file was attached but couldn't be downloaded — ask the user to resend") instead of acting on the caption alone.
+**Status: ✅ DONE** — Commit `c9bf389`. `handleMessage` tracks a `mediaFailed` flag across the photo/voice/document download branches and, when a download returns null, appends a note to the message text ("a file was attached but couldn't be downloaded — ask the user to resend") instead of acting on the caption alone.
 **What:** A caption-only message whose media download returns null (`channels/telegram.ts:124,158`) is published as text with the media silently dropped (warn-logged only).
 **Why it matters:** Silent data loss with no user-visible signal.
 **Fix (described):** Append a "[attachment failed to download]" note, or retry.
 
 ### BUG-14 (Low) — WhatsApp send ignores HTTP status
-**Status: ✅ DONE** — Commit `<pending-bugchan>`. `send` now awaits the fetch in a try/catch (network errors logged) and checks `res.ok`, logging the status + body on a 4xx/5xx so a failed send is diagnosable.
+**Status: ✅ DONE** — Commit `c9bf389`. `send` now awaits the fetch in a try/catch (network errors logged) and checks `res.ok`, logging the status + body on a 4xx/5xx so a failed send is diagnosable.
 **What:** The outbound POST `.catch()`es network errors but never checks `res.ok` (`channels/whatsapp.ts:39-54`), so a 4xx/5xx (bad/expired token, rate-limit) is silently ignored.
 **Why it matters:** Failed sends vanish with zero diagnostics, unlike the telegram path.
 **Fix (described):** Check `res.ok` and log status+body on failure.
@@ -354,11 +356,13 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Leave unresolved `${VAR}` intact (or throw) when no `:-` fallback is given, so missing secrets fail loudly.
 
 ### BUG-17 (Low) — Container leak on non-timeout failures
+**Status: ✅ DONE** — Commit `<pending-bugrob>`. The post-exec handling is wrapped in try/catch that best-effort `docker rm -f`s the container on *any* failure path (timeout, non-zero exit, unparseable result), not just timeout. (The deeper "supervisor dies mid-run" case can't be covered by in-process cleanup; `--rm` handles clean exits.)
 **What:** Only the `result.timedOut` branch issues `docker rm -f` (`dispatch/container.ts:100-121`); other failure/throw paths rely solely on `--rm`, which doesn't fire if the daemon/container is wedged or the supervisor dies mid-run.
 **Why it matters:** Orphaned containers hold their mounts/resources.
 **Fix (described):** Wrap dispatch in try/finally that best-effort `docker rm -f <name>` on every exit path.
 
 ### BUG-18 (Low) — Worker response trusted without validation
+**Status: ✅ DONE** — Commit `<pending-bugrob>`. The persistent dispatcher now checks the parsed worker response has a valid `status` (`complete`/`pending_question`) before returning it; a malformed 200 throws a clear error at the boundary instead of propagating an untyped object.
 **What:** `return (await res.json()) as DispatchResult` casts the persistent worker's HTTP response with no shape check (`dispatch/persistent.ts:80`).
 **Why it matters:** A malformed 200 propagates an untyped object downstream as if valid, surfacing as a confusing failure far from the cause.
 **Fix (described):** Validate the parsed body against the `DispatchResult` union (zod or a `status` check) before returning.
