@@ -48,7 +48,7 @@
 | SEC-12 | Security | Medium | `channels/format/telegram-html.ts:135-137` | ✅ **DONE** — Link href not attribute-escaped for `"`, no scheme allowlist → HTML attribute injection |
 | SEC-13 | Security | Medium | `cli/update.ts:66-69` | 🟡 **PARTIAL** — `dae update` runs `npm install -g <tarball>` with no checksum/signature check (tag validated; artifact signing deferred to release pipeline) |
 | SEC-14 | Security | Medium | `setup/env-file.ts:44-47` | ✅ **DONE** — Newline in a secret value injects a spurious env var on round-trip |
-| SEC-15 | Security | Medium | `mcp/loader.ts:13`, `mcp/client.ts:79-88` | MCP `url` only syntactically validated; SSRF-capable and bypasses the OneCLI proxy |
+| SEC-15 | Security | Medium | `mcp/loader.ts:13`, `mcp/client.ts:79-88` | ⚪ **ACCEPTED** (won't-fix) — MCP `url` only syntactically validated; SSRF-capable and bypasses the OneCLI proxy |
 | SEC-16 | Security | Low | `brain/skills.ts:18`, `brain/agents.ts:13`, `brain/commands.ts:37` | Latent path traversal in name→path resolution (not currently reachable) |
 | SEC-17 | Security | Low | `web/search/duckduckgo.ts:37-39` | DDG `uddg` redirect target emitted without scheme/host validation |
 | SEC-18 | Security | Low | `channels/telegram.ts:23,185` | Bot token embedded in URL strings (latent log/stack-trace leak) |
@@ -196,7 +196,7 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Use an attribute-escaper that also encodes `"` → `&quot;` for the href, and allowlist `http`/`https`/`tg`/`mailto` (drop the link, keep label text, otherwise).
 
 ### SEC-13 (Medium) — Unverified self-update
-**Status: 🟡 PARTIAL** — Commit `<pending>`. Added `isValidReleaseTag()` — `dae update` now refuses any GitHub `tag_name` that isn't a strict `vMAJOR.MINOR.PATCH[-BUILD]` before it flows into the download URL / install command (verified by `smoke-update-tag`, incl. shell-/path-injection-shaped tags). **The real fix (artifact integrity) is a release-pipeline change, not runtime code** — the latest release publishes only `.tgz` assets (no checksum/signature), and a checksum from the same pipeline wouldn't defend against a GitHub-artifact swap. _Follow-up (needs CI decision): publish a SHA-256 alongside the tarball and verify it in `runUpdate`, or switch to `npm publish --provenance` / sigstore. HTTPS from github.com is the current trust boundary._
+**Status: 🟡 PARTIAL** — Commit `057cc7f`. Added `isValidReleaseTag()` — `dae update` now refuses any GitHub `tag_name` that isn't a strict `vMAJOR.MINOR.PATCH[-BUILD]` before it flows into the download URL / install command (verified by `smoke-update-tag`, incl. shell-/path-injection-shaped tags). **The real fix (artifact integrity) is a release-pipeline change, not runtime code** — the latest release publishes only `.tgz` assets (no checksum/signature), and a checksum from the same pipeline wouldn't defend against a GitHub-artifact swap. _Follow-up (needs CI decision): publish a SHA-256 alongside the tarball and verify it in `runUpdate`, or switch to `npm publish --provenance` / sigstore. HTTPS from github.com is the current trust boundary._
 
 **What:** `dae update` builds `https://github.com/.../daedalus-<tag>.tgz` from the GitHub API `tag_name` and runs `npm install -g <tarball>` (which executes install scripts) with no checksum/signature verification (`cli/update.ts:66-69`); `tag_name` is also used unsanitised in the URL.
 **Why it matters:** The installed code is whatever that URL serves; a compromised/MITM'd artifact runs with no detection (HTTPS is the only control).
@@ -210,6 +210,8 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Reject/strip control characters in `quoteValue`, or encode `\n`/`\r` as escapes and decode on read.
 
 ### SEC-15 (Medium) — MCP URL has no SSRF/scheme guard and bypasses the proxy
+**Status: ⚪ ACCEPTED (won't-fix)** — Decided not to apply an SSRF guard here. MCP server URLs come from **operator-owned config** (the brain / `daedalus.config.yaml`), not agent or attacker input, and MCP is **designed** to reach internal docker services (`graphiti:8000`, `mempalace:11364`, `onecli`) by name — applying the SEC-04 blocklist would break memory and every internal MCP. The proxy bypass (`mcpDirectFetch`) is intentional (the MCP server is on the trusted docker network and needs no credential injection). The audit qualified this as "real only if config isn't fully operator-trusted" — and it is trusted. _Revisit only if MCP server definitions ever become derivable from untrusted input._
+
 **What:** MCP `url` is validated only as a syntactic URL (`mcp/loader.ts:13`); `mcpDirectFetch` (`mcp/client.ts:79-88`) deliberately bypasses the OneCLI proxy. Any `http(s)` host — including `169.254.169.254` or internal services — is connected to with agent-influenced headers.
 **Why it matters:** If MCP defs ever derive from less-trusted input, this is an SSRF vector made worse by the deliberate proxy bypass.
 **Fix (described):** Restrict allowed schemes/hosts, or require explicit operator opt-in for non-loopback MCP URLs.
