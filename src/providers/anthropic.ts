@@ -17,7 +17,7 @@ export class AnthropicProvider implements LLMProvider {
   readonly id = "anthropic";
   readonly capabilities: ProviderCapabilities = {
     tools: true,
-    streaming: true,
+    streaming: false, // BUG-05: complete() is a single blocking call — no streaming path exists
     vision: true,
     systemPromptAsField: true,
   };
