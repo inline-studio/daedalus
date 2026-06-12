@@ -45,7 +45,7 @@
 | SEC-09 | Security | Medium | `dispatch/container.ts:185-197,284-293` | ✅ **DONE** — Secrets passed as `-e KEY=VALUE` argv, visible via `ps`/`/proc/<pid>/cmdline` |
 | SEC-10 | Security | Medium | `brain/skills.ts:22`, `brain/agents.ts:16`, `brain/commands.ts:40` | ✅ **DONE** — gray-matter `---js` front-matter `eval()`s arbitrary code at file-load |
 | SEC-11 | Security | Medium | `brain/skill-bootstrap.ts:116-125` | ✅ **DONE** — `bootstrap.sh` runs unsandboxed with full `process.env` |
-| SEC-12 | Security | Medium | `channels/format/telegram-html.ts:135-137` | Link href not attribute-escaped for `"`, no scheme allowlist → HTML attribute injection |
+| SEC-12 | Security | Medium | `channels/format/telegram-html.ts:135-137` | ✅ **DONE** — Link href not attribute-escaped for `"`, no scheme allowlist → HTML attribute injection |
 | SEC-13 | Security | Medium | `cli/update.ts:66-69` | `dae update` runs `npm install -g <tarball>` with no checksum/signature check |
 | SEC-14 | Security | Medium | `setup/env-file.ts:44-47` | Newline in a secret value injects a spurious env var on round-trip |
 | SEC-15 | Security | Medium | `mcp/loader.ts:13`, `mcp/client.ts:79-88` | MCP `url` only syntactically validated; SSRF-capable and bypasses the OneCLI proxy |
@@ -182,13 +182,15 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Pass `matter(text, { language: "yaml", engines: { javascript: () => { throw … } } })` at every call site to disable the JS engine.
 
 ### SEC-11 (Medium) — `bootstrap.sh` runs unsandboxed with full env
-**Status: ✅ DONE** — Commit `<pending>`. The SEC-07 allowlist is extracted to a shared `src/secrets/safe-env.ts` (`safeChildEnv()`); both `mcp/client.ts` (SEC-07) and `skill-bootstrap.ts` now use it. The bootstrap `execa` call passes `safeChildEnv()` + the explicit `DAE_SKILL_*`/`PATH` vars **with `extendEnv: false`** — the critical fix, since execa otherwise merges the full `process.env` back in (an integration test caught exactly that). Bootstrap scripts keep PATH/HOME/locale/proxy/CA (npm/curl/gh still work) but no longer see the supervisor's secrets. Verified by `smoke-skill-bootstrap` (a parent-env secret is invisible to the script; `LANG` still visible) + `smoke-mcp-env` (now testing `safeChildEnv`). _Note: SEC-07's MCP path was confirmed correct independently — the MCP SDK spawns with `{...getDefaultEnvironment(), ...serverParams.env}` and does not merge `process.env`._
+**Status: ✅ DONE** — Commit `618bee1`. The SEC-07 allowlist is extracted to a shared `src/secrets/safe-env.ts` (`safeChildEnv()`); both `mcp/client.ts` (SEC-07) and `skill-bootstrap.ts` now use it. The bootstrap `execa` call passes `safeChildEnv()` + the explicit `DAE_SKILL_*`/`PATH` vars **with `extendEnv: false`** — the critical fix, since execa otherwise merges the full `process.env` back in (an integration test caught exactly that). Bootstrap scripts keep PATH/HOME/locale/proxy/CA (npm/curl/gh still work) but no longer see the supervisor's secrets. Verified by `smoke-skill-bootstrap` (a parent-env secret is invisible to the script; `LANG` still visible) + `smoke-mcp-env` (now testing `safeChildEnv`). _Note: SEC-07's MCP path was confirmed correct independently — the MCP SDK spawns with `{...getDefaultEnvironment(), ...serverParams.env}` and does not merge `process.env`._
 
 **What:** Each skill's `bootstrap.sh` runs via `execa("/bin/sh", [scriptPath])` with `env: { ...process.env, … }` on the host (`brain/skill-bootstrap.ts:116-125`). The content-hash marker only prevents *re-runs*, not malicious content.
 **Why it matters:** A skill script gets full host execution and read access to every secret in the environment. Same trust caveat as SEC-10.
 **Fix (described):** Pass a minimal allowlisted env (PATH + the two `DAE_*` vars); document/enforce trusted-brain provenance.
 
 ### SEC-12 (Medium) — HTML attribute injection in Telegram formatter
+**Status: ✅ DONE** — Commit `<pending>`. The link replacer now escapes `"` → `&quot;` in the URL (the other entities were already encoded upstream) and only emits an `<a>` for safe schemes (`http`/`https`/`tg`/`mailto`); anything else (`javascript:`, `data:`, scheme-less) renders as the plain label. Closes the href attribute break-out and unsafe-scheme links from agent output that quotes attacker-influenced URLs. Verified by `smoke-telegram-format` (quote escaped; `javascript:`/`data:` → plain text; `mailto:` allowed).
+
 **What:** Markdown link URLs are inserted into `href="..."` unescaped for `"`; `htmlEscape` only handles `& < >` (`channels/format/telegram-html.ts:135-137,267`). A URL containing `"` breaks out of the attribute; `javascript:`/`data:` schemes also pass through unvalidated.
 **Why it matters:** Agent output that quotes attacker-influenced URLs (e.g. from a fetched page) can inject attributes/markup into outbound Telegram messages, or produce messages Telegram rejects.
 **Fix (described):** Use an attribute-escaper that also encodes `"` → `&quot;` for the href, and allowlist `http`/`https`/`tg`/`mailto` (drop the link, keep label text, otherwise).
