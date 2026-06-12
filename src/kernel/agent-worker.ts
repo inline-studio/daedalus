@@ -4,6 +4,7 @@ import { applyOneCli } from "../secrets/onecli.js";
 import { McpPool } from "../mcp/agent-mcp.js";
 import { runAgentTurn } from "./agent-turn.js";
 import type { DispatchArgs } from "../dispatch/base.js";
+import { originFields } from "../dispatch/base.js";
 import { log } from "../log.js";
 
 // Long-lived "warm" agent worker. Runs as its own container in the stack (separate
@@ -83,10 +84,7 @@ async function handleTurn(
       sessionId: args.sessionId,
       userId: args.userId,
       isSubagent: Boolean(args.isSubagent),
-      ...(args.originChannel ? { originChannel: args.originChannel } : {}),
-      ...(args.originExternalUserId
-        ? { originExternalUserId: args.originExternalUserId }
-        : {}),
+      ...originFields(args),
       mcpPool: pool,
     });
     res.writeHead(200, { "content-type": "application/json" });

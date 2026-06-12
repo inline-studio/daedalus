@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
 import { assertUnderBrain } from "./safe-path.js";
+import { listMarkdownNames } from "./list-markdown.js";
 import { AgentManifestSchema, type AgentManifest } from "../config/schema.js";
 
 export interface LoadedAgent {
@@ -19,11 +20,5 @@ export async function loadAgent(brainPath: string, agentName: string): Promise<L
 }
 
 export async function listAgents(brainPath: string): Promise<string[]> {
-  const dir = path.join(brainPath, "agents");
-  try {
-    const files = await fs.readdir(dir);
-    return files.filter((f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, ""));
-  } catch {
-    return [];
-  }
+  return listMarkdownNames(path.join(brainPath, "agents"));
 }

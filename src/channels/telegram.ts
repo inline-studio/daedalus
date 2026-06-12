@@ -102,6 +102,7 @@ export class TelegramChannel implements Channel {
 
     // Then each attachment: images via sendPhoto (inline preview), everything else via
     // sendDocument. Both are multipart uploads of the raw bytes.
+    const failed: string[] = [];
     for (const a of msg.attachments ?? []) {
       const isImage = a.mediaType.startsWith("image/");
       const method = isImage ? "sendPhoto" : "sendDocument";
@@ -110,14 +111,29 @@ export class TelegramChannel implements Channel {
       form.set("chat_id", externalUserId);
       if (a.caption) form.set("caption", a.caption);
       form.set(field, new Blob([a.data], { type: a.mediaType }), a.filename ?? "attachment");
-      const res = await fetch(`${this.apiBase}/${method}`, { method: "POST", body: form });
-      if (!res.ok) {
-        const body = await res.text().catch(() => "");
+      const res = await fetch(`${this.apiBase}/${method}`, { method: "POST", body: form }).catch(
+        () => null,
+      );
+      if (!res || !res.ok) {
+        const body = res ? await res.text().catch(() => "") : "(network error)";
         log.error(
-          { status: res.status, body, method, filename: a.filename },
+          { status: res?.status, body, method, filename: a.filename },
           "telegram attachment send failed",
         );
+        failed.push(a.filename ?? "attachment");
       }
+    }
+    // IMP-07: a partial delivery (text sent, attachment failed) was invisible to the user —
+    // send a short follow-up so they know a file didn't arrive.
+    if (failed.length) {
+      await fetch(`${this.apiBase}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: externalUserId,
+          text: `⚠️ I couldn't deliver ${failed.length === 1 ? "an attachment" : "some attachments"}: ${failed.join(", ")}.`,
+        }),
+      }).catch((err) => log.error({ err }, "telegram failed-attachment notice send failed"));
     }
   }
 

@@ -76,3 +76,15 @@ export interface AgentDispatcher {
 // framed with this sentinel and the parser accepts ONLY a sentinel-framed line. Shared between
 // the entrypoint (src/index.ts) and the parser (dispatch/container.ts).
 export const DISPATCH_RESULT_SENTINEL = "__DAE_DISPATCH_RESULT__ ";
+
+// IMP-02: the optional origin identity (channel + external user id) is threaded into several
+// dispatch payloads (in-process, persistent worker, agent-worker) the same way; build it once,
+// including only the keys that are set.
+export function originFields(
+  args: DispatchArgs,
+): { originChannel?: string; originExternalUserId?: string } {
+  return {
+    ...(args.originChannel ? { originChannel: args.originChannel } : {}),
+    ...(args.originExternalUserId ? { originExternalUserId: args.originExternalUserId } : {}),
+  };
+}

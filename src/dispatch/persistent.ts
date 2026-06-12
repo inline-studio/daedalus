@@ -1,6 +1,7 @@
 import { Agent } from "undici";
 import type { ArtemisConfig } from "../config/schema.js";
 import type { AgentDispatcher, DispatchArgs, DispatchResult } from "./base.js";
+import { originFields } from "./base.js";
 import { log } from "../log.js";
 
 // The worker POST must bypass the global undici dispatcher. The supervisor applies
@@ -32,10 +33,7 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
       sessionId: args.sessionId,
       userId: args.userId,
       isSubagent: args.isSubagent,
-      ...(args.originChannel ? { originChannel: args.originChannel } : {}),
-      ...(args.originExternalUserId
-        ? { originExternalUserId: args.originExternalUserId }
-        : {}),
+      ...originFields(args),
     });
 
     // A turn can take a while (LLM + tools), so don't impose a tight timeout —

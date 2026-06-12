@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { parseFrontmatter } from "./frontmatter.js";
 import { assertUnderBrain } from "./safe-path.js";
+import { listMarkdownNames } from "./list-markdown.js";
 import { z } from "zod";
 
 // Slash-commands ("/ship", "/standup", …) — single-file prompt templates the
@@ -47,15 +48,7 @@ export async function loadCommand(brainPath: string, name: string): Promise<Load
 }
 
 export async function listCommandNames(brainPath: string): Promise<string[]> {
-  const dir = path.join(brainPath, "commands");
-  try {
-    const files = await fs.readdir(dir);
-    return files
-      .filter((f) => f.endsWith(".md"))
-      .map((f) => f.replace(/\.md$/, ""));
-  } catch {
-    return [];
-  }
+  return listMarkdownNames(path.join(brainPath, "commands"));
 }
 
 // Resolve the agent's declared `commands:` list (which may be `['*']`) against
