@@ -40,7 +40,7 @@
 | SEC-04 | Security | High | `web/fetch.ts:22-34` | ✅ **DONE** — SSRF: no private-IP/metadata/scheme/redirect validation in web_fetch |
 | SEC-05 | Security | High | `kernel/ingest.ts:209-218` | ✅ **DONE** — Attachment fetch: SSRF + no size cap + no timeout |
 | SEC-06 | Security | High | `tools/schedule.ts:60` | ✅ **DONE** — `schedule_message` target agent unvalidated → cross-agent privilege escalation |
-| SEC-07 | Security | High | `mcp/client.ts:71` | stdio MCP servers inherit the supervisor's entire `process.env` (all secrets) |
+| SEC-07 | Security | High | `mcp/client.ts:71` | ✅ **DONE** — stdio MCP servers inherit the supervisor's entire `process.env` (all secrets) |
 | SEC-08 | Security | High | `setup/env-file.ts:40-41` | ✅ **DONE** — Secret files written world-readable (no chmod 600) |
 | SEC-09 | Security | Medium | `dispatch/container.ts:185-197,284-293` | Secrets passed as `-e KEY=VALUE` argv, visible via `ps`/`/proc/<pid>/cmdline` |
 | SEC-10 | Security | Medium | `brain/skills.ts:22`, `brain/agents.ts:16`, `brain/commands.ts:40` | gray-matter `---js` front-matter `eval()`s arbitrary code at file-load |
@@ -134,7 +134,7 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Resolve the host and reject loopback/private/link-local/metadata IPs before connecting; set `redirect: "manual"` and follow hops in code with a bounded count, re-validating each `Location`; restrict scheme to http/https inside `fetchUrl` itself.
 
 ### SEC-05 (High) — Unhardened attachment fetch in the kernel
-**Status: ✅ DONE** — Commit `<pending>`. `ingest.ts`'s bare local `fetchUrl` is removed; attachment URLs now go through a new **`fetchBytes`** in `web/fetch.ts` — SSRF-guarded (shared `guardedFetch` core, same blocklist + manual bounded redirects as SEC-04, reusing `web.fetch.allowHosts`), **size-capped** (new `attachments.maxFetchBytes`, default 25 MB, configurable), and **time-bounded** (`attachments.fetchTimeoutMs`, default 30s). A blocked/oversized/slow URL just skips the attachment (null) as before. Verified: `smoke-ssrf` (shared guard) + a trace (internal/metadata blocked, public body capped to exactly 100 bytes) + the attachment/audio ingest smokes. Documented in `examples/daedalus.config.yaml`.
+**Status: ✅ DONE** — Commit `d1eeb34`. `ingest.ts`'s bare local `fetchUrl` is removed; attachment URLs now go through a new **`fetchBytes`** in `web/fetch.ts` — SSRF-guarded (shared `guardedFetch` core, same blocklist + manual bounded redirects as SEC-04, reusing `web.fetch.allowHosts`), **size-capped** (new `attachments.maxFetchBytes`, default 25 MB, configurable), and **time-bounded** (`attachments.fetchTimeoutMs`, default 30s). A blocked/oversized/slow URL just skips the attachment (null) as before. Verified: `smoke-ssrf` (shared guard) + a trace (internal/metadata blocked, public body capped to exactly 100 bytes) + the attachment/audio ingest smokes. Documented in `examples/daedalus.config.yaml`.
 
 **What:** A second, private `fetchUrl` in `kernel/ingest.ts:209-218` does a bare `fetch(url)` then `arrayBuffer()` on an inbound `attachment.url`, with no host validation, no size cap, and no timeout (called at `ingest.ts:90`).
 **Why it matters:** An inbound message can supply an `attachment.url` pointing at an internal service (SSRF) or a huge/slow body to exhaust memory or hang the turn. Worse than SEC-04 because it runs in the supervisor before any agent sandboxing.
@@ -148,6 +148,8 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Validate `input.agent` against an explicit allowlist of agents the caller may target (e.g. only the orchestrator may target other agents; subagents may only self-schedule).
 
 ### SEC-07 (High) — stdio MCP servers inherit all host secrets
+**Status: ✅ DONE** — Commit `<pending>`. Replaced the `{ ...process.env, ...def.env }` spread with an allowlisted `baseMcpEnv()` (PATH/HOME/locale/TZ/TMPDIR + OneCLI proxy & MITM-CA vars) layered with the server's own `def.env`. Secrets (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `WEB_*`, `SECRET_ENCRYPTION_KEY`, `MEMPALACE_TOKEN`, `ONECLI_API_KEY`, …) are no longer auto-shared. Verified by `scripts/smoke-mcp-env.mjs`. **Current live impact: none** — all configured MCP servers are http/sse (no stdio child is spawned); this is forward-hardening. The `mcp.passEnv` escape-hatch was intentionally **not** added (would be dead config with no stdio servers; trivial to add later). **Behaviour note:** any future stdio server that relied on an *inherited* secret must declare it explicitly (`env: { FOO: "${FOO}" }`).
+
 **What:** Every stdio MCP child is spawned with `env: { ...process.env, ...def.env }` (`mcp/client.ts:71`); the JSON config is also `${VAR}`-expanded at load (`mcp/loader.ts:64`).
 **Why it matters:** Each MCP server process receives the supervisor's entire environment — every API key, bearer token, and the encryption key. A single malicious/compromised MCP entry exfiltrates all credentials. Acceptable only if the MCP config file is fully operator-owned and never agent-writable; confirm that provenance.
 **Fix (described):** Inject only an explicit allowlist (`PATH`, the specific `DAE_*` the server needs) plus `def.env` into stdio children, not all of `process.env`.
