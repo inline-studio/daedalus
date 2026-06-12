@@ -98,9 +98,16 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     );
 
     const bin = this.opts.bin ?? "docker";
+    // SEC-09: secrets are forwarded by NAME on the argv (-e KEY); supply their VALUES here in
+    // the docker CLI's environment so they never appear in the world-readable process args.
+    const forwardedSecrets: Record<string, string> = {
+      ...(this.opts.onecliApiKey ? { ONECLI_API_KEY: this.opts.onecliApiKey } : {}),
+      ...(this.opts.forwardEnv ?? {}),
+    };
     const result = await execa(bin, dockerArgs, {
       timeout: args.timeoutMs ?? 5 * 60_000,
       reject: false,
+      env: { ...process.env, ...forwardedSecrets },
       // The agent container reads nothing from stdin (it pulls all state from
       // the mounted session DB). Close stdin immediately so it doesn't block.
       input: "",
@@ -215,7 +222,10 @@ export function buildContainerArgs(input: {
     a.push("-e", `DAE_AGENT_RUNTIME_VOLUME=${opts.runtimeVolume}`);
   }
   if (opts.onecliApiKey) {
-    a.push("-e", `ONECLI_API_KEY=${opts.onecliApiKey}`);
+    // SEC-09: forward by NAME so the secret value isn't on the world-readable docker argv
+    // (/proc/<pid>/cmdline). docker pulls the value from the CLI's own env, which the
+    // dispatcher sets explicitly — the value lives in /proc/<pid>/environ (owner-only) instead.
+    a.push("-e", "ONECLI_API_KEY");
   }
   // Override the OneCLI agent identifier with THIS specific agent's name so
   // OneCLI scopes injection to whatever credentials this agent has been
@@ -223,9 +233,10 @@ export function buildContainerArgs(input: {
   a.push("-e", `DAE_ONECLI_AGENT=${dispatchArgs.agentName}`);
 
   // Local-service secrets (e.g. MEMPALACE_TOKEN) that aren't injected via OneCLI,
-  // so MCP defs using ${VAR} expansion resolve inside the container.
-  for (const [k, v] of Object.entries(opts.forwardEnv ?? {})) {
-    a.push("-e", `${k}=${v}`);
+  // so MCP defs using ${VAR} expansion resolve inside the container. SEC-09: forwarded by
+  // name (value supplied via the dispatcher's env), so it never lands in the argv.
+  for (const k of Object.keys(opts.forwardEnv ?? {})) {
+    a.push("-e", k);
   }
 
   // Entrypoint override. With the injected runtime, we ignore the image's

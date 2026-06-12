@@ -223,6 +223,7 @@ function fakeConfig() {
     hostSharedPath: "/host/shared",
     hostDataPath: "/host/data",
     hostConfigDir: "/host/etc",
+    onecliApiKey: "oc_secret",
     forwardEnv: { MEMPALACE_TOKEN: "tok-123" },
   };
   const args = buildContainerArgs({
@@ -234,10 +235,21 @@ function fakeConfig() {
     mountDockerSock: false,
     limits: { memory: "1g", cpus: "1", pidsLimit: 512 },
   });
+  // SEC-09: secrets are forwarded by NAME (-e KEY), value supplied via the dispatcher's env,
+  // so no secret value ever appears in the world-readable docker argv.
   expect(
-    "forwardEnv MEMPALACE_TOKEN passed as -e to the container",
-    args.some((v, i) => args[i - 1] === "-e" && v === "MEMPALACE_TOKEN=tok-123"),
+    "SEC-09: MEMPALACE_TOKEN forwarded by name (-e MEMPALACE_TOKEN)",
+    args.some((v, i) => args[i - 1] === "-e" && v === "MEMPALACE_TOKEN"),
     `args: ${args.join(" ").slice(0, 300)}`,
+  );
+  expect(
+    "SEC-09: ONECLI_API_KEY forwarded by name (-e ONECLI_API_KEY)",
+    args.some((v, i) => args[i - 1] === "-e" && v === "ONECLI_API_KEY"),
+  );
+  expect(
+    "SEC-09: no secret VALUES appear in the argv",
+    !args.some((v) => v.includes("tok-123") || v.includes("oc_secret")),
+    `args: ${args.join(" ")}`,
   );
 }
 
