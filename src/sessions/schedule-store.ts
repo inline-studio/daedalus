@@ -230,7 +230,9 @@ export class ScheduleStore {
            WHERE id = ? AND status = 'pending'`,
         )
         .run(id);
-      if (r.changes > 0) out.push(rowToScheduledMessage(row));
+      // BUG-08: the SELECTed `row` still says status='pending'; reflect the just-applied
+      // 'firing' transition on the returned object so consumers don't see a stale status.
+      if (r.changes > 0) out.push({ ...rowToScheduledMessage(row), status: "firing" });
     }
     return out;
   }

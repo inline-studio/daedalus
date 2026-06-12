@@ -45,21 +45,25 @@ export function parseWhen(input: string, now: Date = new Date()): ParsedWhen {
   }
 
   // Cron expression (5- or 6-field). croner handles validation + next-fire.
+  // BUG-09: only the croner PARSE belongs in the try — a syntactically-invalid expression is the
+  // "couldn't parse" case. A valid-but-never-firing cron (nextRun → null) gets its own clear
+  // message rather than being mislabelled as unparseable.
+  let next: Date | null;
   try {
     // paused: true so we don't actually arm a job — we just want next().
     const job = new Cron(trimmed, { paused: true }, () => {});
-    const next = job.nextRun(now);
+    next = job.nextRun(now);
     job.stop();
-    if (!next) {
-      throw new Error("cron expression has no future fire time");
-    }
-    return { dueAt: next.toISOString(), cron: trimmed };
   } catch (err) {
     throw new Error(
       `schedule_message: 'when' must be "in N minutes/hours/days", an ISO timestamp, ` +
         `or a cron expression. Got: ${trimmed}. (${(err as Error).message})`,
     );
   }
+  if (!next) {
+    throw new Error(`schedule_message: cron '${trimmed}' is valid but has no upcoming fire time.`);
+  }
+  return { dueAt: next.toISOString(), cron: trimmed };
 }
 
 // Compute the next fire for a recurring cron. Used by the poll loop after each fire.

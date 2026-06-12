@@ -61,8 +61,8 @@
 | BUG-05 | Bug | Medium | `providers/anthropic.ts:20`, `providers/openai.ts:24` | ✅ **DONE** (implemented, commit pending) — Providers advertise `streaming: true` but never stream |
 | BUG-06 | Bug | Medium | `channels/telegram.ts:42-44,101` | ✅ **DONE** (implemented, commit pending) — `stop()` doesn't abort the in-flight long-poll → up to 30s hang + post-stop dispatch |
 | BUG-07 | Bug | Low | `providers/anthropic.ts:65-67` | Usage parsing ignores cache token fields → understated input usage |
-| BUG-08 | Bug | Low | `sessions/schedule-store.ts:213` | `claimDue` returns rows with stale `status: "pending"` after flipping to `firing` |
-| BUG-09 | Bug | Low | `scheduler/parse-when.ts:53-61` | Valid cron with no future fire reported as a generic parse error |
+| BUG-08 | Bug | Low | `sessions/schedule-store.ts:213` | ✅ **DONE** — `claimDue` returns rows with stale `status: "pending"` after flipping to `firing` |
+| BUG-09 | Bug | Low | `scheduler/parse-when.ts:53-61` | ✅ **DONE** — Valid cron with no future fire reported as a generic parse error |
 | BUG-10 | Bug | Low | `web/markdown.ts:69-82` | ✅ **DONE** — `byteLength` reported pre-truncation when content was truncated |
 | BUG-11 | Bug | Low | `web/fetch.ts:52-61` | ✅ **DONE** — Byte-cap truncation can split a multibyte UTF-8 sequence |
 | BUG-12 | Bug | Low | `attachments/store.ts:36-40` | `putBuffer` check-then-act, non-atomic write (partial-read race) |
@@ -303,23 +303,25 @@ A stock `docker-socket-proxy` is **not** sufficient: it filters by API endpoint,
 **Fix (described):** Include the cache token fields in normalized usage.
 
 ### BUG-08 (Low) — `claimDue` returns stale status
+**Status: ✅ DONE** — Commit `<pending-bugsched>`. `claimDue` now returns each claimed row with `status: "firing"` (the just-applied transition). Verified.
 **What:** `out.push(rowToScheduledMessage(row))` pushes the pre-UPDATE SELECT row whose `status` is still `"pending"` after the row was flipped to `"firing"` (`sessions/schedule-store.ts:213`).
 **Why it matters:** Harmless today (the poller never reads it) but a latent trap for any future consumer.
 **Fix (described):** Overwrite `status: "firing"` on the returned object after a successful update.
 
 ### BUG-09 (Low) — Misleading cron parse error
+**Status: ✅ DONE** — Commit `<pending-bugsched>`. Only the croner *parse* stays in the try (genuine syntax errors → "couldn't parse"); a valid-but-never-firing cron (`nextRun → null`) now gets its own clear "valid but has no upcoming fire time" message. Verified (`0 0 30 2 *` → no-fire message; garbage → parse error).
 **What:** The `if (!next) throw …"no future fire"` is inside the try whose catch rewrites every error to "must be in N minutes/…" (`scheduler/parse-when.ts:53-61`).
 **Why it matters:** A valid-but-never-firing cron is reported as unparseable.
 **Fix (described):** Move the `!next` check outside the try/catch.
 
 ### BUG-10 (Low) — Wrong `byteLength` after truncation
-**Status: ✅ DONE** — Commit `<pending-bugweb>`. `htmlToMarkdown` computes `byteLength` from the final (post-truncation) markdown now.
+**Status: ✅ DONE** — Commit `33c39fd`. `htmlToMarkdown` computes `byteLength` from the final (post-truncation) markdown now.
 **What:** `byteLength` is computed before `md.slice(0, maxBytes)` and returned as-is (`web/markdown.ts:69-82`).
 **Why it matters:** Callers logging/deciding on `byteLength` (e.g. `tools/web.ts`) report a misleading size.
 **Fix (described):** Recompute from the final markdown.
 
 ### BUG-11 (Low) — UTF-8 split on byte-cap truncation
-**Status: ✅ DONE** — Commit `<pending-bugweb>`. `fetchUrl`'s text path decodes via a streaming `TextDecoder` (`{stream:true}`, never flushed), dropping an incomplete trailing multibyte sequence instead of emitting `U+FFFD`. Verified with a split `🎉`.
+**Status: ✅ DONE** — Commit `33c39fd`. `fetchUrl`'s text path decodes via a streaming `TextDecoder` (`{stream:true}`, never flushed), dropping an incomplete trailing multibyte sequence instead of emitting `U+FFFD`. Verified with a split `🎉`.
 **What:** The byte cap slices the last chunk at an arbitrary byte offset, then `toString("utf8")` can corrupt a multibyte char straddling the boundary (`web/fetch.ts:52-61`).
 **Why it matters:** Truncated non-ASCII pages can end in a replacement char.
 **Fix (described):** Use a streaming `TextDecoder` (buffers partial code points) or trim back to a code-point boundary.
