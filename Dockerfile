@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     jq \
     less procps iproute2 iputils-ping \
+    openssh-client rsync \
+    bind9-dnsutils netcat-openbsd \
+    ripgrep file \
     unzip zip xz-utils bzip2 \
     tini \
     && rm -rf /var/lib/apt/lists/*
