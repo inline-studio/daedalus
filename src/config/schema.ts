@@ -230,6 +230,31 @@ export const SessionsConfigSchema = z.object({
 });
 export type SessionsConfig = z.infer<typeof SessionsConfigSchema>;
 
+// Operator-facing debugging aids. All OFF by default — these capture full prompt/tool
+// I/O to disk, so they're opt-in and meant for a single-operator deployment, not a
+// privacy-sensitive multi-tenant one.
+export const DebugConfigSchema = z.object({
+  // Per-turn conversation trace. When enabled, every agent turn (top-level AND subagent)
+  // appends a structured JSONL record — the exact messages exchanged this turn, including
+  // every tool_use (name + args) and tool_result (output), plus usage and stop reason — to
+  // <path>/<sessionId>__<date>.jsonl. This is the empirical answer to "did the agent actually
+  // run that tool, or did it make the result up?": a claim with no preceding tool_use in the
+  // trace was a hallucination. Files older than retentionDays are pruned on each write.
+  conversationLog: z
+    .object({
+      enabled: z.boolean().default(false),
+      // Drop trace files whose last write is older than this many days. Bounds disk use and
+      // keeps the on-disk window small (the logs hold full prompts + tool I/O).
+      retentionDays: z.number().int().positive().default(5),
+      // Directory for the JSONL files. In docker installs this should point inside the mounted
+      // data volume (e.g. /data/debug-logs) so it survives container recreation — `dae install`
+      // writes the absolute path, mirroring sessions.dbPath.
+      path: z.string().default("./data/debug-logs"),
+    })
+    .default({ enabled: false, retentionDays: 5, path: "./data/debug-logs" }),
+});
+export type DebugConfig = z.infer<typeof DebugConfigSchema>;
+
 export const ChannelsConfigSchema = z.object({
   cli: z.object({ enabled: z.boolean().default(false), defaultAgent: z.string() }).optional(),
   web: z
@@ -369,6 +394,9 @@ export const ArtemisConfigSchema = z.object({
     fetch: { maxBytes: 1_000_000, timeoutMs: 20_000 },
   }),
   attachments: AttachmentsConfigSchema.default({}),
+  debug: DebugConfigSchema.default({
+    conversationLog: { enabled: false, retentionDays: 5, path: "./data/debug-logs" },
+  }),
 });
 export type ArtemisConfig = z.infer<typeof ArtemisConfigSchema>;
 
@@ -416,6 +444,23 @@ export const AgentManifestSchema = z.object({
   maxTurns: z.number().int().positive().default(50),
   maxTokens: z.number().int().positive().default(4096),
   temperature: z.number().min(0).max(2).optional(),
+  // Model reasoning ("thinking").
+  //   enabled      — request Anthropic extended thinking (budget_tokens). ANTHROPIC ONLY: the
+  //                  OpenAI-compatible path emits reasoning on its own, so this flag is ignored
+  //                  there for the request — reasoning is still captured if the backend returns
+  //                  it (reasoning_content field or inline <think> tags).
+  //   budgetTokens — thinking budget; must be ≥1024 and < maxTokens (the provider clamps it).
+  //                  When thinking is on, the API ignores `temperature`.
+  //   surface      — bubble each turn's thinking up to the user as its own message(s) before the
+  //                  reply (the persona "thinking out loud"). Off = thinking is captured to the
+  //                  debug log but not shown.
+  thinking: z
+    .object({
+      enabled: z.boolean().default(false),
+      budgetTokens: z.number().int().min(1024).default(2048),
+      surface: z.boolean().default(false),
+    })
+    .default({ enabled: false, budgetTokens: 2048, surface: false }),
   // Image input. Omit / false = no vision (inbound images are not sent to the model).
   // true = the agent's own `model` is multimodal; send images to it. "provider/model" =
   // route image-bearing turns to that specific vision model while text turns keep using

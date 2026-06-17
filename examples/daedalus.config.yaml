@@ -131,3 +131,11 @@ web:
 attachments:
   maxFetchBytes: 25000000   # 25 MB; raise for large media (e.g. a video store)
   fetchTimeoutMs: 30000
+
+# Operator debugging aids. OFF by default — the conversation log writes full prompts and
+# tool I/O to disk, so it's opt-in and intended for single-operator deployments.
+debug:
+  conversationLog:
+    enabled: false          # turn on to trace every turn's tool_use/tool_result to disk
+    retentionDays: 5        # files older than this (by last write) are pruned automatically
+    path: ./data/debug-logs # DOCKER: set to /data/debug-logs so it lands in the mounted volume

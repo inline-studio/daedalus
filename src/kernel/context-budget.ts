@@ -11,6 +11,11 @@ export function estimateTokens(content: ContentPart[]): number {
       case "text":
         chars += p.text.length;
         break;
+      case "thinking":
+        // Replayed back to the provider when thinking is enabled (and during tool loops it
+        // MUST be), so it occupies real context — count it.
+        chars += p.thinking.length;
+        break;
       case "tool_use":
         chars += p.name.length + JSON.stringify(p.input).length;
         break;

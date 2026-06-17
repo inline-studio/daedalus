@@ -62,8 +62,18 @@ export type DispatchResult =
       attachments?: OutboundAttachment[];
       // User-facing notices to deliver alongside the reply (e.g. a compaction notice).
       notices?: string[];
+      // Path to this turn's conversation debug-log file, set only when debug logging is enabled
+      // (config.debug.conversationLog) and only on the TOP-LEVEL turn. Surfaced to the operator
+      // after the reply so they know where to look; subagent turns log but don't surface.
+      debugLogPath?: string;
     }
-  | { status: "pending_question"; question: string; turns: number; notices?: string[] };
+  | {
+      status: "pending_question";
+      question: string;
+      turns: number;
+      notices?: string[];
+      debugLogPath?: string;
+    };
 
 export interface AgentDispatcher {
   readonly id: string;
