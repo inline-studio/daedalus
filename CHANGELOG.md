@@ -13,6 +13,28 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Conversation debug log.** Opt-in per-turn trace for answering "did the agent
+  actually run that tool, or fabricate the result?". With
+  `debug.conversationLog.enabled: true`, every turn (top-level and subagent) appends a
+  structured JSONL record — the complete exchange the kernel produced (every `tool_use`
+  with its args, every `tool_result` with its output), plus aggregate token usage and the
+  stop reason — to `<path>/<sessionId>__<date>.jsonl`. A claim with no preceding
+  `tool_use` in the trace was a hallucination, not a real check. Files older than
+  `retentionDays` (default 5) are pruned on each write. The log path for the top-level turn
+  is surfaced to the operator as a short message **after** the reply. Off by default; meant
+  for single-operator deployments (it writes full prompts and tool I/O to disk). In docker,
+  point `debug.conversationLog.path` at `/data/debug-logs` so it lands in the mounted volume.
+
+- **Model thinking surfaced as messages.** Agents can now request and show their reasoning.
+  `thinking.enabled` requests Anthropic extended thinking (`thinking.budgetTokens`);
+  reasoning from OpenAI-compatible backends is captured regardless of this flag (a
+  `reasoning_content` field or inline `<think>` tags). With `thinking.surface: true`, each
+  turn's reasoning bubbles up to the user as its own message(s) before the reply — the
+  persona "thinking out loud". Thinking blocks are preserved with their Anthropic signature
+  so they round-trip correctly through tool-use loops, and stripped from history when
+  thinking is off. Reasoning is always recorded in the conversation debug log when that's
+  enabled. Per-turn token usage is now aggregated and returned by the kernel.
+
 - **Skill triggers: deterministic phrase → skill routing.** Skills can declare
   plain trigger phrases in SKILL.md frontmatter — e.g.
   `triggers: ["good night", "go dark"]`. When a message contains one

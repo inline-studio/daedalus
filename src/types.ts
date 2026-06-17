@@ -21,6 +21,19 @@ export interface ToolResultPart {
   isError?: boolean;
 }
 
+// A block of model reasoning. Produced by extended-thinking (Anthropic) or reasoning models
+// (OpenAI-compatible). Surfaced to the user as "thinking" messages and recorded in the debug
+// log. `signature` carries Anthropic's opaque verification token — it MUST be round-tripped
+// verbatim when the block is replayed during a tool-use loop, or the API rejects the request.
+// `redacted` marks an Anthropic `redacted_thinking` block whose `thinking` holds opaque data
+// rather than human-readable text.
+export interface ThinkingPart {
+  type: "thinking";
+  thinking: string;
+  signature?: string;
+  redacted?: boolean;
+}
+
 export interface ImagePart {
   type: "image";
   source: { kind: "base64"; mediaType: string; data: string } | { kind: "url"; url: string };
@@ -44,7 +57,14 @@ export interface FilePart {
   excerpt?: string;
 }
 
-export type ContentPart = TextPart | ToolUsePart | ToolResultPart | ImagePart | AudioPart | FilePart;
+export type ContentPart =
+  | TextPart
+  | ThinkingPart
+  | ToolUsePart
+  | ToolResultPart
+  | ImagePart
+  | AudioPart
+  | FilePart;
 
 export interface Message {
   role: Role;
@@ -65,6 +85,11 @@ export interface CompletionRequest {
   maxTokens?: number;
   temperature?: number;
   stopSequences?: string[];
+  // When set, request extended thinking (Anthropic). budgetTokens must be ≥1024 and <maxTokens;
+  // the provider clamps and drops `temperature` (incompatible with thinking). Ignored by
+  // providers that don't support a thinking-request param (OpenAI-compatible backends emit
+  // reasoning on their own; it's captured regardless).
+  thinking?: { budgetTokens: number };
 }
 
 export interface CompletionEvent {

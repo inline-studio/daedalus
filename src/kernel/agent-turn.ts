@@ -23,6 +23,7 @@ import { connectAgentMcp, McpPool } from "../mcp/agent-mcp.js";
 import { autoSaveMemory } from "../memory/auto-save.js";
 import { generateConversationTitle } from "../sessions/title.js";
 import { SessionStore, COMPACTION_CHANNEL, type PersistedMessage } from "../sessions/store.js";
+import { ConversationLog } from "../sessions/conversation-log.js";
 import { ScheduleStore } from "../sessions/schedule-store.js";
 import { AttachmentStore } from "../attachments/store.js";
 import { readAttachmentTool } from "../tools/attachment.js";
@@ -253,6 +254,9 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       maxTurns: agent.maxTurns,
       maxTokens: agent.maxTokens,
       ...(agent.temperature !== undefined ? { temperature: agent.temperature } : {}),
+      ...(agent.thinking.enabled
+        ? { thinking: { budgetTokens: agent.thinking.budgetTokens } }
+        : {}),
       ...(agent.vision ? { vision: agent.vision } : {}),
     });
 
@@ -343,6 +347,39 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       sessions.appendMessage({ sessionId, role: m.role, content: m.content });
     }
 
+    // 9-bis. Conversation debug log (opt-in via config.debug.conversationLog). Append this
+    // turn's COMPLETE exchange — every tool_use + tool_result the kernel produced — to a
+    // retained JSONL trace. This is the record that answers "did the agent actually run that
+    // tool, or fabricate the result?". Logged for top-level AND subagent turns (the real work
+    // often happens in a subagent); the path is only SURFACED for the top-level turn, below.
+    // Fully best-effort: a logging failure never affects the reply.
+    let debugLogPath: string | undefined;
+    const dbgLog = config.debug.conversationLog;
+    if (dbgLog.enabled) {
+      const written = await new ConversationLog(dbgLog.path, dbgLog.retentionDays).append({
+        ts: new Date().toISOString(),
+        agent: agent.name,
+        sessionId,
+        model: agent.model,
+        isSubagent,
+        turns: result.turns,
+        stopReason: result.stopReason,
+        ...(result.usage ? { usage: result.usage } : {}),
+        exchange: newMessages,
+        finalText: result.finalText,
+        ...(result.notices?.length ? { notices: result.notices } : {}),
+      });
+      if (written) debugLogPath = written;
+    }
+
+    // Surface this turn's reasoning to the user as its own messages (the persona "thinking out
+    // loud"), when the agent opts in. Top-level only — a subagent's thinking flows up through the
+    // orchestrator's own turn, not straight to the user. Prepended ahead of any kernel notices so
+    // the order the user sees is: thinking → notices → reply.
+    const surfacedThinking =
+      agent.thinking.surface && !isSubagent ? collectThinkingMessages(newMessages) : [];
+    const notices = [...surfacedThinking, ...(result.notices ?? [])];
+
     // 9a. Persist the compaction. The kernel's in-turn summarise/drop only shrank what was
     // SENT this turn — the session still holds the full history, so without a persisted cut
     // every later turn reloads it and overflows again. Summarise the complete final message
@@ -427,7 +464,8 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
         status: "pending_question",
         question: result.pendingQuestion.question,
         turns: result.turns,
-        ...(result.notices?.length ? { notices: result.notices } : {}),
+        ...(notices.length ? { notices } : {}),
+        ...(debugLogPath && !isSubagent ? { debugLogPath } : {}),
       };
     }
     return {
@@ -435,12 +473,28 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       finalText: result.finalText,
       turns: result.turns,
       ...(outboundAttachments.length ? { attachments: outboundAttachments } : {}),
-      ...(result.notices?.length ? { notices: result.notices } : {}),
+      ...(notices.length ? { notices } : {}),
+      ...(debugLogPath && !isSubagent ? { debugLogPath } : {}),
     };
   } finally {
     sessions.close();
     scheduleStore.close();
   }
+}
+
+// Pull human-readable reasoning out of a turn's new messages, one notice per thinking block,
+// for surfacing to the user. Redacted blocks (opaque data, no readable text) are skipped.
+function collectThinkingMessages(messages: Message[]): string[] {
+  const out: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    for (const p of m.content) {
+      if (p.type !== "thinking" || p.redacted) continue;
+      const text = p.thinking.trim();
+      if (text) out.push(`💭 ${text}`);
+    }
+  }
+  return out;
 }
 
 // Cut the loaded tail at the most recent compaction marker. Messages before the marker

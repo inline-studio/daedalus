@@ -7,6 +7,7 @@ import type {
   ToolUsePart,
 } from "../types.js";
 import { ProviderError, type LLMProvider, type ProviderCapabilities } from "./base.js";
+import { log } from "../log.js";
 
 export interface AnthropicAdapterOptions {
   apiKey?: string;
@@ -33,13 +34,38 @@ export class AnthropicProvider implements LLMProvider {
 
   async complete(req: CompletionRequest, signal?: AbortSignal): Promise<CompletionResult> {
     try {
+      const maxTokens = req.maxTokens ?? 4096;
+      // Extended thinking: budget must be ≥1024 and strictly < max_tokens. Clamp to the window;
+      // if the agent's max_tokens leaves no room for the 1024 floor, skip thinking with a warning
+      // rather than letting the API reject the whole request.
+      let thinkingCfg: Anthropic.ThinkingConfigParam | undefined;
+      if (req.thinking) {
+        const budget = Math.min(req.thinking.budgetTokens, maxTokens - 1);
+        if (budget >= 1024) {
+          thinkingCfg = { type: "enabled", budget_tokens: budget };
+        } else {
+          log.warn(
+            { budgetTokens: req.thinking.budgetTokens, maxTokens },
+            "extended thinking requested but max_tokens leaves <1024 for the budget — disabling thinking this call",
+          );
+        }
+      }
+      const useThinking = thinkingCfg !== undefined;
       const res = await this.client.messages.create(
         {
           model: req.model,
-          max_tokens: req.maxTokens ?? 4096,
-          ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+          max_tokens: maxTokens,
+          // Thinking is incompatible with a non-default temperature — only send temperature when
+          // thinking is OFF.
+          ...(req.temperature !== undefined && !useThinking ? { temperature: req.temperature } : {}),
+          ...(thinkingCfg ? { thinking: thinkingCfg } : {}),
           system: req.system,
-          messages: req.messages.filter((m) => m.role !== "system").map(toAnthropicMessage),
+          // When thinking is OFF, strip any thinking blocks carried in history — replaying them
+          // to a non-thinking request is rejected. When ON, they're preserved (and MUST be,
+          // mid-tool-loop) by toAnthropicMessage.
+          messages: req.messages
+            .filter((m) => m.role !== "system")
+            .map((m) => toAnthropicMessage(m, useThinking)),
           ...(req.tools.length
             ? {
                 tools: req.tools.map((t) => ({
@@ -88,18 +114,26 @@ export class AnthropicProvider implements LLMProvider {
   }
 }
 
-function toAnthropicMessage(m: Message): Anthropic.MessageParam {
-  if (m.role !== "user" && m.role !== "assistant") {
-    // tool/system roles are folded; tool results live inside user messages here
-    return { role: "user", content: m.content.map(toAnthropicBlock) };
-  }
-  return { role: m.role, content: m.content.map(toAnthropicBlock) };
+export function toAnthropicMessage(m: Message, keepThinking: boolean): Anthropic.MessageParam {
+  // A thinking block can only be replayed when thinking is enabled AND it carries the data the
+  // API can verify: a signature (normal block) or redacted opaque data. Drop the rest.
+  const parts = m.content.filter((p) => {
+    if (p.type !== "thinking") return true;
+    if (!keepThinking) return false;
+    return Boolean(p.signature) || p.redacted === true;
+  });
+  const role = m.role === "user" || m.role === "assistant" ? m.role : "user";
+  return { role, content: parts.map(toAnthropicBlock) };
 }
 
 function toAnthropicBlock(p: ContentPart): Anthropic.ContentBlockParam {
   switch (p.type) {
     case "text":
       return { type: "text", text: p.text };
+    case "thinking":
+      return p.redacted
+        ? { type: "redacted_thinking", data: p.thinking }
+        : { type: "thinking", thinking: p.thinking, signature: p.signature ?? "" };
     case "tool_use":
       return { type: "tool_use", id: p.id, name: p.name, input: p.input };
     case "tool_result":
@@ -136,10 +170,15 @@ function toAnthropicBlock(p: ContentPart): Anthropic.ContentBlockParam {
   }
 }
 
-function fromAnthropicBlock(b: Anthropic.ContentBlock): ContentPart {
+export function fromAnthropicBlock(b: Anthropic.ContentBlock): ContentPart {
   switch (b.type) {
     case "text":
       return { type: "text", text: b.text };
+    case "thinking":
+      // Preserve the signature so the block can be replayed verbatim during a tool loop.
+      return { type: "thinking", thinking: b.thinking, signature: b.signature };
+    case "redacted_thinking":
+      return { type: "thinking", thinking: b.data, redacted: true };
     case "tool_use":
       return {
         type: "tool_use",
@@ -148,7 +187,7 @@ function fromAnthropicBlock(b: Anthropic.ContentBlock): ContentPart {
         input: (b.input ?? {}) as Record<string, unknown>,
       } satisfies ToolUsePart;
     default:
-      // thinking, server_tool_use, etc. — fold into text for now
+      // server_tool_use, etc. — not surfaced; fold into empty text.
       return { type: "text", text: "" };
   }
 }

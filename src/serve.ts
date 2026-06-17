@@ -119,6 +119,17 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         if (resolved.length) outgoing.attachments = resolved;
       }
       await ch.send(msg.externalUserId, outgoing);
+      // Debug-log pointer (opt-in via config.debug.conversationLog). Delivered AFTER the reply
+      // so it's the last thing the operator sees — "where to look" once the answer has landed,
+      // not noise ahead of it.
+      if (result.debugLogPath) {
+        await ch
+          .send(msg.externalUserId, {
+            text: `🔍 Debug log: ${result.debugLogPath}`,
+            ...(conversationId ? { conversationId } : {}),
+          })
+          .catch(() => undefined);
+      }
       log.info(
         { agent: agentName, channel: msg.channel, turns: result.turns, status: result.status },
         "turn complete",
