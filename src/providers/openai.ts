@@ -69,7 +69,25 @@ export class OpenAICompatibleProvider implements LLMProvider {
       if (!choice) throw new Error("OpenAI returned no choices");
       const msg = choice.message;
       const content: ContentPart[] = [];
-      if (msg.content) content.push({ type: "text", text: msg.content });
+      // Reasoning models surface their chain-of-thought two ways depending on backend:
+      //   - vLLM / DeepSeek expose a separate `reasoning_content` (or `reasoning`) field.
+      //   - Others inline it as <think>…</think> at the start of `content`.
+      // Capture whichever is present as a thinking part (ordered before the visible text) and
+      // strip inline tags from what the user sees.
+      const reasoningField =
+        (msg as { reasoning_content?: string }).reasoning_content ??
+        (msg as { reasoning?: string }).reasoning ??
+        "";
+      let visible = msg.content ?? "";
+      let inlineThinking = "";
+      if (visible.includes("<think>")) {
+        const split = splitThinkTags(visible);
+        inlineThinking = split.thinking;
+        visible = split.rest;
+      }
+      const thinking = (reasoningField || inlineThinking).trim();
+      if (thinking) content.push({ type: "thinking", thinking });
+      if (visible) content.push({ type: "text", text: visible });
       for (const tc of msg.tool_calls ?? []) {
         if (tc.type !== "function") continue;
         let input: Record<string, unknown> = {};
@@ -155,6 +173,23 @@ export function toOpenAIMessages(m: Message): OpenAI.Chat.Completions.ChatComple
     });
   }
   return out;
+}
+
+// Pull <think>…</think> reasoning out of inline content. Handles multiple blocks and an
+// unclosed trailing <think> (a truncated reasoning stream), returning the reasoning text and
+// the visible remainder separately.
+export function splitThinkTags(s: string): { thinking: string; rest: string } {
+  let thinking = "";
+  let rest = s.replace(/<think>([\s\S]*?)<\/think>/g, (_m, inner: string) => {
+    thinking += inner;
+    return "";
+  });
+  const open = rest.indexOf("<think>");
+  if (open !== -1) {
+    thinking += rest.slice(open + "<think>".length);
+    rest = rest.slice(0, open);
+  }
+  return { thinking: thinking.trim(), rest: rest.trim() };
 }
 
 function mapFinishReason(r: string | null): CompletionResult["stopReason"] {

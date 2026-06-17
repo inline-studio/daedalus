@@ -25,6 +25,9 @@ export interface KernelOptions {
   maxTurns: number;
   maxTokens: number;
   temperature?: number;
+  // When set, request extended thinking on every main completion (Anthropic). The provider
+  // clamps the budget to the model's window and drops temperature. See CompletionRequest.thinking.
+  thinking?: { budgetTokens: number };
   // Image input policy (from the agent manifest's `vision`):
   //   undefined/false — no vision: images are stripped before the model call.
   //   true            — the agent's own `model` is multimodal: send images to it.
@@ -53,6 +56,15 @@ export interface KernelResult {
   // persist a compaction marker so later turns don't reload (and re-overflow on) the
   // same history.
   compacted?: boolean;
+  // Aggregate token spend across every completion this run (summed over all loop turns,
+  // including the max-turns wrap-up). Surfaced for cost visibility and the conversation
+  // debug log. Absent when the provider reported no usage.
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+  };
 }
 
 // One agent loop: send -> read tool calls -> execute -> reply -> until end_turn or maxTurns.
@@ -63,6 +75,8 @@ export class Kernel {
   private notices: string[] = [];
   // Whether any completion this run had to shrink its context (reset per runWithMessages).
   private contextCompacted = false;
+  // Running token total across every completion this run (reset per runWithMessages).
+  private usageTotal: KernelResult["usage"];
 
   constructor(private opts: KernelOptions) {
     for (const t of opts.builtinTools) this.builtinByName.set(t.definition.name, t);
@@ -84,6 +98,7 @@ export class Kernel {
     const messages: Message[] = [...initialMessages];
     this.notices = [];
     this.contextCompacted = false;
+    this.usageTotal = undefined;
 
     // If a separate vision model is configured, turn the freshest image into text up front
     // (a tiny side-call) so the rest of the turn runs entirely on the main model.
@@ -97,6 +112,7 @@ export class Kernel {
       turns++;
       const result = await this.completeFittingContext(messages, signal);
       if (result.usage) {
+        this.accumulateUsage(result.usage);
         // Per-turn token visibility. inputTokens is the whole replayed transcript
         // (system + history + this turn's tool I/O), so a climbing number here is the
         // signal that context — not turn count — is what's growing.
@@ -152,6 +168,7 @@ export class Kernel {
               pendingQuestion: { question: err.question, toolUseId: tu.id },
               ...(this.notices.length ? { notices: [...this.notices] } : {}),
               ...(this.contextCompacted ? { compacted: true } : {}),
+              ...(this.usageTotal ? { usage: this.usageTotal } : {}),
             };
           }
           throw err;
@@ -191,6 +208,7 @@ export class Kernel {
       }
       try {
         const wrap = await this.completeFittingContext(messages, signal, { tools: [] });
+        if (wrap.usage) this.accumulateUsage(wrap.usage);
         messages.push(wrap.message);
         finalText = collectText(wrap.message.content);
       } catch (err) {
@@ -212,7 +230,20 @@ export class Kernel {
       stopReason,
       ...(this.notices.length ? { notices: [...this.notices] } : {}),
       ...(this.contextCompacted ? { compacted: true } : {}),
+      ...(this.usageTotal ? { usage: this.usageTotal } : {}),
     };
+  }
+
+  // Fold one completion's usage into the run-wide total. Cache fields are summed only when
+  // present so a provider that never reports them doesn't materialise a spurious zero.
+  private accumulateUsage(u: NonNullable<CompletionResult["usage"]>): void {
+    const t = this.usageTotal ?? { inputTokens: 0, outputTokens: 0 };
+    t.inputTokens += u.inputTokens;
+    t.outputTokens += u.outputTokens;
+    if (u.cacheReadTokens != null) t.cacheReadTokens = (t.cacheReadTokens ?? 0) + u.cacheReadTokens;
+    if (u.cacheCreationTokens != null)
+      t.cacheCreationTokens = (t.cacheCreationTokens ?? 0) + u.cacheCreationTokens;
+    this.usageTotal = t;
   }
 
   // The LLM call is the one step in the turn loop that fails *transiently* — rate
@@ -248,6 +279,7 @@ export class Kernel {
         model,
         maxTokens: this.opts.maxTokens,
         ...(this.opts.temperature !== undefined ? { temperature: this.opts.temperature } : {}),
+        ...(this.opts.thinking ? { thinking: this.opts.thinking } : {}),
       };
       try {
         return await this.completeWithRetry(req, signal);

@@ -74,6 +74,7 @@ filename, so any value set in frontmatter is ignored.)
 | `maxTurns` | No | int — `50` | Max tool-use iterations in one turn before the loop stops. |
 | `maxTokens` | No | int — `4096` | Max output tokens per LLM call. |
 | `temperature` | No | 0–2 — provider default | Sampling temperature; omit for the provider default. |
+| `thinking` | No | object — off | Model reasoning. `thinking.enabled: true` requests Anthropic extended thinking (`thinking.budgetTokens`, ≥1024 and < `maxTokens`; temperature is ignored while on) — **Anthropic only**; OpenAI-compatible backends emit reasoning on their own and it's captured regardless (a `reasoning_content` field or inline `<think>` tags). `thinking.surface: true` bubbles each turn's reasoning up to the user as its own message(s) before the reply. Reasoning is always captured into the debug log (`debug.conversationLog`) when that's enabled. |
 | `vision` | No | bool \| string — `false` | Image input. `false`/omit = inbound images aren't sent to the model. `true` = the agent's own `model` is multimodal. `"provider/model"` = describe images via that separate vision model, then the main `model` answers. See below. |
 | `tools` | No | string[] — `[]` | Built-in tools the agent may use: `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch`, `web_search`, `schedule_message`, … `['*']` = all. **Empty = none** (the safe default for subagents). |
 | `skills` | No | string[] — `[]` | Skills from `brain/skills/`. `['*']` = every skill. See [skills.md](./skills.md). |
