@@ -154,7 +154,7 @@ export class Kernel {
 
       if (result.stopReason !== "tool_use") {
         finalText = collectText(result.message.content);
-        onEvent?.({ type: "turn_complete", finalText });
+        onEvent?.({ type: "turn_complete", finalText, ...(this.usageTotal ? { usage: this.usageTotal } : {}) });
         break;
       }
 
@@ -233,7 +233,8 @@ export class Kernel {
         if (wrap.usage) this.accumulateUsage(wrap.usage);
         messages.push(wrap.message);
         finalText = collectText(wrap.message.content);
-        if (finalText.trim()) onEvent?.({ type: "turn_complete", finalText });
+        if (finalText.trim())
+          onEvent?.({ type: "turn_complete", finalText, ...(this.usageTotal ? { usage: this.usageTotal } : {}) });
       } catch (err) {
         log.warn({ err: (err as Error).message }, "max-turns wrap-up completion failed");
       }

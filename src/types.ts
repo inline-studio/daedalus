@@ -143,8 +143,13 @@ export type TurnEvent =
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
   | { type: "tool_running"; id: string; name: string }
   | { type: "tool_result"; id: string; name: string; isError: boolean }
-  // A turn-loop ended with a final assistant reply (no further tool calls).
-  | { type: "turn_complete"; finalText: string }
+  // A turn-loop ended with a final assistant reply (no further tool calls). `usage` is the run's
+  // aggregate token spend so far (when the provider reports it), for a Claude-style token readout.
+  | {
+      type: "turn_complete";
+      finalText: string;
+      usage?: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheCreationTokens?: number };
+    }
   // The conversation debug log for this turn (when enabled). Surfaced as activity chrome — like
   // tool/reasoning — rather than a separate chat message. Emitted by agent-turn after the run.
   | { type: "debug_log"; path: string };

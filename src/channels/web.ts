@@ -254,8 +254,12 @@ export class WebChannel implements Channel {
           break;
         case "turn_complete":
           // Carry the authoritative final text so the client can finalize the streamed bubble
-          // exactly (and dedup it against a reconnect replay of the persisted reply).
-          this.sseEvent(externalUserId, conversationId, "turn_done", { text: ev.finalText });
+          // exactly (and dedup it against a reconnect replay of the persisted reply), plus the
+          // aggregate token usage for the Claude-style readout.
+          this.sseEvent(externalUserId, conversationId, "turn_done", {
+            text: ev.finalText,
+            ...(ev.usage ? { usage: ev.usage } : {}),
+          });
           break;
         case "debug_log":
           this.sseEvent(externalUserId, conversationId, "debug", { path: ev.path });
