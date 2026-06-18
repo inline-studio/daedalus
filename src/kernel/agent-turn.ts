@@ -375,6 +375,10 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       });
       if (written) debugLogPath = written;
     }
+    // Surface the debug-log pointer as activity chrome (a live event), not a separate chat
+    // message — the same treatment as tool/reasoning. Top-level + streaming only; buffered
+    // channels (Telegram) don't render chrome, so it's simply not shown there.
+    if (debugLogPath && !isSubagent) input.onEvent?.({ type: "debug_log", path: debugLogPath });
 
     // Surface this turn's reasoning to the user as its own messages (the persona "thinking out
     // loud"), when the agent opts in. Top-level only — a subagent's thinking flows up through the

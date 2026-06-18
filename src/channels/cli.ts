@@ -74,6 +74,10 @@ export class CliChannel implements Channel {
           endThinking();
           process.stdout.write(`\n\x1b[2m[tool: ${ev.name}]\x1b[0m\n`);
           break;
+        case "debug_log":
+          endThinking();
+          process.stdout.write(`\n\x1b[2m[debug log: ${ev.path}]\x1b[0m\n`);
+          break;
         case "turn_complete":
           endThinking();
           process.stdout.write("\n> ");

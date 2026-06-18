@@ -144,6 +144,9 @@ export type TurnEvent =
   | { type: "tool_running"; id: string; name: string }
   | { type: "tool_result"; id: string; name: string; isError: boolean }
   // A turn-loop ended with a final assistant reply (no further tool calls).
-  | { type: "turn_complete"; finalText: string };
+  | { type: "turn_complete"; finalText: string }
+  // The conversation debug log for this turn (when enabled). Surfaced as activity chrome — like
+  // tool/reasoning — rather than a separate chat message. Emitted by agent-turn after the run.
+  | { type: "debug_log"; path: string };
 
 export type TurnEventSink = (event: TurnEvent) => void;

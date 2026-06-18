@@ -257,6 +257,9 @@ export class WebChannel implements Channel {
           // exactly (and dedup it against a reconnect replay of the persisted reply).
           this.sseEvent(externalUserId, conversationId, "turn_done", { text: ev.finalText });
           break;
+        case "debug_log":
+          this.sseEvent(externalUserId, conversationId, "debug", { path: ev.path });
+          break;
       }
     };
   }

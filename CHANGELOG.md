@@ -11,6 +11,21 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Changed
+
+- **Sleeker web UI.** Assistant replies are now borderless (plain text, like
+  ChatGPT/Claude) rather than boxed bubbles — only the user's own messages keep a
+  bubble — with tighter, more even spacing. The header, sidebar, and composer
+  recede behind hairline borders and a page-matched background, with softer
+  controls and a rounded composer. Tool calls and the debug-log pointer render as
+  distinct muted "activity chips" (a dot + monospace label), and model reasoning as
+  a quiet left-bordered inset — all clearly subordinate to the reply itself.
+- **Debug-log pointer is now activity chrome, not a message.** Instead of a
+  separate chat bubble, it surfaces as a "debug log" chip on the reply (click to
+  copy the path), the same treatment as tool/reasoning markers. It's therefore no
+  longer included in copied transcripts and is not sent to buffered channels
+  (Telegram). Delivered via a new `debug_log` turn event over the streaming path.
+
 ### Added
 
 - **Live response streaming (phases 0–2).** Replies now stream token-by-token to
