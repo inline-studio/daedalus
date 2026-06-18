@@ -56,6 +56,7 @@ const CI_SAFE = [
   "smoke-skill-disclosure",
   "smoke-skill-triggers",
   "smoke-store-reopen",
+  "smoke-stream",
   "smoke-secret-prompt",
   "smoke-secrets",
   "smoke-suppress-warnings",

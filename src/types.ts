@@ -111,3 +111,19 @@ export interface CompletionResult {
     cacheCreationTokens?: number;
   };
 }
+
+// Incremental events emitted by a provider's optional `stream()` method. These are the
+// PROVIDER-level events — display-facing token deltas plus a single terminal `result` carrying
+// the fully assembled turn (identical to what `complete()` returns). A consumer can render the
+// deltas live AND still get the canonical Message/usage/stopReason needed to drive the tool loop
+// and persistence. Phase 1 wraps these into a richer kernel/channel-facing TurnEvent (turn
+// boundaries, tool execution progress, notices); this union is deliberately just what a single
+// provider completion produces.
+export type ProviderStreamEvent =
+  | { type: "text_delta"; text: string }
+  | { type: "thinking_delta"; text: string }
+  // A tool call has begun; its id+name are known. Argument JSON arrives via input_delta events.
+  | { type: "tool_use_start"; id: string; name: string }
+  | { type: "tool_use_input_delta"; id: string; jsonDelta: string }
+  // Terminal event: the complete, assembled result. Always the last event of a successful stream.
+  | { type: "result"; result: CompletionResult };
