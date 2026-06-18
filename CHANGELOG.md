@@ -13,6 +13,19 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Streaming foundation + live CLI replies (phases 0–1).** Providers now expose a
+  `stream()` method emitting incremental token events (text, reasoning, tool-call
+  args) plus a terminal assembled result; the Anthropic and OpenAI-compatible
+  adapters implement it (the latter capturing reasoning from a `reasoning_content`
+  delta field or inline `<think>` tags via a chunk-aware splitter). The kernel
+  consumes the stream and emits structured `TurnEvent`s (turn boundaries, deltas,
+  tool_use → tool_running → tool_result), and the **CLI channel renders replies
+  token-by-token** when running in-process (`runtime.dispatcher: process`). Streaming
+  is additive and opt-in per channel: the buffered `complete()` path is unchanged,
+  and channels that don't implement a stream sink (web, Telegram) stay buffered —
+  Telegram deliberately so. Cross-process streaming (the warm worker) and web SSE
+  streaming are not yet wired (later phases).
+
 - **Conversation debug log.** Opt-in per-turn trace for answering "did the agent
   actually run that tool, or fabricate the result?". With
   `debug.conversationLog.enabled: true`, every turn (top-level and subagent) appends a

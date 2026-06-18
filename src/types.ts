@@ -127,3 +127,23 @@ export type ProviderStreamEvent =
   | { type: "tool_use_input_delta"; id: string; jsonDelta: string }
   // Terminal event: the complete, assembled result. Always the last event of a successful stream.
   | { type: "result"; result: CompletionResult };
+
+// Kernel/channel-facing turn events. A superset of the provider deltas with the loop structure a
+// UI needs to render a turn live: round boundaries, the assembled tool call, and tool-execution
+// progress. The kernel forwards provider deltas as-is and adds the structural events. A sink that
+// receives these can render token-by-token (text_delta/thinking_delta), show tool activity
+// (tool_use → tool_running → tool_result), and know when the turn's reply is final (turn_complete).
+export type TurnEvent =
+  | { type: "turn_start"; turn: number }
+  | { type: "text_delta"; text: string }
+  | { type: "thinking_delta"; text: string }
+  | { type: "tool_use_start"; id: string; name: string }
+  | { type: "tool_use_input_delta"; id: string; jsonDelta: string }
+  // The fully-assembled tool call (parsed input), emitted once the completion is complete.
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+  | { type: "tool_running"; id: string; name: string }
+  | { type: "tool_result"; id: string; name: string; isError: boolean }
+  // A turn-loop ended with a final assistant reply (no further tool calls).
+  | { type: "turn_complete"; finalText: string };
+
+export type TurnEventSink = (event: TurnEvent) => void;

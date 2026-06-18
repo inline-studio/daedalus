@@ -77,6 +77,11 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         config,
       });
       conversationId = ingested.sessionId;
+      // Live streaming engages only when the channel can render it AND the turn runs in this
+      // process (the event sink is a function — it can't cross the container/worker hop). The
+      // sink renders the reply token-by-token; we then skip the buffered final-text send below.
+      const streaming = typeof ch.streamSink === "function" && dispatcher.id === "in-process";
+      const onEvent = streaming ? ch.streamSink!(msg.externalUserId, conversationId) : undefined;
       const result = await dispatcher.dispatch({
         agentName,
         sessionId: ingested.sessionId,
@@ -86,6 +91,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         // back to this channel/user instead of an orphan "scheduled" session.
         originChannel: msg.channel,
         originExternalUserId: msg.externalUserId,
+        ...(onEvent ? { onEvent } : {}),
       });
       // Deliver any in-turn notices (e.g. "I compacted our earlier conversation") as their
       // own short messages first, so the user knows what happened before the reply lands.
@@ -98,7 +104,14 @@ export async function serve(config: ArtemisConfig): Promise<void> {
       }
       const reply =
         result.status === "pending_question" ? result.question : result.finalText;
-      const outgoing: OutgoingMessage = { text: reply, ...(conversationId ? { conversationId } : {}) };
+      // A completed turn's reply was already streamed token-by-token by the sink, so don't resend
+      // its text — but a pending question was NOT streamed (the kernel halted on ask_user), so it
+      // always goes out via send().
+      const replyAlreadyStreamed = Boolean(onEvent) && result.status === "complete";
+      const outgoing: OutgoingMessage = {
+        ...(replyAlreadyStreamed ? {} : { text: reply }),
+        ...(conversationId ? { conversationId } : {}),
+      };
       // Resolve any reply attachments (refs into the shared AttachmentStore) to bytes so
       // the channel can upload them. The agent stored them on the same /data volume.
       if (result.status === "complete" && result.attachments?.length) {
@@ -118,7 +131,11 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         }
         if (resolved.length) outgoing.attachments = resolved;
       }
-      await ch.send(msg.externalUserId, outgoing);
+      // When the reply was streamed and there's nothing else to deliver (no attachments), skip
+      // send() entirely — the sink already rendered the reply and finalized the channel.
+      if (!replyAlreadyStreamed || outgoing.attachments?.length) {
+        await ch.send(msg.externalUserId, outgoing);
+      }
       // Debug-log pointer (opt-in via config.debug.conversationLog). Delivered AFTER the reply
       // so it's the last thing the operator sees — "where to look" once the answer has landed,
       // not noise ahead of it.

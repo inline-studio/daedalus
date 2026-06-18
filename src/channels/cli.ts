@@ -1,5 +1,6 @@
 import readline from "node:readline";
 import type { Channel, ChannelContext, OutgoingMessage } from "./base.js";
+import type { TurnEventSink } from "../types.js";
 
 // Interactive CLI channel — one user, one terminal. Each line of stdin becomes a message.
 // Outbound goes to stdout. Treats the local terminal user as a single fixed external id.
@@ -43,5 +44,41 @@ export class CliChannel implements Channel {
       process.stdout.write(`[attachment: ${a.filename ?? "file"} (${a.mediaType}, ${a.data.length} bytes)]\n`);
     }
     process.stdout.write("> ");
+  }
+
+  // Live rendering: stream tokens straight to stdout. Reasoning is dimmed and prefixed; tool calls
+  // get a one-line marker; turn_complete restores the prompt. Because this rendered the reply, the
+  // supervisor skips the buffered final-text send() for a completed turn.
+  streamSink(): TurnEventSink {
+    let inThinking = false;
+    const endThinking = () => {
+      if (inThinking) {
+        process.stdout.write("\x1b[0m\n");
+        inThinking = false;
+      }
+    };
+    return (ev) => {
+      switch (ev.type) {
+        case "thinking_delta":
+          if (!inThinking) {
+            process.stdout.write("\n\x1b[2m💭 ");
+            inThinking = true;
+          }
+          process.stdout.write(ev.text);
+          break;
+        case "text_delta":
+          endThinking();
+          process.stdout.write(ev.text);
+          break;
+        case "tool_use":
+          endThinking();
+          process.stdout.write(`\n\x1b[2m[tool: ${ev.name}]\x1b[0m\n`);
+          break;
+        case "turn_complete":
+          endThinking();
+          process.stdout.write("\n> ");
+          break;
+      }
+    };
   }
 }

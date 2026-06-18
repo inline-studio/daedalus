@@ -17,6 +17,8 @@ export class InProcessAgentDispatcher implements AgentDispatcher {
       userId: args.userId,
       isSubagent: args.isSubagent,
       ...originFields(args),
+      // In-process only: forward the live event sink straight to the turn (no serialization hop).
+      ...(args.onEvent ? { onEvent: args.onEvent } : {}),
     });
   }
 }

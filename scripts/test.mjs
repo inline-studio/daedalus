@@ -40,6 +40,7 @@ const CI_SAFE = [
   "smoke-install",
   "smoke-install-mode",
   "smoke-kernel-retry",
+  "smoke-kernel-stream",
   "smoke-mcp-env",
   "smoke-onecli-setup",
   "smoke-onecli-encryption-key",
