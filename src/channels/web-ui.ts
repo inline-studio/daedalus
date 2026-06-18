@@ -185,6 +185,9 @@ export const WEB_UI_HTML = `<!doctype html>
   @keyframes think { 0%, 80%, 100% { opacity: .3; transform: translateY(0); }
                      40% { opacity: 1; transform: translateY(-4px); } }
   .meta { font-size: 11px; color: #8b949e; margin: 0 4px; }
+  /* Live turn timer (next to the thinking dots) + per-reply footer with elapsed time / tokens. */
+  .thinking .elapsed { font-size: 12px; color: #6e7681; margin-left: 6px; }
+  .turn-meta { font-size: 11px; color: #6e7681; margin-top: 6px; font-variant-numeric: tabular-nums; }
   footer { position: relative; border-top: 1px solid #1b212a; background: #0d1117; padding: 12px 16px; }
   /* Slash-command autocomplete — floats above the input while the draft is a lone "/prefix";
      ↑/↓ choose, Tab/Enter complete, Esc dismisses. Populated from GET /commands. */
@@ -717,7 +720,7 @@ export const WEB_UI_HTML = `<!doctype html>
       div.id = "thinking";
       div.className = "msg assistant thinking";
       div.setAttribute("aria-label", "Artemis is thinking");
-      div.innerHTML = "<i></i><i></i><i></i>";
+      div.innerHTML = "<i></i><i></i><i></i><span class='elapsed'></span>";
       log.appendChild(div);
     }
     jumpToBottom();
@@ -768,14 +771,16 @@ export const WEB_UI_HTML = `<!doctype html>
     var chrome = document.createElement("div"); chrome.className = "chrome"; chrome.style.display = "none";
     var reasoning = document.createElement("div"); reasoning.className = "reasoning"; reasoning.style.display = "none";
     var body = document.createElement("div");
+    var meta = document.createElement("div"); meta.className = "turn-meta";
     div.appendChild(chrome);
     div.appendChild(reasoning);
     div.appendChild(body);
+    div.appendChild(meta);
     log.appendChild(div);
     convo.push({ role: "assistant", text: "", at: new Date().toISOString() });
     var idx = convo.length - 1;
     div.setAttribute("data-idx", String(idx));
-    streamBubble = { div: div, chrome: chrome, body: body, reasoning: reasoning, text: "", think: "", idx: idx };
+    streamBubble = { div: div, chrome: chrome, body: body, reasoning: reasoning, meta: meta, text: "", think: "", idx: idx };
     lastStreamDiv = div;
     if (wasAtBottom) jumpToBottom();
     return streamBubble;
@@ -829,6 +834,28 @@ export const WEB_UI_HTML = `<!doctype html>
     }, 90);
   }
 
+  // Claude-style turn timer: a live "Xs" from send until the reply completes, then frozen on the
+  // reply's footer alongside the token count (when the provider reported usage). Purely
+  // client-side timing; tokens come from the turn_done event.
+  var turnStart = 0, turnTimer = null;
+  function fmtElapsed(ms) { var s = ms / 1000; return (s < 10 ? s.toFixed(1) : Math.round(s)) + "s"; }
+  function fmtTokens(u) {
+    function k(n) { n = n || 0; return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n); }
+    return "↑" + k(u.inputTokens) + " ↓" + k(u.outputTokens);
+  }
+  function tickTurnTimer() {
+    var txt = fmtElapsed(Date.now() - turnStart);
+    if (streamBubble && streamBubble.meta) { streamBubble.meta.textContent = txt; return; }
+    var th = $("thinking"); if (th) { var e = th.querySelector(".elapsed"); if (e) e.textContent = txt; }
+  }
+  function startTurnTimer() {
+    turnStart = Date.now();
+    if (turnTimer) clearInterval(turnTimer);
+    turnTimer = setInterval(tickTurnTimer, 250);
+    tickTurnTimer();
+  }
+  function stopTurnTimer() { if (turnTimer) { clearInterval(turnTimer); turnTimer = null; } }
+
   function connect() {
     if (es) es.close();
     var u = "/events?externalUserId=" + encodeURIComponent(uid) +
@@ -858,6 +885,7 @@ export const WEB_UI_HTML = `<!doctype html>
       // twice. Any still-open stream bubble (e.g. a pending question interrupted streaming) is
       // finalized first so it isn't left dangling.
       finalizeStream();
+      stopTurnTimer();
       if (lastStreamed && d.text && d.text === lastStreamed.text && Date.now() - lastStreamed.at < 15000) {
         lastStreamed = null;
         hideThinking();
@@ -935,9 +963,12 @@ export const WEB_UI_HTML = `<!doctype html>
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
       if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+      stopTurnTimer();
       if (!streamBubble) return;
       if (d.text) streamBubble.text = d.text;
       streamBubble.body.innerHTML = md(streamBubble.text); // render markdown now it's complete
+      // Freeze the timer on the reply footer, with the token count when usage was reported.
+      streamBubble.meta.textContent = fmtElapsed(Date.now() - turnStart) + (d.usage ? " · " + fmtTokens(d.usage) : "");
       lastStreamed = { text: streamBubble.text, at: Date.now() };
       var done = streamBubble.text;
       finalizeStream();
@@ -1020,9 +1051,10 @@ export const WEB_UI_HTML = `<!doctype html>
     $("text").value = ""; pending = []; renderChips(); autosize();
     cmdMatches = []; renderCmdMenu();
     showThinking();
+    startTurnTimer();
     fetch("/messages", { method: "POST", headers: authHeaders(), body: JSON.stringify(body) })
-      .then(function (r) { if (on401(r)) { hideThinking(); return; } if (!r.ok) { hideThinking(); statusEl.textContent = "send failed (" + r.status + ")"; } })
-      .catch(function () { hideThinking(); statusEl.textContent = "send failed"; });
+      .then(function (r) { if (on401(r)) { hideThinking(); stopTurnTimer(); return; } if (!r.ok) { hideThinking(); stopTurnTimer(); statusEl.textContent = "send failed (" + r.status + ")"; } })
+      .catch(function () { hideThinking(); stopTurnTimer(); statusEl.textContent = "send failed"; });
   }
 
   function autosize() { var t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; }
@@ -1143,6 +1175,7 @@ export const WEB_UI_HTML = `<!doctype html>
     pill.classList.remove("on");
     // Drop any in-progress streamed bubble state so it can't bleed across conversations.
     if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+    stopTurnTimer();
     streamBubble = null;
     lastStreamDiv = null;
     lastStreamed = null;

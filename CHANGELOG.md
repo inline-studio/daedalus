@@ -11,6 +11,15 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Added
+
+- **Turn timer + token count (web).** A Claude-style elapsed-time readout: a live
+  "Xs" ticks from when you send until the reply completes, then freezes on the
+  reply's footer. When the provider reports usage, the input/output token count is
+  shown alongside it (e.g. `12.4s · ↑1.2k ↓340`). Timing is client-side; the token
+  count rides on the existing kernel usage aggregation via the `turn_complete`
+  event.
+
 ### Changed
 
 - **Smoother streaming render.** During a streamed reply the web UI now shows the
