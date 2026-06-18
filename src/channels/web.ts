@@ -250,7 +250,19 @@ export class WebChannel implements Channel {
           this.sseEvent(externalUserId, conversationId, "thinking", { text: ev.text });
           break;
         case "tool_use":
-          this.sseEvent(externalUserId, conversationId, "tool", { name: ev.name });
+          // Carry the parsed input so the client can show the call detail (e.g. the fetched URL).
+          this.sseEvent(externalUserId, conversationId, "tool", {
+            id: ev.id,
+            name: ev.name,
+            input: ev.input,
+          });
+          break;
+        case "tool_result":
+          // Resolve the matching tool row to done / error.
+          this.sseEvent(externalUserId, conversationId, "tool_done", {
+            id: ev.id,
+            isError: ev.isError,
+          });
           break;
         case "turn_complete":
           // Carry the authoritative final text so the client can finalize the streamed bubble

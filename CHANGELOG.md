@@ -22,6 +22,13 @@ Each entry references the PR that introduced the change.
 
 ### Changed
 
+- **Claude-style tool-call rows (web).** Tool use now renders as a collapsible row —
+  `Ran <tool>` with a one-line summary of the primary argument (e.g. the fetched URL)
+  and a running → ✓/✗ state — that expands to the full input. Replaces the bare tool
+  pill, so you can see what each call did and when, in order. The `tool_use` event now
+  carries the parsed input and `tool_result` resolves the row's state. The debug-log
+  chip moved into the reply footer alongside the timer/token readout.
+
 - **Smoother streaming render.** During a streamed reply the web UI now shows the
   raw text as it types — prose in the normal proportional font, with only code
   fences and table rows in monospace (so they stay aligned) — and renders full

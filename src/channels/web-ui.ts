@@ -166,6 +166,24 @@ export const WEB_UI_HTML = `<!doctype html>
   .stream-prose { white-space: pre-wrap; line-height: 1.6; }
   .stream-mono { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                  font-size: 13px; line-height: 1.5; color: #adbac7; }
+  /* Claude-style tool-call rows: a collapsible header (name + primary-arg summary + state) that
+     expands to the full input. Running = "…", resolved = ✓ / ✗. */
+  .tools { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .tool-call { border: 1px solid #21262d; border-radius: 8px; background: #0d1117; overflow: hidden; max-width: 560px; }
+  .tool-call .head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
+  .tool-call .head:hover { background: #12161c; }
+  .tool-call .chev { color: #6e7681; width: 10px; flex-shrink: 0; }
+  .tool-call .label { color: #8b949e; flex-shrink: 0; }
+  .tool-call .name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #adbac7; }
+  .tool-call .sum { color: #6e7681; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
+                    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .tool-call .state { flex-shrink: 0; font-size: 11px; color: #6e7681; }
+  .tool-call.ok .state { color: #3fb950; }
+  .tool-call.err .state { color: #f85149; }
+  .tool-call .detail { display: none; border-top: 1px solid #21262d; padding: 8px 10px; }
+  .tool-call.open .detail { display: block; }
+  .tool-call .detail pre { margin: 0; white-space: pre-wrap; word-break: break-all;
+                           font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: #adbac7; }
   .msg img { max-width: 100%; border-radius: 8px; margin-top: 6px; }
   .msg a.file { display: inline-block; margin-top: 6px; color: #58a6ff; }
   .msg table { border-collapse: collapse; margin: 8px 0; display: block; overflow-x: auto; max-width: 100%; }
@@ -767,12 +785,15 @@ export const WEB_UI_HTML = `<!doctype html>
     var wasAtBottom = isAtBottom();
     var div = document.createElement("div");
     div.className = "msg assistant";
-    // Layout: a chrome row (tool/debug chips) on top, a reasoning inset below it, then the reply.
-    var chrome = document.createElement("div"); chrome.className = "chrome"; chrome.style.display = "none";
+    // Layout: tool-call rows on top, then a reasoning inset, the reply, and a footer (turn-meta)
+    // carrying elapsed time / tokens and the debug-log chip.
+    var tools = document.createElement("div"); tools.className = "tools"; tools.style.display = "none";
     var reasoning = document.createElement("div"); reasoning.className = "reasoning"; reasoning.style.display = "none";
     var body = document.createElement("div");
     var meta = document.createElement("div"); meta.className = "turn-meta";
-    div.appendChild(chrome);
+    var metaText = document.createElement("span");
+    meta.appendChild(metaText);
+    div.appendChild(tools);
     div.appendChild(reasoning);
     div.appendChild(body);
     div.appendChild(meta);
@@ -780,7 +801,7 @@ export const WEB_UI_HTML = `<!doctype html>
     convo.push({ role: "assistant", text: "", at: new Date().toISOString() });
     var idx = convo.length - 1;
     div.setAttribute("data-idx", String(idx));
-    streamBubble = { div: div, chrome: chrome, body: body, reasoning: reasoning, meta: meta, text: "", think: "", idx: idx };
+    streamBubble = { div: div, tools: tools, body: body, reasoning: reasoning, meta: meta, metaText: metaText, toolRows: {}, text: "", think: "", idx: idx };
     lastStreamDiv = div;
     if (wasAtBottom) jumpToBottom();
     return streamBubble;
@@ -845,7 +866,7 @@ export const WEB_UI_HTML = `<!doctype html>
   }
   function tickTurnTimer() {
     var txt = fmtElapsed(Date.now() - turnStart);
-    if (streamBubble && streamBubble.meta) { streamBubble.meta.textContent = txt; return; }
+    if (streamBubble && streamBubble.metaText) { streamBubble.metaText.textContent = txt; return; }
     var th = $("thinking"); if (th) { var e = th.querySelector(".elapsed"); if (e) e.textContent = txt; }
   }
   function startTurnTimer() {
@@ -855,6 +876,19 @@ export const WEB_UI_HTML = `<!doctype html>
     tickTurnTimer();
   }
   function stopTurnTimer() { if (turnTimer) { clearInterval(turnTimer); turnTimer = null; } }
+
+  // Tool-call display helpers: a one-line summary of the primary argument (collapsed), and the
+  // full pretty-printed input (expanded).
+  function toolSummary(input) {
+    if (!input || typeof input !== "object") return "";
+    var keys = ["url", "path", "file_path", "command", "cmd", "query", "pattern", "name", "content"];
+    for (var i = 0; i < keys.length; i++) { if (typeof input[keys[i]] === "string") return input[keys[i]]; }
+    for (var key in input) { if (typeof input[key] === "string") return input[key]; }
+    try { return JSON.stringify(input); } catch (e) { return ""; }
+  }
+  function toolDetail(input) {
+    try { return JSON.stringify(input, null, 2); } catch (e) { return String(input); }
+  }
 
   function connect() {
     if (es) es.close();
@@ -931,32 +965,52 @@ export const WEB_UI_HTML = `<!doctype html>
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
       var s = ensureStreamBubble();
-      s.chrome.style.display = "flex";
-      var chip = document.createElement("span");
-      chip.className = "chip tool";
-      var dot = document.createElement("b"); dot.className = "dot";
-      var k = document.createElement("span"); k.className = "k"; k.textContent = d.name || "tool";
-      chip.appendChild(dot); chip.appendChild(k);
-      s.chrome.appendChild(chip);
+      s.tools.style.display = "flex";
+      // Claude-style collapsible tool row: header (name + primary-arg summary + state) that expands
+      // to the full input. Starts in the "running" state; tool_done resolves it to ok/error.
+      var row = document.createElement("div"); row.className = "tool-call running";
+      var head = document.createElement("div"); head.className = "head";
+      var chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "▸";
+      var label = document.createElement("span"); label.className = "label";
+      label.appendChild(document.createTextNode("Ran "));
+      var nm = document.createElement("span"); nm.className = "name"; nm.textContent = d.name || "tool";
+      label.appendChild(nm);
+      var sum = document.createElement("span"); sum.className = "sum"; sum.textContent = toolSummary(d.input);
+      var state = document.createElement("span"); state.className = "state"; state.textContent = "…";
+      head.appendChild(chev); head.appendChild(label); head.appendChild(sum); head.appendChild(state);
+      var detail = document.createElement("div"); detail.className = "detail";
+      var pre = document.createElement("pre"); pre.textContent = toolDetail(d.input); detail.appendChild(pre);
+      head.addEventListener("click", function () { row.classList.toggle("open"); chev.textContent = row.classList.contains("open") ? "▾" : "▸"; });
+      row.appendChild(head); row.appendChild(detail);
+      s.tools.appendChild(row);
+      s.toolRows[d.id] = { state: state, row: row };
+    });
+    es.addEventListener("tool_done", function (ev) {
+      markActivity();
+      var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (!streamBubble || !streamBubble.toolRows[d.id]) return;
+      var t = streamBubble.toolRows[d.id];
+      t.row.classList.remove("running");
+      t.row.classList.add(d.isError ? "err" : "ok");
+      t.state.textContent = d.isError ? "✗" : "✓";
     });
     es.addEventListener("debug", function (ev) {
       markActivity();
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
-      // The debug pointer arrives after turn_done, so attach it to the just-finished bubble.
+      // The debug pointer arrives after turn_done; attach it to the just-finished reply's footer.
       var div = streamBubble ? streamBubble.div : lastStreamDiv;
       if (!div) return;
-      var chrome = div.querySelector(".chrome");
-      if (!chrome) { chrome = document.createElement("div"); chrome.className = "chrome"; div.insertBefore(chrome, div.firstChild); }
-      chrome.style.display = "flex";
+      var meta = div.querySelector(".turn-meta");
+      if (!meta) return;
       var chip = document.createElement("span");
       chip.className = "chip debug";
       chip.title = (d.path || "") + " (click to copy)";
       var dot = document.createElement("b"); dot.className = "dot";
-      var label = document.createElement("span"); label.textContent = "debug log";
-      chip.appendChild(dot); chip.appendChild(label);
+      var lbl = document.createElement("span"); lbl.textContent = "debug log";
+      chip.appendChild(dot); chip.appendChild(lbl);
       chip.addEventListener("click", function () { copyToClipboard(d.path || ""); });
-      chrome.appendChild(chip);
+      meta.appendChild(chip);
     });
     es.addEventListener("turn_done", function (ev) {
       markActivity();
@@ -968,7 +1022,7 @@ export const WEB_UI_HTML = `<!doctype html>
       if (d.text) streamBubble.text = d.text;
       streamBubble.body.innerHTML = md(streamBubble.text); // render markdown now it's complete
       // Freeze the timer on the reply footer, with the token count when usage was reported.
-      streamBubble.meta.textContent = fmtElapsed(Date.now() - turnStart) + (d.usage ? " · " + fmtTokens(d.usage) : "");
+      streamBubble.metaText.textContent = fmtElapsed(Date.now() - turnStart) + (d.usage ? " · " + fmtTokens(d.usage) : "");
       lastStreamed = { text: streamBubble.text, at: Date.now() };
       var done = streamBubble.text;
       finalizeStream();
