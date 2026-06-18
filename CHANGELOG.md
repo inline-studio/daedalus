@@ -13,6 +13,14 @@ Each entry references the PR that introduced the change.
 
 ### Changed
 
+- **Smoother streaming render.** During a streamed reply the web UI now shows the
+  raw text as it types — prose in the normal proportional font, with only code
+  fences and table rows in monospace (so they stay aligned) — and renders full
+  markdown once, when the turn completes. This replaces re-parsing partial markdown
+  on every token, removing the vertical jitter and the mid-stream table flicker;
+  with a reserved scrollbar gutter it also removes the sideways "wobble" on long
+  outputs. The reply types out, then snaps to formatted markdown when done.
+
 - **Sleeker web UI.** Assistant replies are now borderless (plain text, like
   ChatGPT/Claude) rather than boxed bubbles — only the user's own messages keep a
   bubble — with tighter, more even spacing. The header, sidebar, and composer
