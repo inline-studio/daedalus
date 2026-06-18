@@ -36,12 +36,12 @@ export const WEB_UI_HTML = `<!doctype html>
   /* Conversation sidebar (Claude.ai-style separate sessions). A column with a "New chat"
      button on top and the scrollable conversation list below. On narrow screens it slides
      over the chat instead of taking a column (see the media query). */
-  #sidebar { width: 260px; flex-shrink: 0; display: flex; flex-direction: column;
-             background: #0b0e13; border-right: 1px solid #21262d; }
-  #sidebar .sb-head { padding: 10px; border-bottom: 1px solid #21262d; }
-  #new-convo { width: 100%; background: #21262d; color: #e6edf3; border: 1px solid #30363d;
+  #sidebar { width: 248px; flex-shrink: 0; display: flex; flex-direction: column;
+             background: #0a0d12; border-right: 1px solid #1b212a; }
+  #sidebar .sb-head { padding: 10px; border-bottom: 1px solid #1b212a; }
+  #new-convo { width: 100%; background: transparent; color: #c9d1d9; border: 1px solid #2a313c;
                border-radius: 8px; padding: 9px 12px; cursor: pointer; font: inherit; }
-  #new-convo:hover { background: #30363d; }
+  #new-convo:hover { background: #161b22; color: #e6edf3; }
   #convo-list { flex: 1; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
   .convo { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px;
            cursor: pointer; color: #c9d1d9; }
@@ -67,21 +67,21 @@ export const WEB_UI_HTML = `<!doctype html>
     #sb-scrim { display: none; position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.5); }
     body.sb-open #sb-scrim { display: block; }
   }
-  header { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
-           border-bottom: 1px solid #21262d; background: #161b22; }
+  header { display: flex; align-items: center; gap: 10px; padding: 9px 16px;
+           border-bottom: 1px solid #1b212a; background: #0d1117; }
   header b { font-weight: 600; }
   header .sp { flex: 1; }
-  header button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
-                  padding: 5px 10px; cursor: pointer; font-size: 13px; }
-  header button:hover { background: #30363d; }
-  #settings { display: none; padding: 10px 14px; border-bottom: 1px solid #21262d; background: #161b22; gap: 8px; }
+  header button { background: transparent; color: #c9d1d9; border: 1px solid #2a313c; border-radius: 7px;
+                  padding: 5px 11px; cursor: pointer; font-size: 13px; }
+  header button:hover { background: #161b22; color: #e6edf3; }
+  #settings { display: none; padding: 10px 16px; border-bottom: 1px solid #1b212a; background: #0d1117; gap: 8px; }
   #settings.on { display: flex; flex-wrap: wrap; align-items: center; }
   #settings input { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; }
   #settings label { font-size: 13px; color: #9da7b3; }
   /* Selection action bar (Telegram-style). Hidden until the user enters select mode; then it
      shows the count, Select all/none, Copy, and Cancel. While selecting, message bubbles are
      tappable to toggle and the selected ones get a blue ring. */
-  #selbar { display: none; padding: 8px 14px; border-bottom: 1px solid #21262d; background: #161b22;
+  #selbar { display: none; padding: 8px 16px; border-bottom: 1px solid #1b212a; background: #0d1117;
             align-items: center; gap: 10px; }
   #selbar.on { display: flex; }
   #selbar button { background: #21262d; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
@@ -113,16 +113,19 @@ export const WEB_UI_HTML = `<!doctype html>
      extra space when the conversation is short (anchors to bottom), and
      collapses to 0 when the content overflows (native scroll works as the
      browser expects). The flex column + overflow-y: auto stay the same. */
-  #log { flex: 1; overflow-y: auto; padding: 16px; display: flex;
-         flex-direction: column; gap: 12px; }
+  #log { flex: 1; overflow-y: auto; padding: 20px 18px; display: flex;
+         flex-direction: column; gap: 18px; }
   #log > :first-child { margin-top: auto; }
   /* Flex children can be shrunk by default, which would let the browser
      compress tall message bubbles instead of letting #log scroll. Lock
      their intrinsic size so scroll behaviour is predictable. */
   #log > * { flex-shrink: 0; }
-  .msg { position: relative; max-width: 760px; width: fit-content; padding: 10px 14px; border-radius: 12px; white-space: normal; word-wrap: break-word; }
-  .msg.user { align-self: flex-end; background: #1f6feb; color: #fff; border-bottom-right-radius: 4px; }
-  .msg.assistant { align-self: flex-start; background: #161b22; border: 1px solid #21262d; border-bottom-left-radius: 4px; }
+  .msg { position: relative; max-width: 760px; width: fit-content; white-space: normal; word-wrap: break-word; }
+  .msg.user { align-self: flex-end; background: #1f6feb; color: #fff; padding: 9px 13px;
+              border-radius: 16px; border-bottom-right-radius: 5px; }
+  /* Assistant replies are borderless — plain text, not a boxed bubble — for a lighter, modern
+     feel (à la ChatGPT/Claude). Only the user's own messages get a bubble. */
+  .msg.assistant { align-self: flex-start; background: transparent; padding: 0; line-height: 1.6; }
   .msg p { margin: 0 0 8px; } .msg p:last-child { margin-bottom: 0; }
   .msg pre { position: relative; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px; padding-right: 60px; overflow-x: auto; }
   .msg code { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 1px 4px; font-size: 13px; }
@@ -139,7 +142,21 @@ export const WEB_UI_HTML = `<!doctype html>
   /* System notices (e.g. "conversation compacted" markers replayed from /history) —
      centered, dashed, muted: clearly not something either party said. */
   .msg.notice { align-self: center; background: transparent; border: 1px dashed #30363d;
-                color: #8b949e; font-size: 12px; max-width: 640px; }
+                color: #8b949e; font-size: 12px; max-width: 640px; padding: 8px 12px; border-radius: 10px; }
+  /* Activity chrome — tool calls, reasoning, debug pointers. Deliberately subordinate to the
+     reply itself: muted, small, pill/inset styling so they read as "what the assistant did",
+     not "what it said". A .chrome row holds the chips; .reasoning is a quieter inset block. */
+  .chrome { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; line-height: 1.4;
+          color: #8b949e; background: #12161c; border: 1px solid #21262d; border-radius: 999px;
+          padding: 3px 10px; }
+  .chip .dot { width: 6px; height: 6px; border-radius: 50%; background: #539bf5; flex-shrink: 0; }
+  .chip .k { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: #adbac7; }
+  .chip.debug { cursor: pointer; }
+  .chip.debug .dot { background: #6e7681; }
+  .chip.debug:hover { color: #c9d1d9; border-color: #30363d; }
+  .reasoning { border-left: 2px solid #30363d; padding: 2px 0 2px 10px; margin-bottom: 10px;
+               color: #8b949e; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
   .msg img { max-width: 100%; border-radius: 8px; margin-top: 6px; }
   .msg a.file { display: inline-block; margin-top: 6px; color: #58a6ff; }
   .msg table { border-collapse: collapse; margin: 8px 0; display: block; overflow-x: auto; max-width: 100%; }
@@ -159,7 +176,7 @@ export const WEB_UI_HTML = `<!doctype html>
   @keyframes think { 0%, 80%, 100% { opacity: .3; transform: translateY(0); }
                      40% { opacity: 1; transform: translateY(-4px); } }
   .meta { font-size: 11px; color: #8b949e; margin: 0 4px; }
-  footer { position: relative; border-top: 1px solid #21262d; background: #161b22; padding: 10px 14px; }
+  footer { position: relative; border-top: 1px solid #1b212a; background: #0d1117; padding: 12px 16px; }
   /* Slash-command autocomplete — floats above the input while the draft is a lone "/prefix";
      ↑/↓ choose, Tab/Enter complete, Esc dismisses. Populated from GET /commands. */
   #cmd-menu { position: absolute; bottom: calc(100% + 4px); left: 14px; right: 14px;
@@ -175,11 +192,13 @@ export const WEB_UI_HTML = `<!doctype html>
   #chips .chip { background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 3px 8px; font-size: 12px; }
   #chips .chip b { cursor: pointer; margin-left: 6px; color: #f85149; }
   .row { display: flex; gap: 8px; align-items: flex-end; }
-  textarea { flex: 1; resize: none; background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
-             border-radius: 8px; padding: 9px 12px; font: inherit; max-height: 180px; }
-  .row button, .row label.attach { background: #238636; color: #fff; border: 1px solid #2ea043; border-radius: 8px;
-             padding: 9px 14px; cursor: pointer; font: inherit; }
-  .row label.attach { background: #21262d; border-color: #30363d; }
+  textarea { flex: 1; resize: none; background: #161b22; color: #e6edf3; border: 1px solid #2a313c;
+             border-radius: 12px; padding: 10px 14px; font: inherit; max-height: 180px; }
+  textarea:focus { outline: none; border-color: #3d4754; }
+  .row button, .row label.attach { background: #238636; color: #fff; border: 1px solid #2ea043; border-radius: 10px;
+             padding: 10px 15px; cursor: pointer; font: inherit; }
+  .row label.attach { background: transparent; border-color: #2a313c; color: #c9d1d9; }
+  .row label.attach:hover { background: #161b22; }
   .row button:disabled { opacity: .5; cursor: default; }
   .empty { color: #8b949e; text-align: center; margin: auto; }
   /* "New messages below" pill — appears in the log when new messages arrive
@@ -727,6 +746,7 @@ export const WEB_UI_HTML = `<!doctype html>
   // Live streaming: the in-progress assistant bubble built from delta events, plus the last
   // finalized streamed text — used to dedup a reconnect replay of the same persisted reply.
   var streamBubble = null;
+  var lastStreamDiv = null; // survives finalize so late chrome (e.g. debug) can attach to it
   var lastStreamed = null;
   function ensureStreamBubble() {
     if (streamBubble) return streamBubble;
@@ -735,16 +755,19 @@ export const WEB_UI_HTML = `<!doctype html>
     var wasAtBottom = isAtBottom();
     var div = document.createElement("div");
     div.className = "msg assistant";
-    var reasoning = document.createElement("div");
-    reasoning.style.cssText = "white-space:pre-wrap;opacity:.55;font-size:13px;margin-bottom:6px;display:none";
+    // Layout: a chrome row (tool/debug chips) on top, a reasoning inset below it, then the reply.
+    var chrome = document.createElement("div"); chrome.className = "chrome"; chrome.style.display = "none";
+    var reasoning = document.createElement("div"); reasoning.className = "reasoning"; reasoning.style.display = "none";
     var body = document.createElement("div");
+    div.appendChild(chrome);
     div.appendChild(reasoning);
     div.appendChild(body);
     log.appendChild(div);
     convo.push({ role: "assistant", text: "", at: new Date().toISOString() });
     var idx = convo.length - 1;
     div.setAttribute("data-idx", String(idx));
-    streamBubble = { div: div, body: body, reasoning: reasoning, text: "", think: "", idx: idx };
+    streamBubble = { div: div, chrome: chrome, body: body, reasoning: reasoning, text: "", think: "", idx: idx };
+    lastStreamDiv = div;
     if (wasAtBottom) jumpToBottom();
     return streamBubble;
   }
@@ -821,7 +844,7 @@ export const WEB_UI_HTML = `<!doctype html>
       var s = ensureStreamBubble();
       s.think += d.text || "";
       s.reasoning.style.display = "block";
-      s.reasoning.textContent = "💭 " + s.think;
+      s.reasoning.textContent = s.think;
       if (wasAtBottom) jumpToBottom();
     });
     es.addEventListener("tool", function (ev) {
@@ -829,10 +852,32 @@ export const WEB_UI_HTML = `<!doctype html>
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
       var s = ensureStreamBubble();
-      var t = document.createElement("div");
-      t.style.cssText = "opacity:.55;font-size:13px;margin:4px 0";
-      t.textContent = "🔧 " + (d.name || "tool");
-      s.div.insertBefore(t, s.body); // keep the running answer last
+      s.chrome.style.display = "flex";
+      var chip = document.createElement("span");
+      chip.className = "chip tool";
+      var dot = document.createElement("b"); dot.className = "dot";
+      var k = document.createElement("span"); k.className = "k"; k.textContent = d.name || "tool";
+      chip.appendChild(dot); chip.appendChild(k);
+      s.chrome.appendChild(chip);
+    });
+    es.addEventListener("debug", function (ev) {
+      markActivity();
+      var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.conversationId && convId && d.conversationId !== convId) return;
+      // The debug pointer arrives after turn_done, so attach it to the just-finished bubble.
+      var div = streamBubble ? streamBubble.div : lastStreamDiv;
+      if (!div) return;
+      var chrome = div.querySelector(".chrome");
+      if (!chrome) { chrome = document.createElement("div"); chrome.className = "chrome"; div.insertBefore(chrome, div.firstChild); }
+      chrome.style.display = "flex";
+      var chip = document.createElement("span");
+      chip.className = "chip debug";
+      chip.title = (d.path || "") + " (click to copy)";
+      var dot = document.createElement("b"); dot.className = "dot";
+      var label = document.createElement("span"); label.textContent = "debug log";
+      chip.appendChild(dot); chip.appendChild(label);
+      chip.addEventListener("click", function () { copyToClipboard(d.path || ""); });
+      chrome.appendChild(chip);
     });
     es.addEventListener("turn_done", function (ev) {
       markActivity();
@@ -1045,6 +1090,7 @@ export const WEB_UI_HTML = `<!doctype html>
     pill.classList.remove("on");
     // Drop any in-progress streamed bubble state so it can't bleed across conversations.
     streamBubble = null;
+    lastStreamDiv = null;
     lastStreamed = null;
   }
 
