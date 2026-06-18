@@ -77,10 +77,13 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         config,
       });
       conversationId = ingested.sessionId;
-      // Live streaming engages only when the channel can render it AND the turn runs in this
-      // process (the event sink is a function — it can't cross the container/worker hop). The
-      // sink renders the reply token-by-token; we then skip the buffered final-text send below.
-      const streaming = typeof ch.streamSink === "function" && dispatcher.id === "in-process";
+      // Live streaming engages when the channel can render it AND the dispatcher forwards turn
+      // events (in-process, or the warm worker which streams them back over NDJSON). The sink
+      // renders the reply token-by-token; we then skip the buffered final-text send below.
+      const streaming =
+        config.streaming.enabled &&
+        typeof ch.streamSink === "function" &&
+        dispatcher.streaming === true;
       const onEvent = streaming ? ch.streamSink!(msg.externalUserId, conversationId) : undefined;
       const result = await dispatcher.dispatch({
         agentName,

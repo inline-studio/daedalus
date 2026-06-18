@@ -76,6 +76,18 @@ async function handleTurn(
     res.end(JSON.stringify({ error: "invalid JSON body" }));
     return;
   }
+  // Stream the turn as NDJSON: event lines as they happen, then a terminal result/error line.
+  // Headers are written lazily on the first line so a failure BEFORE any output can still return
+  // a proper HTTP error status; once streaming has begun, errors ride as a final error line.
+  let started = false;
+  const writeLine = (obj: unknown): void => {
+    if (!started) {
+      started = true;
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+    }
+    res.write(JSON.stringify(obj) + "\n");
+  };
+
   try {
     log.info({ agent: args.agentName, session: args.sessionId }, "worker: running turn");
     const result = await runAgentTurn({
@@ -86,12 +98,18 @@ async function handleTurn(
       isSubagent: Boolean(args.isSubagent),
       ...originFields(args),
       mcpPool: pool,
+      onEvent: (ev) => writeLine({ kind: "event", event: ev }),
     });
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify(result));
+    writeLine({ kind: "result", result });
+    res.end();
   } catch (err) {
     log.error({ err, agent: args.agentName }, "worker: turn failed");
-    res.writeHead(500, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: (err as Error).message }));
+    if (!started) {
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: (err as Error).message }));
+    } else {
+      writeLine({ kind: "error", error: (err as Error).message });
+      res.end();
+    }
   }
 }

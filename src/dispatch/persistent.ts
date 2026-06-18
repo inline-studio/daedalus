@@ -2,6 +2,7 @@ import { Agent } from "undici";
 import type { ArtemisConfig } from "../config/schema.js";
 import type { AgentDispatcher, DispatchArgs, DispatchResult } from "./base.js";
 import { originFields } from "./base.js";
+import type { TurnEventSink } from "../types.js";
 import { log } from "../log.js";
 
 // The worker POST must bypass the global undici dispatcher. The supervisor applies
@@ -21,6 +22,7 @@ const directDispatcher = new Agent();
 // the connection-retry loop only covers a worker restart mid-operation.
 export class PersistentContainerDispatcher implements AgentDispatcher {
   readonly id = "persistent";
+  readonly streaming = true;
   private url: string;
 
   constructor(_config: ArtemisConfig) {
@@ -75,18 +77,63 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
         }
         throw new Error(`agent worker turn failed (HTTP ${res.status}): ${detail}`);
       }
-      // BUG-18: validate the worker response shape before trusting it as a DispatchResult.
-      const parsed = (await res.json()) as DispatchResult;
-      if (parsed?.status !== "complete" && parsed?.status !== "pending_question") {
-        throw new Error(
-          `agent worker returned an invalid result shape: ${JSON.stringify(parsed)?.slice(0, 200)}`,
-        );
-      }
-      return parsed;
+      // The worker streams its turn as NDJSON: event lines (forwarded to the caller's sink) then
+      // a terminal result/error line. A mid-stream failure is NOT retried — events may already
+      // have been forwarded, so re-running would double them.
+      return this.consumeStream(res, args.onEvent);
     }
     throw new Error(
       `agent worker unreachable at ${this.url}: ${(lastErr as Error)?.message ?? "unknown error"}`,
     );
+  }
+
+  // Parse the worker's NDJSON turn stream: forward each event line to `onEvent` (when present)
+  // and return the terminal result. Throws on an error line or a stream that ends without one.
+  private async consumeStream(res: Response, onEvent?: TurnEventSink): Promise<DispatchResult> {
+    const body = res.body as ReadableStream<Uint8Array> | null;
+    if (!body) throw new Error("agent worker returned no response body");
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let result: DispatchResult | undefined;
+
+    const handle = (line: string): void => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      const msg = JSON.parse(trimmed) as
+        | { kind: "event"; event: Parameters<TurnEventSink>[0] }
+        | { kind: "result"; result: DispatchResult }
+        | { kind: "error"; error: string };
+      if (msg.kind === "event") {
+        if (onEvent) onEvent(msg.event);
+      } else if (msg.kind === "result") {
+        result = msg.result;
+      } else if (msg.kind === "error") {
+        throw new Error(`agent worker turn failed: ${msg.error}`);
+      }
+    };
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        handle(line);
+      }
+    }
+    if (buf.trim()) handle(buf);
+
+    if (!result) throw new Error("agent worker stream ended without a result");
+    // BUG-18: validate the result shape before trusting it as a DispatchResult.
+    if (result.status !== "complete" && result.status !== "pending_question") {
+      throw new Error(
+        `agent worker returned an invalid result shape: ${JSON.stringify(result)?.slice(0, 200)}`,
+      );
+    }
+    return result;
   }
 }
 

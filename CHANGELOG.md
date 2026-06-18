@@ -13,18 +13,22 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
-- **Streaming foundation + live CLI replies (phases 0–1).** Providers now expose a
-  `stream()` method emitting incremental token events (text, reasoning, tool-call
-  args) plus a terminal assembled result; the Anthropic and OpenAI-compatible
-  adapters implement it (the latter capturing reasoning from a `reasoning_content`
-  delta field or inline `<think>` tags via a chunk-aware splitter). The kernel
-  consumes the stream and emits structured `TurnEvent`s (turn boundaries, deltas,
-  tool_use → tool_running → tool_result), and the **CLI channel renders replies
-  token-by-token** when running in-process (`runtime.dispatcher: process`). Streaming
-  is additive and opt-in per channel: the buffered `complete()` path is unchanged,
-  and channels that don't implement a stream sink (web, Telegram) stay buffered —
-  Telegram deliberately so. Cross-process streaming (the warm worker) and web SSE
-  streaming are not yet wired (later phases).
+- **Live response streaming (phases 0–2).** Replies now stream token-by-token to
+  the web UI and CLI. Providers expose a `stream()` method emitting incremental
+  events (text, reasoning, tool-call args) plus a terminal assembled result; the
+  Anthropic and OpenAI-compatible adapters implement it (the latter capturing
+  reasoning from a `reasoning_content` delta field or inline `<think>` tags via a
+  chunk-aware splitter). The kernel consumes the stream and emits structured
+  `TurnEvent`s (turn boundaries, deltas, tool_use → tool_running → tool_result). The
+  warm agent worker streams these back to the supervisor as NDJSON over its `/turn`
+  response, so streaming works on the deployed (`persistentAgent`) path, not just
+  in-process. The **web UI renders replies incrementally** (token deltas, a dim
+  reasoning block, tool markers) over SSE, and the **CLI** renders them to the
+  terminal. Streaming is additive: the buffered `complete()` path is unchanged, and
+  channels that don't implement a stream sink stay buffered — **Telegram
+  deliberately so** (edit-throttled streaming is a poor UX). A global
+  `streaming.enabled` toggle (default on) is the escape hatch if a gateway mishandles
+  streaming. Subagent turns (ephemeral containers) remain buffered.
 
 - **Conversation debug log.** Opt-in per-turn trace for answering "did the agent
   actually run that tool, or fabricate the result?". With

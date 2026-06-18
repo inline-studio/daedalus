@@ -83,6 +83,11 @@ export type DispatchResult =
 
 export interface AgentDispatcher {
   readonly id: string;
+  // True when this dispatcher honors DispatchArgs.onEvent (forwards live turn events to the
+  // caller). In-process and the persistent worker do; the one-shot container dispatcher does not
+  // (its result crosses a stdout boundary as a single framed line). serve uses this to decide
+  // whether to engage a channel's streaming sink.
+  readonly streaming?: boolean;
   dispatch(args: DispatchArgs): Promise<DispatchResult>;
 }
 
