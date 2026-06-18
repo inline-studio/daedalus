@@ -404,9 +404,18 @@ export async function runInstall(
   }
   if (!timezone) timezone = detectedTz;
 
+  // Cross-agent shared workspace, wired as a HOST BIND (not a docker volume) so its
+  // contents are browsable from the host filesystem. Stable across re-runs: reuse the
+  // prior value if set, else default to <configDir>/shared. dae-runtime-init chowns it
+  // to ${UID} on bring-up so the non-root container user can write to it; we create it
+  // here too so the bind source exists before the first `docker compose up`.
+  const sharedPath = prev.SHARED_PATH || path.join(configDir, "shared");
+  await fs.mkdir(sharedPath, { recursive: true });
+
   const composeEnv: Record<string, string> = {
     BRAIN_PATH: brainPath,
     DAEDALUS_CONFIG_DIR: configDir,
+    SHARED_PATH: sharedPath,
     UID: String(process.getuid?.() ?? 1000),
     DOCKER_GID: String(dockerGid()),
     TZ: timezone,

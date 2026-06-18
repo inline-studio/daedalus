@@ -51,7 +51,7 @@ services:
     volumes:
       - dae-runtime:/runtime
       - daedalus-data:/data
-      - daedalus-shared:/shared
+      - ${SHARED_PATH:?set SHARED_PATH in .env}:/shared
     restart: "no"
 
   daedalus:
@@ -82,12 +82,12 @@ services:
       # Host-side paths/volumes the dispatcher bind-mounts into each spawned agent
       # container. Bind mounts via docker.sock are resolved by the host daemon, not
       # this container — so the supervisor must know the real host paths (brain,
-      # config dir) and the named volumes (shared, data, prefixed with the compose
+      # config dir, shared) and the named data volume (prefixed with the compose
       # project name `daedalus_`). Without these, nested agent dispatch would try to
       # mount the supervisor's own /brain etc. and fail.
       DAE_AGENT_HOST_BRAIN: ${BRAIN_PATH:?set BRAIN_PATH in .env}
       DAE_AGENT_HOST_CONFIG: ${DAEDALUS_CONFIG_DIR:?set DAEDALUS_CONFIG_DIR in .env}
-      DAE_AGENT_HOST_SHARED: daedalus_daedalus-shared
+      DAE_AGENT_HOST_SHARED: ${SHARED_PATH:?set SHARED_PATH in .env}
       DAE_AGENT_HOST_DATA: daedalus_daedalus-data
       # Name of the docker volume the agent runtime lives in. The dispatcher
       # mounts this into each spawned agent container at /dae-runtime so user
@@ -105,7 +105,8 @@ services:
       # Persistent state: sessions sqlite, attachments. Owned by the dae user inside.
       - daedalus-data:/data
       # Shared workspace, RW for every agent. The cross-agent scratch space.
-      - daedalus-shared:/shared
+      # Host bind (SHARED_PATH) so its contents are browsable from the host.
+      - ${SHARED_PATH:?set SHARED_PATH in .env}:/shared
       # Docker socket so the supervisor can `docker run` per-agent containers.
       - /var/run/docker.sock:/var/run/docker.sock
     # Web chat UI + channel API — only meaningful when channels.web is enabled (port 8765
@@ -145,7 +146,12 @@ services:
       context: .
       args:
         DAEDALUS_VERSION: ${DAEDALUS_VERSION:-latest}
-    command: ["dae", "agent-worker"]
+    # Source the SSH shim before launching so operator-mounted keys
+    # (<configDir>/ssh/ → /etc/daedalus/ssh) are symlinked into $HOME/.ssh.
+    # The warm worker runs top-level agent turns in-process and never goes
+    # through agent-turn.sh, so it must source setup-ssh.sh itself. `|| true`
+    # keeps the worker starting even if the shim is a no-op or errors.
+    command: ["sh", "-c", ". /dae-runtime/setup-ssh.sh || true; exec dae agent-worker"]
     restart: unless-stopped
     init: true
     environment:
@@ -159,14 +165,14 @@ services:
       DAE_AGENT_NETWORK: daedalus
       DAE_AGENT_HOST_BRAIN: ${BRAIN_PATH:?set BRAIN_PATH in .env}
       DAE_AGENT_HOST_CONFIG: ${DAEDALUS_CONFIG_DIR:?set DAEDALUS_CONFIG_DIR in .env}
-      DAE_AGENT_HOST_SHARED: daedalus_daedalus-shared
+      DAE_AGENT_HOST_SHARED: ${SHARED_PATH:?set SHARED_PATH in .env}
       DAE_AGENT_HOST_DATA: daedalus_daedalus-data
       DAE_AGENT_RUNTIME_VOLUME: daedalus_dae-runtime
     volumes:
       - ${BRAIN_PATH:?set BRAIN_PATH in .env}:/brain:ro
       - ${DAEDALUS_CONFIG_DIR:?set DAEDALUS_CONFIG_DIR in .env}:/etc/daedalus:ro
       - daedalus-data:/data
-      - daedalus-shared:/shared
+      - ${SHARED_PATH:?set SHARED_PATH in .env}:/shared
       # Docker socket so the worker can `docker run` per-subagent containers.
       - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
@@ -308,7 +314,6 @@ services:
 
 volumes:
   daedalus-data:
-  daedalus-shared:
   graphiti-data:
   # Holds the injectable agent runtime (node binary + daedalus install).
   # Populated by dae-runtime-init at startup; mounted ro into every per-agent
