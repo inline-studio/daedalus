@@ -1,6 +1,6 @@
 import http from "node:http";
 import type { Channel, ChannelContext, IncomingAttachment, OutgoingMessage } from "./base.js";
-import type { ContentPart } from "../types.js";
+import type { ContentPart, TurnEventSink } from "../types.js";
 import { COMPACTION_CHANNEL, type SessionStore, type PersistedSession } from "../sessions/store.js";
 import { WEB_UI_HTML, WEB_LOGIN_HTML } from "./web-ui.js";
 import { verifyPassword, signSession, verifySession, parseCookies } from "./web-auth.js";
@@ -233,6 +233,44 @@ export class WebChannel implements Channel {
     const sseId = new Date().toISOString();
     const block = `id: ${sseId}\nevent: message\ndata: ${data}\n\n`;
     // Deliver to every matching connection (all tabs on this conversation stay in sync).
+    for (const set of targets) for (const stream of set) stream.write(block);
+  }
+
+  // Live token streaming → transient SSE events the browser renders incrementally. Maps each
+  // TurnEvent to a named SSE event (delta/thinking/tool/turn_done). These carry NO `id:` line: they
+  // are ephemeral display, not part of the Last-Event-ID replay contract — the final reply is
+  // persisted to the session and reloaded from history on reconnect, so nothing is lost.
+  streamSink(externalUserId: string, conversationId?: string): TurnEventSink {
+    return (ev) => {
+      switch (ev.type) {
+        case "text_delta":
+          this.sseEvent(externalUserId, conversationId, "delta", { text: ev.text });
+          break;
+        case "thinking_delta":
+          this.sseEvent(externalUserId, conversationId, "thinking", { text: ev.text });
+          break;
+        case "tool_use":
+          this.sseEvent(externalUserId, conversationId, "tool", { name: ev.name });
+          break;
+        case "turn_complete":
+          // Carry the authoritative final text so the client can finalize the streamed bubble
+          // exactly (and dedup it against a reconnect replay of the persisted reply).
+          this.sseEvent(externalUserId, conversationId, "turn_done", { text: ev.finalText });
+          break;
+      }
+    };
+  }
+
+  private sseEvent(
+    externalUserId: string,
+    conversationId: string | undefined,
+    event: string,
+    payload: Record<string, unknown>,
+  ): void {
+    const targets = this.streamsFor(externalUserId, conversationId);
+    if (targets.length === 0) return;
+    const data = JSON.stringify({ ...payload, conversationId: conversationId ?? null });
+    const block = `event: ${event}\ndata: ${data}\n\n`;
     for (const set of targets) for (const stream of set) stream.write(block);
   }
 

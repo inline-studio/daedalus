@@ -132,6 +132,13 @@ attachments:
   maxFetchBytes: 25000000   # 25 MB; raise for large media (e.g. a video store)
   fetchTimeoutMs: 30000
 
+# Live token streaming to channels that support it (web + CLI; Telegram stays buffered by
+# design). On by default. Set enabled:false to fall back to buffered replies everywhere — the
+# escape hatch if an OpenAI-compatible gateway mishandles streaming. Per-provider support still
+# applies; this only gates whether the supervisor engages a channel's live stream.
+streaming:
+  enabled: true
+
 # Operator debugging aids. OFF by default — the conversation log writes full prompts and
 # tool I/O to disk, so it's opt-in and intended for single-operator deployments.
 debug:

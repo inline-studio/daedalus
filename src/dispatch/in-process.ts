@@ -8,6 +8,7 @@ import { runAgentTurn } from "../kernel/agent-turn.js";
 //   - any subagent dispatch where the parent has opted for in-process delegation
 export class InProcessAgentDispatcher implements AgentDispatcher {
   readonly id = "in-process";
+  readonly streaming = true;
   constructor(private config: ArtemisConfig) {}
   async dispatch(args: DispatchArgs): Promise<DispatchResult> {
     return runAgentTurn({
@@ -17,6 +18,8 @@ export class InProcessAgentDispatcher implements AgentDispatcher {
       userId: args.userId,
       isSubagent: args.isSubagent,
       ...originFields(args),
+      // In-process only: forward the live event sink straight to the turn (no serialization hop).
+      ...(args.onEvent ? { onEvent: args.onEvent } : {}),
     });
   }
 }

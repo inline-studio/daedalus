@@ -23,7 +23,7 @@ const listen = (server) =>
 const close = (server) => new Promise((resolve) => server.close(() => resolve()));
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 1. Happy path — dispatch posts to /turn and returns the parsed result.
+// 1. Happy path — dispatch posts to /turn, forwards streamed events, returns the terminal result.
 {
   let seenPath = "";
   let seenBody = "";
@@ -33,18 +33,26 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       seenBody = body;
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ status: "complete", finalText: "hi from worker", turns: 2 }));
+      // Worker streams NDJSON: event lines, then a terminal result line.
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+      res.write(JSON.stringify({ kind: "event", event: { type: "text_delta", text: "hi " } }) + "\n");
+      res.write(JSON.stringify({ kind: "event", event: { type: "text_delta", text: "there" } }) + "\n");
+      res.write(
+        JSON.stringify({ kind: "result", result: { status: "complete", finalText: "hi there", turns: 2 } }) + "\n",
+      );
+      res.end();
     });
   });
   const port = await listen(server);
   process.env.DAE_WORKER_URL = `http://127.0.0.1:${port}`;
   const d = new PersistentContainerDispatcher({});
+  const events = [];
   const result = await d.dispatch({
     agentName: "artemis",
     sessionId: "s1",
     userId: "u1",
     isSubagent: false,
+    onEvent: (e) => events.push(e),
   });
   expect("POSTs to /turn", seenPath === "/turn", `got ${seenPath}`);
   const parsed = JSON.parse(seenBody || "{}");
@@ -56,9 +64,15 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
       parsed.isSubagent === false,
     seenBody,
   );
+  expect("onEvent is NOT serialized into the body", !("onEvent" in parsed));
   expect(
-    "returns the parsed DispatchResult",
-    result.status === "complete" && result.finalText === "hi from worker" && result.turns === 2,
+    "streamed events forwarded to onEvent",
+    events.length === 2 && events.every((e) => e.type === "text_delta") && events[1].text === "there",
+    JSON.stringify(events),
+  );
+  expect(
+    "returns the terminal DispatchResult",
+    result.status === "complete" && result.finalText === "hi there" && result.turns === 2,
     JSON.stringify(result),
   );
   await close(server);
@@ -110,8 +124,8 @@ const delay = (ms) => new Promise((r) => setTimeout(r, ms));
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ status: "complete", finalText: "late", turns: 1 }));
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+      res.end(JSON.stringify({ kind: "result", result: { status: "complete", finalText: "late", turns: 1 } }) + "\n");
     });
   });
   await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));

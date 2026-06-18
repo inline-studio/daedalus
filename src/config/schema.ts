@@ -255,6 +255,16 @@ export const DebugConfigSchema = z.object({
 });
 export type DebugConfig = z.infer<typeof DebugConfigSchema>;
 
+// Live token streaming to channels that support it (currently web + CLI; Telegram stays buffered
+// by design). Global on/off escape hatch: when a backend's streaming is flaky (e.g. an
+// OpenAI-compatible gateway that mishandles stream:true or doesn't emit reasoning deltas), set
+// enabled:false to fall back to buffered replies everywhere without a code change. Per-provider
+// support is still required — this only gates whether the supervisor engages a channel's stream.
+export const StreamingConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+});
+export type StreamingConfig = z.infer<typeof StreamingConfigSchema>;
+
 export const ChannelsConfigSchema = z.object({
   cli: z.object({ enabled: z.boolean().default(false), defaultAgent: z.string() }).optional(),
   web: z
@@ -397,6 +407,7 @@ export const ArtemisConfigSchema = z.object({
   debug: DebugConfigSchema.default({
     conversationLog: { enabled: false, retentionDays: 5, path: "./data/debug-logs" },
   }),
+  streaming: StreamingConfigSchema.default({ enabled: true }),
 });
 export type ArtemisConfig = z.infer<typeof ArtemisConfigSchema>;
 

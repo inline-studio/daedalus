@@ -22,6 +22,8 @@
 //
 // Both implementations share a normalized DispatchArgs/DispatchResult contract so
 // the kernel doesn't care which one it's behind.
+import type { TurnEventSink } from "../types.js";
+
 export interface DispatchArgs {
   agentName: string;
   // The session this turn belongs to. The dispatcher reads the full history tail
@@ -40,6 +42,10 @@ export interface DispatchArgs {
   // Optional caller-provided timeout in ms. Container dispatcher hard-kills the
   // container after this; in-process dispatcher ignores (kernel has its own).
   timeoutMs?: number;
+  // Optional live turn-event sink. Only meaningful for the IN-PROCESS dispatcher — it's a
+  // function, so the container/worker dispatchers (which JSON-serialise these args) drop it, and
+  // those paths stay buffered until streaming is wired across the process hop (Phase 2).
+  onEvent?: TurnEventSink;
 }
 
 // A file the agent attached to its reply (via the `attach_to_reply` tool). Carried as a
@@ -77,6 +83,11 @@ export type DispatchResult =
 
 export interface AgentDispatcher {
   readonly id: string;
+  // True when this dispatcher honors DispatchArgs.onEvent (forwards live turn events to the
+  // caller). In-process and the persistent worker do; the one-shot container dispatcher does not
+  // (its result crosses a stdout boundary as a single framed line). serve uses this to decide
+  // whether to engage a channel's streaming sink.
+  readonly streaming?: boolean;
   dispatch(args: DispatchArgs): Promise<DispatchResult>;
 }
 

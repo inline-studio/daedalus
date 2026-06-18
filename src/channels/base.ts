@@ -1,4 +1,4 @@
-import type { ContentPart } from "../types.js";
+import type { ContentPart, TurnEventSink } from "../types.js";
 
 // A channel is any inbound/outbound surface (CLI, web, telegram, whatsapp, …).
 // IMPORTANT: there is no concept of "groups" here. All channels publish into the same
@@ -65,4 +65,10 @@ export interface Channel {
   // Send an outbound message to a specific external user. The runner has already resolved
   // which channel to use; the platform-side address is the `externalUserId` argument.
   send(externalUserId: string, msg: OutgoingMessage): Promise<void>;
+  // Optional live streaming. When a channel implements this AND the turn runs in-process, the
+  // supervisor passes the returned sink to the kernel to render the reply token-by-token, and
+  // then SKIPS the buffered final-text send() for a completed turn (the sink already showed it);
+  // notices and attachments are still delivered via send(). Channels that omit this stay fully
+  // buffered. Telegram deliberately does not implement it — edit-throttled streaming is a poor UX.
+  streamSink?(externalUserId: string, conversationId?: string): TurnEventSink;
 }

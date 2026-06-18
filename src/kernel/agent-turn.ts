@@ -2,7 +2,7 @@ import path from "node:path";
 import { writeFile } from "node:fs/promises";
 import os from "node:os";
 import type { ArtemisConfig } from "../config/schema.js";
-import type { Message, ToolUsePart, ToolResultPart } from "../types.js";
+import type { Message, ToolUsePart, ToolResultPart, TurnEventSink } from "../types.js";
 import { Kernel, summarizeConversation } from "./agent.js";
 import { budgetTail, estimateTokens } from "./context-budget.js";
 import { compactCompletedLoops } from "./history-compaction.js";
@@ -62,6 +62,10 @@ export interface RunAgentTurnInput {
   // persistent pool and kept open across turns. When omitted (the one-shot
   // `dae agent-turn` container), we connect fresh and close at the end of the turn.
   mcpPool?: McpPool;
+  // Live turn-event sink. Set only on the in-process path (a function can't cross the
+  // container/worker serialization hop); when present and the provider supports streaming, the
+  // kernel emits token-level events as the turn unfolds.
+  onEvent?: TurnEventSink;
 }
 
 export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchResult> {
@@ -335,7 +339,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       log.warn({ err: (err as Error).message }, "context dump failed");
     }
 
-    const result = await kernel.runWithMessages(messages);
+    const result = await kernel.runWithMessages(messages, undefined, input.onEvent);
 
     // 9. Persist whatever the kernel produced beyond the existing tail. Skip a
     // content-less, tool-less assistant message (e.g. the model returned an empty

@@ -12,6 +12,8 @@ import type {
   ToolDefinition,
   ToolUsePart,
   ToolResultPart,
+  TurnEventSink,
+  ProviderStreamEvent,
 } from "../types.js";
 import { log } from "../log.js";
 
@@ -87,14 +89,27 @@ export class Kernel {
     this.allToolDefs = [...opts.builtinTools.map((t) => t.definition), ...mcpDefs];
   }
 
-  async run(userPrompt: string, signal?: AbortSignal): Promise<KernelResult> {
+  async run(
+    userPrompt: string,
+    signal?: AbortSignal,
+    onEvent?: TurnEventSink,
+  ): Promise<KernelResult> {
     return this.runWithMessages(
       [{ role: "user", content: [{ type: "text", text: userPrompt }] }],
       signal,
+      onEvent,
     );
   }
 
-  async runWithMessages(initialMessages: Message[], signal?: AbortSignal): Promise<KernelResult> {
+  // `onEvent`, when provided AND the provider supports streaming, makes the kernel consume the
+  // provider's token stream and emit live TurnEvents (deltas + tool/turn structure) as the turn
+  // unfolds. Without it (or without provider streaming), the kernel falls back to the buffered
+  // complete() path — behaviour is identical, only the live events are absent.
+  async runWithMessages(
+    initialMessages: Message[],
+    signal?: AbortSignal,
+    onEvent?: TurnEventSink,
+  ): Promise<KernelResult> {
     const messages: Message[] = [...initialMessages];
     this.notices = [];
     this.contextCompacted = false;
@@ -110,7 +125,8 @@ export class Kernel {
 
     while (turns < this.opts.maxTurns) {
       turns++;
-      const result = await this.completeFittingContext(messages, signal);
+      onEvent?.({ type: "turn_start", turn: turns });
+      const result = await this.completeFittingContext(messages, signal, undefined, onEvent);
       if (result.usage) {
         this.accumulateUsage(result.usage);
         // Per-turn token visibility. inputTokens is the whole replayed transcript
@@ -138,16 +154,22 @@ export class Kernel {
 
       if (result.stopReason !== "tool_use") {
         finalText = collectText(result.message.content);
+        onEvent?.({ type: "turn_complete", finalText });
         break;
       }
 
       // Execute every tool_use and append tool_results in a single user message.
       const toolUses = result.message.content.filter((c): c is ToolUsePart => c.type === "tool_use");
+      // Surface the assembled tool calls (parsed input) up front so a UI can render them before
+      // the — potentially slow — execution begins.
+      for (const tu of toolUses) onEvent?.({ type: "tool_use", id: tu.id, name: tu.name, input: tu.input });
       const toolResults: ToolResultPart[] = [];
       for (const tu of toolUses) {
         log.debug({ tool: tu.name, input: tu.input }, "tool call");
+        onEvent?.({ type: "tool_running", id: tu.id, name: tu.name });
         try {
           const res = await this.executeTool(tu);
+          onEvent?.({ type: "tool_result", id: tu.id, name: tu.name, isError: res.isError ?? false });
           toolResults.push({
             type: "tool_result",
             toolUseId: tu.id,
@@ -207,10 +229,11 @@ export class Kernel {
         });
       }
       try {
-        const wrap = await this.completeFittingContext(messages, signal, { tools: [] });
+        const wrap = await this.completeFittingContext(messages, signal, { tools: [] }, onEvent);
         if (wrap.usage) this.accumulateUsage(wrap.usage);
         messages.push(wrap.message);
         finalText = collectText(wrap.message.content);
+        if (finalText.trim()) onEvent?.({ type: "turn_complete", finalText });
       } catch (err) {
         log.warn({ err: (err as Error).message }, "max-turns wrap-up completion failed");
       }
@@ -263,6 +286,7 @@ export class Kernel {
     messages: Message[],
     signal?: AbortSignal,
     opts?: { tools?: ToolDefinition[] },
+    onEvent?: TurnEventSink,
   ): Promise<CompletionResult> {
     let view = messages;
     let triedCompact = false;
@@ -282,7 +306,7 @@ export class Kernel {
         ...(this.opts.thinking ? { thinking: this.opts.thinking } : {}),
       };
       try {
-        return await this.completeWithRetry(req, signal);
+        return await this.runCompletion(req, signal, onEvent);
       } catch (err) {
         if (!isContextOverflowError(err)) throw err;
         // First overflow: try to COMPACT — summarise the older portion into a synopsis and
@@ -444,6 +468,54 @@ export class Kernel {
     signal?: AbortSignal,
   ): Promise<CompletionResult> {
     return completeWithRetry(this.opts.provider, req, signal);
+  }
+
+  // One completion for `req`: stream it (emitting live deltas) when a sink is present AND the
+  // provider supports streaming, otherwise the buffered, transient-retrying complete(). Streaming
+  // is a single attempt — a mid-stream failure surfaces rather than silently re-emitting on a
+  // retry — while a context-overflow thrown at stream open still propagates to the caller's
+  // compaction/trim loop (no deltas have been emitted at that point).
+  private async runCompletion(
+    req: CompletionRequest,
+    signal: AbortSignal | undefined,
+    onEvent?: TurnEventSink,
+  ): Promise<CompletionResult> {
+    const provider = this.opts.provider;
+    if (onEvent && provider.capabilities.streaming && provider.stream) {
+      return this.streamCompletion(provider.stream(req, signal), onEvent);
+    }
+    return completeWithRetry(provider, req, signal);
+  }
+
+  // Consume a provider stream, forwarding each delta as a TurnEvent and returning the terminal
+  // assembled result (the same shape complete() produces, so the tool loop and persistence are
+  // unaffected by whether the turn streamed).
+  private async streamCompletion(
+    events: AsyncIterable<ProviderStreamEvent>,
+    onEvent: TurnEventSink,
+  ): Promise<CompletionResult> {
+    let result: CompletionResult | undefined;
+    for await (const ev of events) {
+      switch (ev.type) {
+        case "text_delta":
+          onEvent({ type: "text_delta", text: ev.text });
+          break;
+        case "thinking_delta":
+          onEvent({ type: "thinking_delta", text: ev.text });
+          break;
+        case "tool_use_start":
+          onEvent({ type: "tool_use_start", id: ev.id, name: ev.name });
+          break;
+        case "tool_use_input_delta":
+          onEvent({ type: "tool_use_input_delta", id: ev.id, jsonDelta: ev.jsonDelta });
+          break;
+        case "result":
+          result = ev.result;
+          break;
+      }
+    }
+    if (!result) throw new Error("provider stream ended without a result event");
+    return result;
   }
 
   private async executeTool(tu: ToolUsePart): Promise<{ content: string; isError?: boolean }> {

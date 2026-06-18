@@ -5,8 +5,10 @@ import type {
   ContentPart,
   ImagePart,
   Message,
+  ProviderStreamEvent,
 } from "../types.js";
 import { ProviderError, type LLMProvider, type ProviderCapabilities } from "./base.js";
+import { createThinkStreamSplitter } from "./stream-util.js";
 
 export interface OpenAIAdapterOptions {
   apiKey?: string;
@@ -21,7 +23,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   readonly id: string;
   readonly capabilities: ProviderCapabilities = {
     tools: true,
-    streaming: false, // BUG-05: complete() is a single blocking call — no streaming path exists
+    streaming: true, // stream() implemented; complete() remains a separate blocking path
     vision: false, // depends on backend; mark per model later
     systemPromptAsField: false, // OpenAI uses a system message
   };
@@ -35,35 +37,38 @@ export class OpenAICompatibleProvider implements LLMProvider {
     });
   }
 
-  async complete(req: CompletionRequest, signal?: AbortSignal): Promise<CompletionResult> {
-    try {
-      const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+  // Shared request body for complete() and stream() so the two paths can't drift on model,
+  // message mapping, tools, or sampling params.
+  private buildBody(
+    req: CompletionRequest,
+  ): OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming {
+    return {
+      model: req.model,
+      messages: [
         { role: "system", content: req.system },
         ...req.messages.flatMap(toOpenAIMessages),
-      ];
+      ],
+      ...(req.maxTokens ? { max_tokens: req.maxTokens } : {}),
+      ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+      ...(req.stopSequences ? { stop: req.stopSequences } : {}),
+      ...(req.tools.length
+        ? {
+            tools: req.tools.map((t) => ({
+              type: "function" as const,
+              function: {
+                name: t.name,
+                description: t.description,
+                parameters: t.inputSchema as Record<string, unknown>,
+              },
+            })),
+          }
+        : {}),
+    };
+  }
 
-      const res = await this.client.chat.completions.create(
-        {
-          model: req.model,
-          messages,
-          ...(req.maxTokens ? { max_tokens: req.maxTokens } : {}),
-          ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-          ...(req.stopSequences ? { stop: req.stopSequences } : {}),
-          ...(req.tools.length
-            ? {
-                tools: req.tools.map((t) => ({
-                  type: "function" as const,
-                  function: {
-                    name: t.name,
-                    description: t.description,
-                    parameters: t.inputSchema as Record<string, unknown>,
-                  },
-                })),
-              }
-            : {}),
-        },
-        { signal },
-      );
+  async complete(req: CompletionRequest, signal?: AbortSignal): Promise<CompletionResult> {
+    try {
+      const res = await this.client.chat.completions.create(this.buildBody(req), { signal });
 
       const choice = res.choices[0];
       if (!choice) throw new Error("OpenAI returned no choices");
@@ -114,6 +119,143 @@ export class OpenAICompatibleProvider implements LLMProvider {
     } catch (err) {
       throw new ProviderError(
         `OpenAI-compatible completion failed: ${(err as Error).message}`,
+        this.id,
+        err,
+      );
+    }
+  }
+
+  // Streaming variant. Emits text/thinking/tool-arg deltas as they arrive, accumulating the same
+  // content it would otherwise build in one shot, then yields a terminal `result` with the
+  // assembled CompletionResult. Reasoning is captured from either a `reasoning_content`/`reasoning`
+  // delta field or inline <think> tags (via the chunk-aware splitter).
+  async *stream(
+    req: CompletionRequest,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ProviderStreamEvent> {
+    try {
+      const s = await this.client.chat.completions.create(
+        { ...this.buildBody(req), stream: true, stream_options: { include_usage: true } },
+        { signal },
+      );
+
+      const splitter = createThinkStreamSplitter();
+      let visible = "";
+      let thinking = "";
+      let usedReasoningField = false;
+      // tool calls accumulate per delta index (id/name arrive once, arguments stream in pieces).
+      const tools = new Map<
+        number,
+        { id: string; name: string; args: string; started: boolean }
+      >();
+      let finishReason: string | null = null;
+      let usage: { prompt_tokens: number; completion_tokens: number } | undefined;
+
+      for await (const chunk of s) {
+        if (chunk.usage) {
+          usage = {
+            prompt_tokens: chunk.usage.prompt_tokens,
+            completion_tokens: chunk.usage.completion_tokens,
+          };
+        }
+        const choice = chunk.choices[0];
+        if (!choice) continue;
+        if (choice.finish_reason) finishReason = choice.finish_reason;
+        const d = choice.delta as {
+          content?: string | null;
+          reasoning_content?: string;
+          reasoning?: string;
+          tool_calls?: Array<{
+            index?: number;
+            id?: string;
+            function?: { name?: string; arguments?: string };
+          }>;
+        };
+
+        const rc = d.reasoning_content ?? d.reasoning;
+        if (rc) {
+          usedReasoningField = true;
+          thinking += rc;
+          yield { type: "thinking_delta", text: rc };
+        }
+
+        if (typeof d.content === "string" && d.content) {
+          if (usedReasoningField) {
+            // Backend separates reasoning into its own field, so `content` is pure answer text.
+            visible += d.content;
+            yield { type: "text_delta", text: d.content };
+          } else {
+            // Reasoning (if any) is inline as <think>…</think> — split it live.
+            const { textDelta, thinkingDelta } = splitter.push(d.content);
+            if (thinkingDelta) {
+              thinking += thinkingDelta;
+              yield { type: "thinking_delta", text: thinkingDelta };
+            }
+            if (textDelta) {
+              visible += textDelta;
+              yield { type: "text_delta", text: textDelta };
+            }
+          }
+        }
+
+        for (const tc of d.tool_calls ?? []) {
+          const idx = tc.index ?? 0;
+          let slot = tools.get(idx);
+          if (!slot) {
+            slot = { id: tc.id ?? "", name: tc.function?.name ?? "", args: "", started: false };
+            tools.set(idx, slot);
+          }
+          if (tc.id) slot.id = tc.id;
+          if (tc.function?.name) slot.name = tc.function.name;
+          if (!slot.started && slot.id && slot.name) {
+            slot.started = true;
+            yield { type: "tool_use_start", id: slot.id, name: slot.name };
+          }
+          if (tc.function?.arguments) {
+            slot.args += tc.function.arguments;
+            if (slot.id) yield { type: "tool_use_input_delta", id: slot.id, jsonDelta: tc.function.arguments };
+          }
+        }
+      }
+
+      // Flush any reasoning/text held in the inline-think splitter's tail buffer.
+      if (!usedReasoningField) {
+        const tail = splitter.end();
+        if (tail.thinkingDelta) {
+          thinking += tail.thinkingDelta;
+          yield { type: "thinking_delta", text: tail.thinkingDelta };
+        }
+        if (tail.textDelta) {
+          visible += tail.textDelta;
+          yield { type: "text_delta", text: tail.textDelta };
+        }
+      }
+
+      const content: ContentPart[] = [];
+      const t = thinking.trim();
+      if (t) content.push({ type: "thinking", thinking: t });
+      if (visible) content.push({ type: "text", text: visible });
+      for (const [, slot] of [...tools.entries()].sort((a, b) => a[0] - b[0])) {
+        let input: Record<string, unknown> = {};
+        try {
+          input = slot.args ? JSON.parse(slot.args) : {};
+        } catch {
+          input = { _raw: slot.args };
+        }
+        content.push({ type: "tool_use", id: slot.id, name: slot.name, input });
+      }
+
+      const result: CompletionResult = {
+        message: { role: "assistant", content },
+        stopReason: mapFinishReason(finishReason),
+        ...(usage
+          ? { usage: { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens } }
+          : {}),
+      };
+      yield { type: "result", result };
+    } catch (err) {
+      throw new ProviderError(
+        `OpenAI-compatible stream failed: ${(err as Error).message}`,
         this.id,
         err,
       );

@@ -724,6 +724,36 @@ export const WEB_UI_HTML = `<!doctype html>
   var lastEventAt = Date.now();
   function markActivity() { lastEventAt = Date.now(); }
 
+  // Live streaming: the in-progress assistant bubble built from delta events, plus the last
+  // finalized streamed text — used to dedup a reconnect replay of the same persisted reply.
+  var streamBubble = null;
+  var lastStreamed = null;
+  function ensureStreamBubble() {
+    if (streamBubble) return streamBubble;
+    hideThinking();
+    var empty = log.querySelector(".empty"); if (empty) empty.remove();
+    var wasAtBottom = isAtBottom();
+    var div = document.createElement("div");
+    div.className = "msg assistant";
+    var reasoning = document.createElement("div");
+    reasoning.style.cssText = "white-space:pre-wrap;opacity:.55;font-size:13px;margin-bottom:6px;display:none";
+    var body = document.createElement("div");
+    div.appendChild(reasoning);
+    div.appendChild(body);
+    log.appendChild(div);
+    convo.push({ role: "assistant", text: "", at: new Date().toISOString() });
+    var idx = convo.length - 1;
+    div.setAttribute("data-idx", String(idx));
+    streamBubble = { div: div, body: body, reasoning: reasoning, text: "", think: "", idx: idx };
+    if (wasAtBottom) jumpToBottom();
+    return streamBubble;
+  }
+  function finalizeStream() {
+    if (!streamBubble) return;
+    convo[streamBubble.idx].text = streamBubble.text;
+    streamBubble = null;
+  }
+
   function connect() {
     if (es) es.close();
     var u = "/events?externalUserId=" + encodeURIComponent(uid) +
@@ -748,6 +778,16 @@ export const WEB_UI_HTML = `<!doctype html>
       // conversation ever reaches us (e.g. via the legacy bare-key broadcast during a deploy),
       // don't render it into the conversation the user is currently looking at.
       if (d.conversationId && convId && d.conversationId !== convId) return;
+      // A streamed turn finalizes via its own turn_done. If a buffered/replayed message for the
+      // SAME text arrives (e.g. reconnect replay of the now-persisted reply), don't render it
+      // twice. Any still-open stream bubble (e.g. a pending question interrupted streaming) is
+      // finalized first so it isn't left dangling.
+      finalizeStream();
+      if (lastStreamed && d.text && d.text === lastStreamed.text && Date.now() - lastStreamed.at < 15000) {
+        lastStreamed = null;
+        hideThinking();
+        return;
+      }
       // A reply for this conversation has landed — drop the thinking indicator.
       hideThinking();
       // ev.lastEventId carries the event's id line — the server's ISO send time (or the
@@ -757,6 +797,53 @@ export const WEB_UI_HTML = `<!doctype html>
       // A reply may have triggered a server-side model-generated title for this conversation
       // (and bumped its recency); refresh the sidebar so the new label/order shows without a
       // manual reload. Cheap JSON; doesn't touch the open chat log.
+      loadConversations();
+    });
+
+    // Live streaming events (token-by-token). These render into a single in-progress assistant
+    // bubble; turn_done finalizes it. They carry no id line, so they never disturb the
+    // Last-Event-ID replay contract — the final reply is persisted and reloaded from history.
+    es.addEventListener("delta", function (ev) {
+      markActivity();
+      var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.conversationId && convId && d.conversationId !== convId) return;
+      var wasAtBottom = isAtBottom();
+      var s = ensureStreamBubble();
+      s.text += d.text || "";
+      s.body.innerHTML = md(s.text);
+      if (wasAtBottom) jumpToBottom();
+    });
+    es.addEventListener("thinking", function (ev) {
+      markActivity();
+      var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.conversationId && convId && d.conversationId !== convId) return;
+      var wasAtBottom = isAtBottom();
+      var s = ensureStreamBubble();
+      s.think += d.text || "";
+      s.reasoning.style.display = "block";
+      s.reasoning.textContent = "💭 " + s.think;
+      if (wasAtBottom) jumpToBottom();
+    });
+    es.addEventListener("tool", function (ev) {
+      markActivity();
+      var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.conversationId && convId && d.conversationId !== convId) return;
+      var s = ensureStreamBubble();
+      var t = document.createElement("div");
+      t.style.cssText = "opacity:.55;font-size:13px;margin:4px 0";
+      t.textContent = "🔧 " + (d.name || "tool");
+      s.div.insertBefore(t, s.body); // keep the running answer last
+    });
+    es.addEventListener("turn_done", function (ev) {
+      markActivity();
+      var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.conversationId && convId && d.conversationId !== convId) return;
+      if (!streamBubble) return;
+      if (d.text) { streamBubble.text = d.text; streamBubble.body.innerHTML = md(d.text); }
+      lastStreamed = { text: streamBubble.text, at: Date.now() };
+      var done = streamBubble.text;
+      finalizeStream();
+      maybeNotify(done);
       loadConversations();
     });
   }
@@ -956,6 +1043,9 @@ export const WEB_UI_HTML = `<!doctype html>
     log.innerHTML = '<div class="empty">No messages yet. Say hello.</div>';
     newSinceScrolled = 0;
     pill.classList.remove("on");
+    // Drop any in-progress streamed bubble state so it can't bleed across conversations.
+    streamBubble = null;
+    lastStreamed = null;
   }
 
   function openSidebar() { document.body.classList.add("sb-open"); }
