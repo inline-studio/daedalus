@@ -56,7 +56,7 @@ Every spawned agent container gets:
 | Host path                          | Container path              | Mode | Why                                          |
 | ---------------------------------- | --------------------------- | ---- | -------------------------------------------- |
 | `<brain>` from compose             | `/brain`                    | ro   | personas + skills + souls + mcp config       |
-| `daedalus-shared` volume           | `/shared`                   | rw   | cross-agent scratch; every agent can write   |
+| `<SHARED_PATH>` host bind          | `/shared`                   | rw   | cross-agent scratch; browsable from the host |
 | `daedalus-data` volume             | `/data`                     | rw   | sessions sqlite + attachments                |
 | config dir from compose            | `/etc/daedalus`             | ro   | daedalus.config.yaml + .env.local            |
 | `/var/run/docker.sock`             | `/var/run/docker.sock`      | rw   | nested subagent spawning                     |
@@ -64,6 +64,11 @@ Every spawned agent container gets:
 
 Brain mount becomes RW only if `brain.writable: true` in the supervisor's
 config — the supervisor and every agent honor that single setting.
+
+`/shared` is a host bind, not a docker volume: it maps to `SHARED_PATH` from the
+compose `.env` (default `<configDir>/shared`, set by `dae install`), so anything
+agents write under `/shared` is directly visible on the host at that path. The
+supervisor, the warm worker, and every spawned agent all mount the same path.
 
 ### Giving agents an SSH key
 
@@ -79,10 +84,13 @@ ssh-keyscan github.com >> ~/daedalus/ssh/known_hosts
 # Register the .pub wherever the agents need to reach (GitHub deploy key, etc.)
 ```
 
-The agent-turn shim (`runtime/setup-ssh.sh`) symlinks each file from
+The shim (`runtime/setup-ssh.sh`) symlinks each file from
 `/etc/daedalus/ssh/` (the in-container view of the host dir) into
 `$HOME/.ssh/` on every container start, and writes a minimal
-`~/.ssh/config` with `StrictModes no`.
+`~/.ssh/config` with `StrictModes no`. Spawned agent containers source it
+via their `agent-turn.sh` entrypoint; the long-lived `dae-worker` (which
+runs top-level turns in-process, not through that entrypoint) sources it
+from its own `command` so top-level agents get the keys too.
 
 Why `StrictModes no` — the host file is `0600` owned by the host user
 (uid ~1000), but agent containers run as root (uid 0); SSH would
@@ -424,6 +432,11 @@ If you'd rather wire it by hand:
 cat > .env <<'EOF'
 BRAIN_PATH=/home/you/.daedalus/brain
 DAEDALUS_CONFIG_DIR=/home/you/.daedalus
+# Cross-agent /shared workspace as a host bind, browsable from the host. Optional —
+# `dae install` defaults it to <DAEDALUS_CONFIG_DIR>/shared and preserves any value
+# you set here across re-runs/updates. This is the ONLY place to change the path in
+# docker mode; runtime.shared.hostPath in daedalus.config.yaml is ignored here.
+SHARED_PATH=/home/you/.daedalus/shared
 UID=1000
 DOCKER_GID=998
 ONECLI_API_KEY=oc_…
