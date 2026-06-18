@@ -30,6 +30,29 @@ When a user sends media, the Telegram channel fetches the bytes and normalises t
 
 All attachments are content-addressable in the store on the shared `/data` volume.
 
+### Re-referencing earlier uploads (the attachment catalogue)
+
+Because the store is content-addressable, an uploaded file's bytes live on `/data`
+indefinitely — but the agent only *knows* a file exists when the inbound message carries its
+ref. Once that scrolls out of context, or in a brand-new conversation, the file becomes
+unreachable even though it's still on disk.
+
+The **attachment catalogue** fixes that. Every uploaded image/document is indexed (in the
+sessions sqlite, keyed per **user**), so the agent can find files you shared earlier — in
+this conversation or a previous one, on any channel — **without you re-uploading them**:
+
+- **`find_attachment`** — search your prior uploads by filename or content keyword (empty
+  query lists the most recent). Returns each match's `ref`, which the agent reads with
+  `read_attachment`. Reach for it whenever you mention a document you "sent before".
+- **`describe_attachment`** — lets the agent note a one-line content summary of a file it has
+  read, so later `find_attachment` searches match by topic, not just filename.
+
+Recall is **per-user**, so a PDF dropped in Telegram is findable from the web UI and vice
+versa. Voice notes aren't catalogued (the transcript is the useful artifact, not the blob).
+Only the top-level agent gets these tools — subagents bubble findings up through the
+orchestrator. The catalogue is local-only (no egress) and **on by default**; disable it with
+`sessions.attachmentIndex.enabled: false`.
+
 ## Outbound attachments (agent → user)
 
 An agent can send a file back with the built-in **`attach_to_reply`** tool:

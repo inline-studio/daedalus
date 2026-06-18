@@ -2,6 +2,7 @@ import type { ContentPart } from "../types.js";
 import type { IncomingMessage } from "../channels/base.js";
 import type { SessionStore } from "../sessions/store.js";
 import type { AttachmentStore } from "../attachments/store.js";
+import type { AttachmentIndexStore } from "../attachments/index-store.js";
 import type { Transcriber } from "../attachments/transcribe.js";
 import { formatGap } from "../brain/now.js";
 import { loadAgent } from "../brain/agents.js";
@@ -27,6 +28,9 @@ export interface IngestArgs {
   incoming: IncomingMessage;
   sessions: SessionStore;
   attachments: AttachmentStore;
+  // Per-user catalogue of uploaded files (find_attachment). Optional: undefined when
+  // sessions.attachmentIndex.enabled is false, in which case nothing is recorded.
+  attachmentIndex?: AttachmentIndexStore;
   transcriber: Transcriber;
   // Required for slash-command expansion: we need to look up the agent's
   // manifest to find its declared commands, and the brain path to load the
@@ -46,7 +50,7 @@ export interface IngestResult {
 const RESUME_THRESHOLD_MS = 60 * 60_000; // 1 hour
 
 export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestResult> {
-  const { agentName, incoming, sessions, attachments, transcriber } = args;
+  const { agentName, incoming, sessions, attachments, attachmentIndex, transcriber } = args;
 
   const userId = sessions.resolveUser(incoming.channel, incoming.externalUserId);
   // Web conversations: when the message names a specific conversation, append to that session
@@ -91,6 +95,19 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
     const buf = a.data ?? (a.url ? await fetchAttachmentBytes(a.url, args.config) : null);
     if (!buf) continue;
     const meta = await attachments.putBuffer(buf, a.mediaType, a.filename);
+    // Catalogue images + documents so the user can re-reference them in a later session via
+    // find_attachment. Voice notes (audio) are skipped — the useful artifact is the inlined
+    // transcript, not the blob, and indexing them would clutter the catalogue.
+    if (attachmentIndex && a.kind !== "audio") {
+      attachmentIndex.record({
+        ref: meta.ref,
+        userId,
+        filename: a.filename ?? null,
+        mediaType: a.mediaType,
+        bytes: buf.length,
+        sessionId: session.id,
+      });
+    }
     if (a.kind === "image") {
       inboundParts.push({
         type: "image",

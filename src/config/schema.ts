@@ -227,6 +227,16 @@ export const SessionsConfigSchema = z.object({
   // the model for a short title for it (shown in the web UI's conversation list), replacing the
   // provisional first-message snippet. Best-effort and non-fatal. Set false to keep the snippet.
   autoTitle: z.boolean().default(true),
+  // Persistent catalogue of every attachment a user uploads, so the assistant can re-reference
+  // a file in a later session (via the find_attachment tool) without the user re-sending it.
+  // The bytes already persist in the content-addressable AttachmentStore; this is purely the
+  // discoverability index over them. Local-only (rides the sessions sqlite, no egress) and
+  // cheap, so it's on by default; set enabled:false to skip indexing and hide find_attachment.
+  attachmentIndex: z
+    .object({
+      enabled: z.boolean().default(true),
+    })
+    .default({ enabled: true }),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfigSchema>;
 

@@ -40,6 +40,10 @@ Daedalus inverts all of that:
   turn, with validity tracked over time. Fully local + leak-free — extraction LLM
   and embeddings run on *your* OpenAI-compatible endpoint, routed through the OneCLI
   proxy so no key ever lands on disk.
+- **Persistent attachments.** Files you upload are catalogued per-user, so the assistant can
+  re-reference a document you shared in an earlier session — or another channel — via the
+  `find_attachment` tool, without you re-uploading it. Local-only, on by default. See
+  [`docs/channels.md`](docs/channels.md#re-referencing-earlier-uploads-the-attachment-catalogue).
 - **Reversible setup.** Every `dae setup <thing>` has a matching `dae disable <thing>`,
   idempotent by default and `--purge` for a clean slate.
 

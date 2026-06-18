@@ -3,6 +3,7 @@ import { applyOneCli } from "./secrets/onecli.js";
 import { SessionStore } from "./sessions/store.js";
 import { ScheduleStore } from "./sessions/schedule-store.js";
 import { AttachmentStore } from "./attachments/store.js";
+import { AttachmentIndexStore } from "./attachments/index-store.js";
 import { NoopTranscriber, OpenAITranscriber, type Transcriber } from "./attachments/transcribe.js";
 import { provisionWhisperModel } from "./attachments/whisper-provision.js";
 import { MessageBus } from "./channels/bus.js";
@@ -34,6 +35,11 @@ export async function serve(config: ArtemisConfig): Promise<void> {
   const scheduleStore = new ScheduleStore(config.sessions.dbPath);
   const attachments = new AttachmentStore(config.sessions.attachmentsPath);
   await attachments.ensureDir();
+  // Per-user catalogue of uploaded files (find_attachment recall). Shares the sessions
+  // sqlite; only created when enabled, and ingest skips recording when it's absent.
+  const attachmentIndex = config.sessions.attachmentIndex.enabled
+    ? new AttachmentIndexStore(config.sessions.dbPath)
+    : undefined;
   const transcriber = buildTranscriber(config);
   // Ensure the local Whisper model is downloaded (speaches won't auto-fetch it). Fire and
   // forget so serving isn't blocked on the download; it's idempotent across restarts.
@@ -73,6 +79,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         incoming: msg,
         sessions,
         attachments,
+        ...(attachmentIndex ? { attachmentIndex } : {}),
         transcriber,
         config,
       });

@@ -26,7 +26,9 @@ import { SessionStore, COMPACTION_CHANNEL, type PersistedMessage } from "../sess
 import { ConversationLog } from "../sessions/conversation-log.js";
 import { ScheduleStore } from "../sessions/schedule-store.js";
 import { AttachmentStore } from "../attachments/store.js";
+import { AttachmentIndexStore } from "../attachments/index-store.js";
 import { readAttachmentTool } from "../tools/attachment.js";
+import { findAttachmentTool, describeAttachmentTool } from "../tools/find-attachment.js";
 import { buildAttachReplyTool } from "../tools/attach-reply.js";
 import { buildLoadSkillTool } from "../tools/load-skill.js";
 import { buildSpawnSubagentTool } from "./orchestrator.js";
@@ -80,6 +82,12 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
   // volume shared with the supervisor; reading + writing here is the same DB.
   const sessions = new SessionStore(config.sessions.dbPath);
   const scheduleStore = new ScheduleStore(config.sessions.dbPath);
+  // Per-user attachment catalogue (find_attachment / describe_attachment). Only the
+  // top-level agent gets these tools, but the store is opened unconditionally when enabled
+  // and closed in finally; building the tools is gated below.
+  const attachmentIndex = config.sessions.attachmentIndex.enabled
+    ? new AttachmentIndexStore(config.sessions.dbPath)
+    : undefined;
   try {
     const attachments = new AttachmentStore(config.sessions.attachmentsPath);
     await attachments.ensureDir();
@@ -173,6 +181,12 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     const outboundAttachments: OutboundAttachment[] = [];
     if (!isSubagent) {
       builtinTools.push(buildAttachReplyTool(attachments, outboundAttachments));
+      // Cross-session attachment recall. Top-level only: a subagent's findings flow up
+      // through the orchestrator, which owns the conversation with the user.
+      if (attachmentIndex) {
+        builtinTools.push(findAttachmentTool(attachmentIndex, userId));
+        builtinTools.push(describeAttachmentTool(attachmentIndex, userId));
+      }
     }
     // Progressive skill disclosure: the system prompt carries only a skill MENU
     // (name + summary). Give the agent the means to pull a full body on demand.
@@ -487,6 +501,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
   } finally {
     sessions.close();
     scheduleStore.close();
+    attachmentIndex?.close();
   }
 }
 
