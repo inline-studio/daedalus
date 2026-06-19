@@ -103,14 +103,18 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         originExternalUserId: msg.externalUserId,
         ...(onEvent ? { onEvent } : {}),
       });
-      // Deliver any in-turn notices (e.g. "I compacted our earlier conversation") as their
-      // own short messages first, so the user knows what happened before the reply lands.
-      if (result.notices?.length) {
-        for (const n of result.notices) {
-          await ch
-            .send(msg.externalUserId, { text: n, ...(conversationId ? { conversationId } : {}) })
-            .catch(() => undefined);
-        }
+      // Pre-reply messages, delivered as their own short bubbles before the reply lands:
+      //   - surfaced thinking, but ONLY for buffered channels — streaming channels already render
+      //     it inline (delivering here too would double it);
+      //   - system notices (e.g. "I compacted our earlier conversation").
+      const preMessages = [
+        ...(!streaming && result.thinkingMessages ? result.thinkingMessages : []),
+        ...(result.notices ?? []),
+      ];
+      for (const n of preMessages) {
+        await ch
+          .send(msg.externalUserId, { text: n, ...(conversationId ? { conversationId } : {}) })
+          .catch(() => undefined);
       }
       const reply =
         result.status === "pending_question" ? result.question : result.finalText;

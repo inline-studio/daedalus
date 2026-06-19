@@ -398,9 +398,14 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     // loud"), when the agent opts in. Top-level only — a subagent's thinking flows up through the
     // orchestrator's own turn, not straight to the user. Prepended ahead of any kernel notices so
     // the order the user sees is: thinking → notices → reply.
-    const surfacedThinking =
+    // Thinking is surfaced two ways depending on the channel: streamed inline as it happens (the
+    // kernel's thinking events → web/CLI), OR — for buffered channels that can't render inline
+    // (Telegram) — as separate "💭" messages. We return it SEPARATELY from system notices so the
+    // delivery layer (serve) can drop it on streaming channels, where it's already shown inline,
+    // and avoid the double render.
+    const thinkingMessages =
       agent.thinking.surface && !isSubagent ? collectThinkingMessages(newMessages) : [];
-    const notices = [...surfacedThinking, ...(result.notices ?? [])];
+    const notices = result.notices ?? [];
 
     // 9a. Persist the compaction. The kernel's in-turn summarise/drop only shrank what was
     // SENT this turn — the session still holds the full history, so without a persisted cut
@@ -487,6 +492,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
         question: result.pendingQuestion.question,
         turns: result.turns,
         ...(notices.length ? { notices } : {}),
+        ...(thinkingMessages.length ? { thinkingMessages } : {}),
         ...(debugLogPath && !isSubagent ? { debugLogPath } : {}),
       };
     }
@@ -496,6 +502,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       turns: result.turns,
       ...(outboundAttachments.length ? { attachments: outboundAttachments } : {}),
       ...(notices.length ? { notices } : {}),
+      ...(thinkingMessages.length ? { thinkingMessages } : {}),
       ...(debugLogPath && !isSubagent ? { debugLogPath } : {}),
     };
   } finally {

@@ -11,7 +11,20 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Fixed
+
+- **Thinking no longer double-rendered (web).** On streaming channels, surfaced
+  reasoning was shown twice — inline as it streamed AND again as trailing "💭"
+  message bubbles (the buffered-channel path firing on top). Thinking is now returned
+  separately from system notices, and the buffered "💭" messages are delivered only to
+  channels that can't render inline (Telegram). Streaming channels show it inline only.
+
 ### Changed
+
+- **Reasoning is a distinct, collapsible disclosure (web).** Thinking now renders as
+  a muted, italic "💭 Thinking" block behind a header — visually unlike the reply, so
+  it reads as the model's scratchpad rather than part of the answer. It's expanded
+  while streaming and auto-collapses when the turn completes (one click to reopen).
 
 - **Interleaved streaming blocks (web).** A streamed reply now renders as an ordered
   flow of blocks — text, reasoning, and tool-call rows appear in the order events
