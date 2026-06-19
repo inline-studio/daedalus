@@ -68,6 +68,10 @@ export type DispatchResult =
       attachments?: OutboundAttachment[];
       // User-facing notices to deliver alongside the reply (e.g. a compaction notice).
       notices?: string[];
+      // Surfaced model reasoning, as standalone "💭" messages — for BUFFERED channels only.
+      // Streaming channels render thinking inline (via turn events), so serve drops these there to
+      // avoid a double render.
+      thinkingMessages?: string[];
       // Path to this turn's conversation debug-log file, set only when debug logging is enabled
       // (config.debug.conversationLog) and only on the TOP-LEVEL turn. Surfaced to the operator
       // after the reply so they know where to look; subagent turns log but don't surface.
@@ -78,6 +82,7 @@ export type DispatchResult =
       question: string;
       turns: number;
       notices?: string[];
+      thinkingMessages?: string[];
       debugLogPath?: string;
     };
 

@@ -158,8 +158,16 @@ export const WEB_UI_HTML = `<!doctype html>
   .chip.debug { cursor: pointer; }
   .chip.debug .dot { background: #6e7681; }
   .chip.debug:hover { color: #c9d1d9; border-color: #30363d; }
-  .reasoning { border-left: 2px solid #30363d; padding: 2px 0 2px 10px; margin-bottom: 10px;
-               color: #8b949e; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+  /* Reasoning: a collapsible "💭 Thinking" disclosure, deliberately unlike the reply — muted,
+     italic, smaller, behind a header — so it reads as the model's scratchpad, not the answer. */
+  .reasoning { margin: 6px 0; }
+  .reasoning .rhead { display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+                      font-size: 12px; color: #6e7681; user-select: none; }
+  .reasoning .rhead .chev { font-size: 10px; color: #6e7681; }
+  .reasoning .rbody { border-left: 2px solid #2a313c; margin: 4px 0 0 4px; padding: 2px 0 2px 10px;
+                      color: #6e7681; font-size: 12.5px; font-style: italic; line-height: 1.5;
+                      white-space: pre-wrap; }
+  .reasoning.collapsed .rbody { display: none; }
   /* In-progress streamed reply: raw text typed out, swapped for rendered markdown when the turn
      completes. Prose stays proportional/normal; only code fences and table rows go monospace (so
      they stay aligned and read as code), slightly muted to signal "being written". */
@@ -826,9 +834,21 @@ export const WEB_UI_HTML = `<!doctype html>
   function thinkBlock() {
     var s = ensureStreamBubble();
     if (s.cur && s.cur.type === "thinking") return s.cur;
+    // A collapsible "💭 Thinking" disclosure — distinct from the reply (muted, italic), expanded
+    // while it streams and auto-collapsed at turn_done so it doesn't clutter the final answer.
     var el = document.createElement("div"); el.className = "reasoning";
+    var head = document.createElement("div"); head.className = "rhead";
+    var chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "▾";
+    var lbl = document.createElement("span"); lbl.textContent = "💭 Thinking";
+    head.appendChild(chev); head.appendChild(lbl);
+    var body = document.createElement("div"); body.className = "rbody";
+    head.addEventListener("click", function () {
+      el.classList.toggle("collapsed");
+      chev.textContent = el.classList.contains("collapsed") ? "▸" : "▾";
+    });
+    el.appendChild(head); el.appendChild(body);
     s.flow.appendChild(el);
-    s.cur = { type: "thinking", el: el, text: "" };
+    s.cur = { type: "thinking", el: el, body: body, chev: chev, text: "" };
     return s.cur;
   }
   // While a reply streams we show the RAW text as it types and render full markdown only once, at
@@ -977,7 +997,7 @@ export const WEB_UI_HTML = `<!doctype html>
       var wasAtBottom = isAtBottom();
       var b = thinkBlock();
       b.text += d.text || "";
-      b.el.textContent = b.text;
+      b.body.textContent = b.text;
       if (wasAtBottom) jumpToBottom();
     });
     es.addEventListener("tool", function (ev) {
@@ -1046,6 +1066,12 @@ export const WEB_UI_HTML = `<!doctype html>
         var tb = streamBubble.textBlocks[i];
         tb.el.className = "";
         tb.el.innerHTML = md(tb.text);
+      }
+      // Collapse reasoning blocks now the turn is done — they stay one click away.
+      var rs = streamBubble.flow.querySelectorAll(".reasoning");
+      for (var r = 0; r < rs.length; r++) {
+        rs[r].classList.add("collapsed");
+        var cv = rs[r].querySelector(".chev"); if (cv) cv.textContent = "▸";
       }
       // Freeze the timer on the reply footer, with the token count when usage was reported.
       streamBubble.metaText.textContent = fmtElapsed(Date.now() - turnStart) + (d.usage ? " · " + fmtTokens(d.usage) : "");
