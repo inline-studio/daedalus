@@ -11,6 +11,14 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Changed
+
+- **Interleaved streaming blocks (web).** A streamed reply now renders as an ordered
+  flow of blocks — text, reasoning, and tool-call rows appear in the order events
+  actually occur (text → tool → text → tool → …), like Claude, instead of grouping
+  all tool rows at the top and all text below. Each text run renders to markdown when
+  the turn completes.
+
 ### Added
 
 - **Turn timer + token count (web).** A Claude-style elapsed-time readout: a live
