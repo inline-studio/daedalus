@@ -168,8 +168,9 @@ export const WEB_UI_HTML = `<!doctype html>
                  font-size: 13px; line-height: 1.5; color: #adbac7; }
   /* Claude-style tool-call rows: a collapsible header (name + primary-arg summary + state) that
      expands to the full input. Running = "…", resolved = ✓ / ✗. */
-  .tools { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
-  .tool-call { border: 1px solid #21262d; border-radius: 8px; background: #0d1117; overflow: hidden; max-width: 560px; }
+  /* Tool rows sit inline in the reply flow (chronological), each with its own vertical margin. */
+  .tool-call { border: 1px solid #21262d; border-radius: 8px; background: #0d1117; overflow: hidden; max-width: 560px; margin: 6px 0; }
+  .reply-block + .tool-call, .tool-call + .reply-block, .reasoning + .tool-call { margin-top: 8px; }
   .tool-call .head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
   .tool-call .head:hover { background: #12161c; }
   .tool-call .chev { color: #6e7681; width: 10px; flex-shrink: 0; }
@@ -785,31 +786,50 @@ export const WEB_UI_HTML = `<!doctype html>
     var wasAtBottom = isAtBottom();
     var div = document.createElement("div");
     div.className = "msg assistant";
-    // Layout: tool-call rows on top, then a reasoning inset, the reply, and a footer (turn-meta)
-    // carrying elapsed time / tokens and the debug-log chip.
-    var tools = document.createElement("div"); tools.className = "tools"; tools.style.display = "none";
-    var reasoning = document.createElement("div"); reasoning.className = "reasoning"; reasoning.style.display = "none";
-    var body = document.createElement("div");
+    // The reply is an ordered FLOW of blocks (text / thinking / tool rows) appended in the order
+    // events arrive, so tools, reasoning, and text interleave chronologically (like Claude) rather
+    // than being grouped by type. A footer (turn-meta) carries elapsed time / tokens + debug chip.
+    var flow = document.createElement("div");
     var meta = document.createElement("div"); meta.className = "turn-meta";
     var metaText = document.createElement("span");
     meta.appendChild(metaText);
-    div.appendChild(tools);
-    div.appendChild(reasoning);
-    div.appendChild(body);
+    div.appendChild(flow);
     div.appendChild(meta);
     log.appendChild(div);
     convo.push({ role: "assistant", text: "", at: new Date().toISOString() });
     var idx = convo.length - 1;
     div.setAttribute("data-idx", String(idx));
-    streamBubble = { div: div, tools: tools, body: body, reasoning: reasoning, meta: meta, metaText: metaText, toolRows: {}, text: "", think: "", idx: idx };
+    // cur = the currently-open text/thinking block; textBlocks = all text blocks (md-rendered at
+    // turn_done); fullText = the concatenated reply text (for the copy transcript).
+    streamBubble = { div: div, flow: flow, meta: meta, metaText: metaText, toolRows: {}, cur: null, textBlocks: [], fullText: "", idx: idx };
     lastStreamDiv = div;
     if (wasAtBottom) jumpToBottom();
     return streamBubble;
   }
   function finalizeStream() {
     if (!streamBubble) return;
-    convo[streamBubble.idx].text = streamBubble.text;
+    convo[streamBubble.idx].text = streamBubble.fullText;
     streamBubble = null;
+  }
+  // A tool call — or a switch between text and thinking — closes the open block so the next delta
+  // starts a fresh block below it, preserving chronological order in the flow.
+  function closeCur() { if (streamBubble) streamBubble.cur = null; }
+  function textBlock() {
+    var s = ensureStreamBubble();
+    if (s.cur && s.cur.type === "text") return s.cur;
+    var el = document.createElement("div"); el.className = "reply-block";
+    s.flow.appendChild(el);
+    s.cur = { type: "text", el: el, text: "" };
+    s.textBlocks.push(s.cur);
+    return s.cur;
+  }
+  function thinkBlock() {
+    var s = ensureStreamBubble();
+    if (s.cur && s.cur.type === "thinking") return s.cur;
+    var el = document.createElement("div"); el.className = "reasoning";
+    s.flow.appendChild(el);
+    s.cur = { type: "thinking", el: el, text: "" };
+    return s.cur;
   }
   // While a reply streams we show the RAW text as it types and render full markdown only once, at
   // turn_done. This avoids re-parsing partial markdown every token (the "wobble") and the
@@ -845,12 +865,12 @@ export const WEB_UI_HTML = `<!doctype html>
   }
   var renderTimer = null;
   function scheduleRawRender() {
-    if (renderTimer || !streamBubble) return;
+    if (renderTimer || !streamBubble || !streamBubble.cur || streamBubble.cur.type !== "text") return;
     renderTimer = setTimeout(function () {
       renderTimer = null;
-      if (!streamBubble) return;
+      if (!streamBubble || !streamBubble.cur || streamBubble.cur.type !== "text") return;
       var atBottom = isAtBottom();
-      renderRaw(streamBubble.body, streamBubble.text);
+      renderRaw(streamBubble.cur.el, streamBubble.cur.text);
       if (atBottom) jumpToBottom();
     }, 90);
   }
@@ -944,8 +964,9 @@ export const WEB_UI_HTML = `<!doctype html>
       markActivity();
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
-      var s = ensureStreamBubble();
-      s.text += d.text || "";
+      var b = textBlock();
+      b.text += d.text || "";
+      streamBubble.fullText += d.text || "";
       // Raw typing view (prose proportional, code/tables monospace); markdown renders at turn_done.
       scheduleRawRender();
     });
@@ -954,10 +975,9 @@ export const WEB_UI_HTML = `<!doctype html>
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
       var wasAtBottom = isAtBottom();
-      var s = ensureStreamBubble();
-      s.think += d.text || "";
-      s.reasoning.style.display = "block";
-      s.reasoning.textContent = s.think;
+      var b = thinkBlock();
+      b.text += d.text || "";
+      b.el.textContent = b.text;
       if (wasAtBottom) jumpToBottom();
     });
     es.addEventListener("tool", function (ev) {
@@ -965,7 +985,7 @@ export const WEB_UI_HTML = `<!doctype html>
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
       var s = ensureStreamBubble();
-      s.tools.style.display = "flex";
+      closeCur(); // a tool call ends the current text/thinking block; it sits inline in the flow
       // Claude-style collapsible tool row: header (name + primary-arg summary + state) that expands
       // to the full input. Starts in the "running" state; tool_done resolves it to ok/error.
       var row = document.createElement("div"); row.className = "tool-call running";
@@ -982,8 +1002,9 @@ export const WEB_UI_HTML = `<!doctype html>
       var pre = document.createElement("pre"); pre.textContent = toolDetail(d.input); detail.appendChild(pre);
       head.addEventListener("click", function () { row.classList.toggle("open"); chev.textContent = row.classList.contains("open") ? "▾" : "▸"; });
       row.appendChild(head); row.appendChild(detail);
-      s.tools.appendChild(row);
+      s.flow.appendChild(row);
       s.toolRows[d.id] = { state: state, row: row };
+      if (isAtBottom()) jumpToBottom();
     });
     es.addEventListener("tool_done", function (ev) {
       markActivity();
@@ -1019,12 +1040,17 @@ export const WEB_UI_HTML = `<!doctype html>
       if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
       stopTurnTimer();
       if (!streamBubble) return;
-      if (d.text) streamBubble.text = d.text;
-      streamBubble.body.innerHTML = md(streamBubble.text); // render markdown now it's complete
+      // Render each streamed text block as markdown now the turn is complete (each block is a
+      // self-contained run of reply text between tool calls / reasoning).
+      for (var i = 0; i < streamBubble.textBlocks.length; i++) {
+        var tb = streamBubble.textBlocks[i];
+        tb.el.className = "";
+        tb.el.innerHTML = md(tb.text);
+      }
       // Freeze the timer on the reply footer, with the token count when usage was reported.
       streamBubble.metaText.textContent = fmtElapsed(Date.now() - turnStart) + (d.usage ? " · " + fmtTokens(d.usage) : "");
-      lastStreamed = { text: streamBubble.text, at: Date.now() };
-      var done = streamBubble.text;
+      lastStreamed = { text: streamBubble.fullText, at: Date.now() };
+      var done = streamBubble.fullText;
       finalizeStream();
       maybeNotify(done);
       loadConversations();
