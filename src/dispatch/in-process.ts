@@ -20,6 +20,7 @@ export class InProcessAgentDispatcher implements AgentDispatcher {
       ...originFields(args),
       // In-process only: forward the live event sink straight to the turn (no serialization hop).
       ...(args.onEvent ? { onEvent: args.onEvent } : {}),
+      ...(args.turnDirective ? { turnDirective: args.turnDirective } : {}),
     });
   }
 }

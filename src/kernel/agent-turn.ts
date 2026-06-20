@@ -68,6 +68,9 @@ export interface RunAgentTurnInput {
   // container/worker serialization hop); when present and the provider supports streaming, the
   // kernel emits token-level events as the turn unfolds.
   onEvent?: TurnEventSink;
+  // Ephemeral skill-trigger directive — injected into the model's view of the last user message
+  // for this turn only, never persisted. See IngestResult.turnDirective.
+  turnDirective?: string;
 }
 
 export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchResult> {
@@ -237,6 +240,22 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       timeAware: agent.timeAware,
       ...(agent.timezone ? { timezone: agent.timezone } : {}),
     });
+
+    // Ephemeral skill-trigger directive: prepend the matched skill's instructions to the model's
+    // view of the last user message for THIS turn only (not persisted — see IngestResult). This
+    // is what makes the agent act on a triggered skill without dumping the skill body into the
+    // stored/displayed conversation or re-sending it on every later turn.
+    if (input.turnDirective) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]!.role === "user") {
+          messages[i] = {
+            role: "user",
+            content: [{ type: "text", text: input.turnDirective }, ...messages[i]!.content],
+          };
+          break;
+        }
+      }
+    }
 
     const kernel = new Kernel({
       provider,

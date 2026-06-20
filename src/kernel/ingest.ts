@@ -45,6 +45,11 @@ export interface IngestResult {
   // Whether the inbound is a resume of an open ask_user (the agent will see a
   // tool_result that answers it). Surface so the caller can log if it wants.
   resumedAskUser: boolean;
+  // An EPHEMERAL turn directive (a matched skill trigger's inlined instructions). It must reach
+  // the model for THIS turn but is deliberately NOT persisted — persisting it bloated the stored
+  // user message and re-sent the whole skill body on every later turn. The dispatcher carries it
+  // to the turn, which injects it into the model's view of the last user message only.
+  turnDirective?: string;
 }
 
 const RESUME_THRESHOLD_MS = 60 * 60_000; // 1 hour
@@ -67,6 +72,7 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
   const sessionGapMs = lastMsg ? Date.now() - new Date(lastMsg.createdAt).getTime() : 0;
 
   const inboundParts: ContentPart[] = [];
+  let turnDirective: string | undefined;
   if (sessionGapMs >= RESUME_THRESHOLD_MS) {
     inboundParts.push({
       type: "text",
@@ -85,8 +91,11 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
     // mixed messages keep working. Skipped for slash-commands, which have their
     // own expansion below.
     if (!detectSlashCommand(incoming.text)) {
+      // Capture the skill-trigger preamble as an EPHEMERAL directive rather than persisting it
+      // into the user message (which dumped the whole skill body into the chat + re-sent it every
+      // later turn). The user's own text is still persisted below via maybeExpandSlashCommand.
       const preamble = await maybeSkillTriggerPreamble(incoming.text, agentName, args.config);
-      if (preamble) inboundParts.push(preamble);
+      if (preamble && preamble.type === "text") turnDirective = preamble.text;
     }
     const expanded = await maybeExpandSlashCommand(incoming.text, agentName, args.config);
     for (const part of expanded) inboundParts.push(part);
@@ -192,6 +201,7 @@ export async function ingestIncomingMessage(args: IngestArgs): Promise<IngestRes
     sessionId: session.id,
     userId,
     resumedAskUser: false, // top-level channel inbounds don't resume ask_user
+    ...(turnDirective ? { turnDirective } : {}),
   };
 }
 

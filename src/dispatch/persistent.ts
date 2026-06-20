@@ -36,6 +36,7 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
       userId: args.userId,
       isSubagent: args.isSubagent,
       ...originFields(args),
+      ...(args.turnDirective ? { turnDirective: args.turnDirective } : {}),
     });
 
     // A turn can take a while (LLM + tools), so don't impose a tight timeout —

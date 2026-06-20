@@ -42,6 +42,10 @@ export interface DispatchArgs {
   // Optional caller-provided timeout in ms. Container dispatcher hard-kills the
   // container after this; in-process dispatcher ignores (kernel has its own).
   timeoutMs?: number;
+  // Ephemeral per-turn directive (a matched skill trigger's inlined instructions). A plain
+  // string, so it crosses the container/worker hop. The turn injects it into the model's view of
+  // the last user message for THIS turn only — it is never persisted (see IngestResult).
+  turnDirective?: string;
   // Optional live turn-event sink. Only meaningful for the IN-PROCESS dispatcher — it's a
   // function, so the container/worker dispatchers (which JSON-serialise these args) drop it, and
   // those paths stay buffered until streaming is wired across the process hop (Phase 2).

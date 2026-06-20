@@ -102,6 +102,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         originChannel: msg.channel,
         originExternalUserId: msg.externalUserId,
         ...(onEvent ? { onEvent } : {}),
+        ...(ingested.turnDirective ? { turnDirective: ingested.turnDirective } : {}),
       });
       // Pre-reply messages, delivered as their own short bubbles before the reply lands:
       //   - surfaced thinking, but ONLY for buffered channels — streaming channels already render
