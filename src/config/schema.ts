@@ -495,10 +495,13 @@ export const AgentManifestSchema = z.object({
   // list = subset; omit = none (the default — typical for subagents).
   // Recommended for the orchestrator: `commands: ['*']`.
   commands: z.array(z.string()).default([]),
+  // For souls/personas/standards/operations: empty/omitted = include ALL files in that brain dir;
+  // a named subset = only those; ["none"] = include NOTHING (the explicit opt-out — e.g. an
+  // orchestrator that doesn't need the coding standards can set standards: ["none"]).
   souls: z.array(z.string()).default([]),
   personas: z.array(z.string()).default([]),
-  standards: z.array(z.string()).default([]).optional(), // empty = include all
-  operations: z.array(z.string()).default([]).optional(), // empty = include all
+  standards: z.array(z.string()).default([]).optional(),
+  operations: z.array(z.string()).default([]).optional(),
   subagents: z.array(z.string()).default([]),
   tools: z.array(z.string()).default([]), // built-in tool names: bash, read, write, edit, glob, grep
   // Inject the current date/time into the system prompt on every turn so the agent

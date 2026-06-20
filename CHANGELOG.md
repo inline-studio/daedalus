@@ -13,6 +13,16 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Agents can opt out of a prompt section entirely.** For `souls` / `personas` /
+  `standards` / `operations`, an empty/omitted list still means "include all" and a
+  named list still means "only those" — but `["none"]` now means "include nothing".
+  This lets an orchestrator drop sections it doesn't need from every turn's prompt
+  (e.g. `standards: ["none"]` on an assistant that never writes code), shrinking the
+  fixed prompt prefix. ([#129])
+
+
+### Added
+
 - **Debug log captures the full input.** Each conversation-log record now includes
   `input` — the exact system prompt, every tool definition (built-in + MCP), and the
   replayed message history sent to the model that turn (image base64 elided). This is
