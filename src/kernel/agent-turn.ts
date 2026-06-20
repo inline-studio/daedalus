@@ -493,7 +493,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
           if (sessionId !== def.id) {
             const title = await generateConversationTitle({
               provider,
-              model: agent.model,
+              model: config.sessions.titleModel ?? agent.model,
               // The triggering user message + everything the kernel produced this turn.
               messages: result.messages.slice(messages.length - 1),
             });

@@ -227,6 +227,12 @@ export const SessionsConfigSchema = z.object({
   // the model for a short title for it (shown in the web UI's conversation list), replacing the
   // provisional first-message snippet. Best-effort and non-fatal. Set false to keep the snippet.
   autoTitle: z.boolean().default(true),
+  // Optional model override for the title call (used with the agent's provider). Leave unset
+  // to reuse the agent's own model. On a REASONING model this should point at a small,
+  // NON-thinking model on the same gateway (e.g. the same one as memory.autoSave.model) —
+  // otherwise the tiny title token budget is spent inside a <think> block and the title comes
+  // back empty, leaving the provisional first-message snippet in place.
+  titleModel: z.string().optional(),
   // Persistent catalogue of every attachment a user uploads, so the assistant can re-reference
   // a file in a later session (via the find_attachment tool) without the user re-sending it.
   // The bytes already persist in the content-addressable AttachmentStore; this is purely the
