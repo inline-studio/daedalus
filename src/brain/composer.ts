@@ -5,12 +5,15 @@ import type { LoadedSkill } from "./skills.js";
 import type { LoadedCommand } from "./commands.js";
 
 // Read every *.md from `dir`, optionally filtered to a list of names (without .md).
-// Names compare against the basename. An empty filter list means "include all".
+// Names compare against the basename. An empty/omitted filter means "include all"; a filter of
+// exactly ["none"] (case-insensitive) means "include nothing" — the explicit opt-out, since an
+// empty list can't express it. Naming a subset includes only those files.
 async function readMdSection(
   brainPath: string,
   dir: string,
   filter: string[] | undefined,
 ): Promise<string[]> {
+  if (filter && filter.some((f) => f.trim().toLowerCase() === "none")) return [];
   const root = path.join(brainPath, dir);
   let files: string[];
   try {
