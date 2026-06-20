@@ -41,6 +41,13 @@ export interface TitleDeps {
 export function cleanTitle(raw: string): string {
   let t = (raw ?? "").trim();
   if (!t) return "";
+  // A reasoning model may prepend a <think>…</think> block. Most providers split this into a
+  // separate content part we already exclude, but strip it defensively in case the raw text
+  // still carries one. An UNTERMINATED block (budget cut off mid-reasoning) leaves no usable
+  // title — bail so the caller keeps the provisional one rather than labelling with reasoning.
+  if (/^<think>/i.test(t) && !/<\/think>/i.test(t)) return "";
+  t = t.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  if (!t) return "";
   // Strip a ``` fence if the model wrapped it.
   const fence = t.match(/^```(?:[a-z]*)?\s*([\s\S]*?)\s*```$/i);
   if (fence?.[1]) t = fence[1].trim();

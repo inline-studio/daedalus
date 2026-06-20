@@ -296,6 +296,8 @@ ok("cleanTitle: takes the first line only", cleanTitle("Weather setup\nignore th
 ok("cleanTitle: strips a code fence", cleanTitle("```\nDeploy pipeline\n```") === "Deploy pipeline");
 ok("cleanTitle: blank input yields empty string", cleanTitle("   ") === "");
 ok("cleanTitle: caps very long titles", cleanTitle("x".repeat(80)).length <= 60);
+ok("cleanTitle: strips a leading think block", cleanTitle("<think>let me consider</think>\nDeploy pipeline") === "Deploy pipeline", cleanTitle("<think>x</think>\nDeploy pipeline"));
+ok("cleanTitle: unterminated think block yields empty", cleanTitle("<think>reasoning cut off mid") === "");
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
