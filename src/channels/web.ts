@@ -571,7 +571,14 @@ export class WebChannel implements Channel {
       res.end("externalUserId required");
       return;
     }
-    let messages: Array<{ role: string; text: string; at?: string }> = [];
+    // `blocks` (assistant only) reconstructs the live activity chrome on reload: an ordered list
+    // of text / thinking / tool entries so the client can re-render reasoning + tool rows, not just
+    // flattened text. `text` is still sent for the copy transcript and user/notice rows.
+    type HistoryBlock =
+      | { t: "text"; text: string }
+      | { t: "thinking"; text: string }
+      | { t: "tool"; name: string; input: unknown; isError: boolean };
+    let messages: Array<{ role: string; text: string; at?: string; blocks?: HistoryBlock[] }> = [];
     if (this.sessions) {
       try {
         // Replay the requested conversation (validated to belong to the user; an unknown id
@@ -595,19 +602,43 @@ export class WebChannel implements Channel {
         // 200-visible cap bounds the response size (~50-200KB worst case).
         const RAW_TAIL = 1000;
         const VISIBLE_CAP = 200;
-        messages = this.sessions
+        const rows = this.sessions
           .tail(session.id, RAW_TAIL)
-          .filter((m) => m.role === "user" || m.role === "assistant")
+          .filter((m) => m.role === "user" || m.role === "assistant");
+        // Resolve each tool_use's outcome (ok/error) from the tool_result rows so the
+        // reconstructed tool rows show ✓/✗ on reload.
+        const toolErr = new Map<string, boolean>();
+        for (const m of rows) {
+          for (const p of m.content) {
+            if (p.type === "tool_result") toolErr.set(p.toolUseId, Boolean(p.isError));
+          }
+        }
+        messages = rows
           // Carry createdAt through as `at` so the client can render the attributed,
           // timestamped "copy conversation" transcript. The chat bubbles ignore it.
           // Compaction markers ride as user-role rows but aren't anything the user said —
           // surface them as role "notice" so the UI renders them as a system line.
-          .map((m) => ({
-            role: m.channel === COMPACTION_CHANNEL ? "notice" : (m.role as string),
-            text: partsToText(m.content),
-            at: m.createdAt,
-          }))
-          .filter((m) => m.text.length > 0)
+          .map((m) => {
+            if (m.channel === COMPACTION_CHANNEL) {
+              return { role: "notice", text: partsToText(m.content), at: m.createdAt };
+            }
+            const text = partsToText(m.content);
+            if (m.role !== "assistant") return { role: m.role as string, text, at: m.createdAt };
+            // Assistant: reconstruct the inline flow (thinking / text / tool rows) in order.
+            const blocks: HistoryBlock[] = [];
+            for (const p of m.content) {
+              if (p.type === "thinking" && !p.redacted && p.thinking.trim()) {
+                blocks.push({ t: "thinking", text: p.thinking });
+              } else if (p.type === "text" && p.text.trim()) {
+                blocks.push({ t: "text", text: p.text });
+              } else if (p.type === "tool_use") {
+                blocks.push({ t: "tool", name: p.name, input: p.input, isError: toolErr.get(p.id) ?? false });
+              }
+            }
+            return { role: "assistant", text, at: m.createdAt, ...(blocks.length ? { blocks } : {}) };
+          })
+          // Keep anything with visible text OR reconstructable blocks (tool-only turns have no text).
+          .filter((m) => m.text.length > 0 || (m.blocks?.length ?? 0) > 0)
           .slice(-VISIBLE_CAP);
       } catch (err) {
         log.warn({ err }, "web channel: history read failed");

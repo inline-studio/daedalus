@@ -123,7 +123,15 @@ export const WEB_UI_HTML = `<!doctype html>
      compress tall message bubbles instead of letting #log scroll. Lock
      their intrinsic size so scroll behaviour is predictable. */
   #log > * { flex-shrink: 0; }
-  .msg { position: relative; max-width: 760px; width: fit-content; white-space: normal; word-wrap: break-word; }
+  /* max-width clamps to the viewport on mobile (min(760px,100%)) and min-width:0 lets the bubble
+     shrink below its content's intrinsic width — so a wide table/code block scrolls WITHIN the
+     bubble (it has overflow-x:auto) instead of pushing the whole message past the screen edge. */
+  .msg { position: relative; max-width: min(760px, 100%); min-width: 0; width: fit-content;
+         white-space: normal; word-wrap: break-word; }
+  /* Block containers inside the reply must also be allowed to shrink, or a wide child re-expands
+     them past the bubble. */
+  .reply-block, .stream-prose, .stream-mono, .turn-meta { min-width: 0; max-width: 100%; }
+  .msg pre { max-width: 100%; }
   .msg.user { align-self: flex-end; background: #1f6feb; color: #fff; padding: 9px 13px;
               border-radius: 16px; border-bottom-right-radius: 5px; }
   /* Assistant replies are borderless — plain text, not a boxed bubble — for a lighter, modern
@@ -831,24 +839,50 @@ export const WEB_UI_HTML = `<!doctype html>
     s.textBlocks.push(s.cur);
     return s.cur;
   }
-  function thinkBlock() {
-    var s = ensureStreamBubble();
-    if (s.cur && s.cur.type === "thinking") return s.cur;
-    // A collapsible "💭 Thinking" disclosure — distinct from the reply (muted, italic), expanded
-    // while it streams and auto-collapsed at turn_done so it doesn't clutter the final answer.
-    var el = document.createElement("div"); el.className = "reasoning";
+  // Shared DOM builders for the activity chrome — used both by live streaming and by history
+  // reconstruction (so a reloaded conversation rebuilds the same tool rows + reasoning).
+  function makeReasoning(text, collapsed) {
+    // A collapsible "💭 Thinking" disclosure — distinct from the reply (muted, italic).
+    var el = document.createElement("div"); el.className = "reasoning" + (collapsed ? " collapsed" : "");
     var head = document.createElement("div"); head.className = "rhead";
-    var chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "▾";
+    var chev = document.createElement("span"); chev.className = "chev"; chev.textContent = collapsed ? "▸" : "▾";
     var lbl = document.createElement("span"); lbl.textContent = "💭 Thinking";
     head.appendChild(chev); head.appendChild(lbl);
-    var body = document.createElement("div"); body.className = "rbody";
+    var body = document.createElement("div"); body.className = "rbody"; body.textContent = text || "";
     head.addEventListener("click", function () {
       el.classList.toggle("collapsed");
       chev.textContent = el.classList.contains("collapsed") ? "▸" : "▾";
     });
     el.appendChild(head); el.appendChild(body);
-    s.flow.appendChild(el);
-    s.cur = { type: "thinking", el: el, body: body, chev: chev, text: "" };
+    return { el: el, body: body, chev: chev };
+  }
+  function makeToolRow(name, input, status) {
+    // status: "running" | "ok" | "err". Collapsible header (Ran <name> + arg summary + state)
+    // expanding to the full input.
+    var row = document.createElement("div");
+    row.className = "tool-call" + (status === "running" ? " running" : status === "err" ? " err" : " ok");
+    var head = document.createElement("div"); head.className = "head";
+    var chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "▸";
+    var label = document.createElement("span"); label.className = "label";
+    label.appendChild(document.createTextNode("Ran "));
+    var nm = document.createElement("span"); nm.className = "name"; nm.textContent = name || "tool";
+    label.appendChild(nm);
+    var sum = document.createElement("span"); sum.className = "sum"; sum.textContent = toolSummary(input);
+    var state = document.createElement("span"); state.className = "state";
+    state.textContent = status === "running" ? "…" : status === "err" ? "✗" : "✓";
+    head.appendChild(chev); head.appendChild(label); head.appendChild(sum); head.appendChild(state);
+    var detail = document.createElement("div"); detail.className = "detail";
+    var pre = document.createElement("pre"); pre.textContent = toolDetail(input); detail.appendChild(pre);
+    head.addEventListener("click", function () { row.classList.toggle("open"); chev.textContent = row.classList.contains("open") ? "▾" : "▸"; });
+    row.appendChild(head); row.appendChild(detail);
+    return { row: row, state: state };
+  }
+  function thinkBlock() {
+    var s = ensureStreamBubble();
+    if (s.cur && s.cur.type === "thinking") return s.cur;
+    var r = makeReasoning("", false); // expanded while streaming; auto-collapsed at turn_done
+    s.flow.appendChild(r.el);
+    s.cur = { type: "thinking", el: r.el, body: r.body, chev: r.chev, text: "" };
     return s.cur;
   }
   // While a reply streams we show the RAW text as it types and render full markdown only once, at
@@ -1006,24 +1040,9 @@ export const WEB_UI_HTML = `<!doctype html>
       if (d.conversationId && convId && d.conversationId !== convId) return;
       var s = ensureStreamBubble();
       closeCur(); // a tool call ends the current text/thinking block; it sits inline in the flow
-      // Claude-style collapsible tool row: header (name + primary-arg summary + state) that expands
-      // to the full input. Starts in the "running" state; tool_done resolves it to ok/error.
-      var row = document.createElement("div"); row.className = "tool-call running";
-      var head = document.createElement("div"); head.className = "head";
-      var chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "▸";
-      var label = document.createElement("span"); label.className = "label";
-      label.appendChild(document.createTextNode("Ran "));
-      var nm = document.createElement("span"); nm.className = "name"; nm.textContent = d.name || "tool";
-      label.appendChild(nm);
-      var sum = document.createElement("span"); sum.className = "sum"; sum.textContent = toolSummary(d.input);
-      var state = document.createElement("span"); state.className = "state"; state.textContent = "…";
-      head.appendChild(chev); head.appendChild(label); head.appendChild(sum); head.appendChild(state);
-      var detail = document.createElement("div"); detail.className = "detail";
-      var pre = document.createElement("pre"); pre.textContent = toolDetail(d.input); detail.appendChild(pre);
-      head.addEventListener("click", function () { row.classList.toggle("open"); chev.textContent = row.classList.contains("open") ? "▾" : "▸"; });
-      row.appendChild(head); row.appendChild(detail);
-      s.flow.appendChild(row);
-      s.toolRows[d.id] = { state: state, row: row };
+      var t = makeToolRow(d.name, d.input, "running"); // tool_done resolves it to ok/error
+      s.flow.appendChild(t.row);
+      s.toolRows[d.id] = { state: t.state, row: t.row };
       if (isAtBottom()) jumpToBottom();
     });
     es.addEventListener("tool_done", function (ev) {
@@ -1094,6 +1113,30 @@ export const WEB_UI_HTML = `<!doctype html>
     }
   }, 15_000);
 
+  // Rebuild an assistant bubble from persisted history blocks (text / thinking / tool), so a
+  // reloaded conversation (or one opened on another device) shows the same inline chrome as the
+  // live stream. Reasoning is collapsed and tool rows show their resolved ✓/✗ state.
+  function addHistoryAssistant(m) {
+    var empty = log.querySelector(".empty"); if (empty) empty.remove();
+    var div = document.createElement("div"); div.className = "msg assistant";
+    var flow = document.createElement("div");
+    (m.blocks || []).forEach(function (b) {
+      if (b.t === "text") {
+        var tb = document.createElement("div"); tb.innerHTML = md(b.text || ""); flow.appendChild(tb);
+      } else if (b.t === "thinking") {
+        flow.appendChild(makeReasoning(b.text || "", true).el);
+      } else if (b.t === "tool") {
+        flow.appendChild(makeToolRow(b.name, b.input, b.isError ? "err" : "ok").row);
+      }
+    });
+    div.appendChild(flow);
+    log.appendChild(div);
+    // Record for the copy/select transcript (the server text field is the flattened reply text).
+    convo.push({ role: "assistant", text: m.text || "", at: m.at || new Date().toISOString() });
+    div.setAttribute("data-idx", String(convo.length - 1));
+    return div;
+  }
+
   function loadHistory() {
     var u = "/history?externalUserId=" + encodeURIComponent(uid) +
             (convId ? "&conversationId=" + encodeURIComponent(convId) : "");
@@ -1104,8 +1147,14 @@ export const WEB_UI_HTML = `<!doctype html>
         // messages" pill (these are HISTORY, not new) — then snap to the
         // bottom once at the end so the user sees the most recent reply.
         bulkLoading = true;
-        try { (j.messages || []).forEach(function (m) { addMsg(m.role, m.text || "", m.attachments || [], m.at); }); }
-        finally { bulkLoading = false; }
+        try {
+          (j.messages || []).forEach(function (m) {
+            // Assistant messages carry structured blocks (text / thinking / tool) so we rebuild
+            // the inline chrome; everything else (user, notices) is plain text.
+            if (m.role === "assistant" && m.blocks && m.blocks.length) addHistoryAssistant(m);
+            else addMsg(m.role, m.text || "", m.attachments || [], m.at);
+          });
+        } finally { bulkLoading = false; }
         jumpToBottom();
       })
       .catch(function (err) { console.error("loadHistory failed", err); });

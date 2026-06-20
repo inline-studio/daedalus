@@ -83,6 +83,23 @@ const AGENT = "orchestrator";
   const histCross = await getJson("/history?externalUserId=" + U2 + "&conversationId=" + convB);
   ok("OWNERSHIP: reading another user's conversation does not leak its messages", !histCross.messages.some((m) => m.text === "reply in B"), JSON.stringify(histCross.messages));
 
+  // History blocks: assistant turns reconstruct thinking + tool rows (with resolved ✓/✗) on
+  // reload, not just flattened text — so the activity chrome survives a reload / device switch.
+  sessions.appendMessage({ sessionId: convB, role: "assistant", content: [
+    { type: "thinking", thinking: "let me check", signature: "s" },
+    { type: "text", text: "Here is the answer." },
+    { type: "tool_use", id: "tA", name: "web_fetch", input: { url: "https://example.com" } },
+  ] });
+  sessions.appendMessage({ sessionId: convB, role: "user", content: [
+    { type: "tool_result", toolUseId: "tA", content: "ok" },
+  ] });
+  const histBlocks = await getJson("/history?externalUserId=" + U1 + "&conversationId=" + convB);
+  const lastAsst = histBlocks.messages.filter((m) => m.role === "assistant").pop();
+  const blocks = (lastAsst && lastAsst.blocks) || [];
+  ok("HISTORY BLOCKS: assistant turn carries 3 structured blocks", blocks.length === 3, JSON.stringify(blocks.map((b) => b.t)));
+  ok("HISTORY BLOCKS: thinking → text → tool, in order", blocks[0] && blocks[0].t === "thinking" && blocks[1] && blocks[1].t === "text" && blocks[2] && blocks[2].t === "tool");
+  ok("HISTORY BLOCKS: tool carries name/input/resolved ok state", blocks[2] && blocks[2].name === "web_fetch" && blocks[2].input && blocks[2].input.url === "https://example.com" && blocks[2].isError === false);
+
   // Ownership: U2 targeting U1's conversation in /messages → the forged id is dropped.
   await post("/messages", { externalUserId: U2, text: "intruder", conversationId: convB });
   ok("OWNERSHIP: a message targeting another user's conversation drops the id", published.some((m) => m.text === "intruder" && !m.conversationId));
