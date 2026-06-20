@@ -88,7 +88,8 @@ You are a test agent.
   );
 }
 
-// 2. Ingest: the preamble lands before the user text on a trigger match.
+// 2. Ingest: the preamble is an EPHEMERAL turnDirective (NOT persisted into the user message),
+//    so the stored/displayed message keeps only the user's own text.
 const sessions = new SessionStore(path.join(tmp, "sessions.sqlite"));
 const attachments = new AttachmentStore(path.join(tmp, "attachments"));
 await attachments.ensureDir();
@@ -104,57 +105,68 @@ const ingest = async (uid, text) => {
     config,
   });
   const tail = sessions.tail(res.sessionId, 10);
-  return tail[tail.length - 1].content.filter((c) => c.type === "text").map((c) => c.text);
+  const parts = tail[tail.length - 1].content.filter((c) => c.type === "text").map((c) => c.text);
+  return { parts, directive: res.turnDirective };
 };
 
 {
-  const parts = await ingest("u1", "good night artemis");
-  expect("trigger message gets two text parts", parts.length === 2, `got ${parts.length}`);
+  const { parts, directive } = await ingest("u1", "good night artemis");
   expect(
-    "preamble names the skill and trigger",
-    /skill trigger matched/.test(parts[0]) &&
-      parts[0].includes("home-assistant") &&
-      parts[0].includes('"good night"'),
-    parts[0]?.slice(0, 90),
-  );
-  expect("user text is preserved verbatim", parts[1] === "good night artemis");
-  expect(
-    "preamble inlines the skill body",
-    parts[0].includes("Forward the request to HA."),
-    parts[0]?.slice(-90),
+    "persisted message keeps ONLY the user text (preamble not stored)",
+    parts.length === 1 && parts[0] === "good night artemis",
+    `parts=${parts.length}`,
   );
   expect(
-    "preamble no longer instructs a load_skill round-trip",
-    !/Load the skill with load_skill/.test(parts[0]),
+    "turnDirective names the skill and trigger",
+    Boolean(directive) &&
+      /skill trigger matched/.test(directive) &&
+      directive.includes("home-assistant") &&
+      directive.includes('"good night"'),
+    directive?.slice(0, 90),
+  );
+  expect(
+    "turnDirective inlines the skill body",
+    Boolean(directive) && directive.includes("Forward the request to HA."),
+    directive?.slice(-90),
+  );
+  expect(
+    "turnDirective no longer instructs a load_skill round-trip",
+    Boolean(directive) && !/Load the skill with load_skill/.test(directive),
   );
 }
 
 {
-  // Two skills matched by one message: each body inlined exactly once.
-  const parts = await ingest("u4", "good night, and play some music");
-  const preamble = parts[0];
+  // Two skills matched by one message: each body inlined exactly once in the directive.
+  const { directive } = await ingest("u4", "good night, and play some music");
   expect(
-    "multi-skill match inlines both bodies",
-    preamble.includes("Forward the request to HA.") &&
-      preamble.includes("Queue the request on the speakers."),
+    "multi-skill directive inlines both bodies",
+    Boolean(directive) &&
+      directive.includes("Forward the request to HA.") &&
+      directive.includes("Queue the request on the speakers."),
   );
   expect(
     "each body appears exactly once",
-    preamble.split("Forward the request to HA.").length === 2 &&
-      preamble.split("Queue the request on the speakers.").length === 2,
+    Boolean(directive) &&
+      directive.split("Forward the request to HA.").length === 2 &&
+      directive.split("Queue the request on the speakers.").length === 2,
   );
 }
 
 {
-  const parts = await ingest("u2", "how are you today?");
-  expect("plain chat gets no preamble", parts.length === 1 && parts[0] === "how are you today?");
+  const { parts, directive } = await ingest("u2", "how are you today?");
+  expect(
+    "plain chat: no directive, just the user text",
+    parts.length === 1 && parts[0] === "how are you today?" && !directive,
+  );
 }
 
 {
-  const parts = await ingest("u3", "/ship good night");
+  // A slash-command message skips skill-trigger detection, so no directive is produced even
+  // though it contains the "good night" phrase.
+  const { parts, directive } = await ingest("u3", "/ship good night");
   expect(
     "slash-command input skips trigger detection",
-    parts.every((t) => !/skill trigger matched/.test(t)),
+    !directive && parts.every((t) => !/skill trigger matched/.test(t)),
   );
 }
 

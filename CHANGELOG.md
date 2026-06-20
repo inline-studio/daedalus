@@ -13,6 +13,17 @@ Each entry references the PR that introduced the change.
 
 ### Fixed
 
+- **Skill-trigger instructions no longer pollute the conversation.** When a message
+  matched a skill trigger, ingest inlined the entire skill body into the stored user
+  message — so it showed up as your message on reload AND was re-sent to the model on
+  every later turn in that session (context bloat + cost). The trigger preamble is now
+  an *ephemeral* directive: only your actual text is persisted, and the skill
+  instructions are injected into the model's view of the turn at runtime (never
+  stored). ([#126])
+
+
+### Fixed
+
 - **Thinking no longer double-rendered (web).** On streaming channels, surfaced
   reasoning was shown twice — inline as it streamed AND again as trailing "💭"
   message bubbles (the buffered-channel path firing on top). Thinking is now returned
