@@ -35,6 +35,11 @@ const dir = await mkdtemp(path.join(os.tmpdir(), "dae-convlog-"));
       { role: "assistant", content: [{ type: "text", text: "no such repo" }] },
     ],
     finalText: "no such repo",
+    input: {
+      system: "You are a test agent.",
+      tools: { builtin: [{ name: "bash" }], mcp: [{ server: "memory", tools: [{ name: "search" }] }] },
+      messages: [{ role: "user", content: [{ type: "text", text: "check the repo" }] }],
+    },
   });
   expect("append returns the file path", typeof written === "string" && written.endsWith(".jsonl"));
   // sessionId sanitised: '/' and ':' → '_'
@@ -44,6 +49,13 @@ const dir = await mkdtemp(path.join(os.tmpdir(), "dae-convlog-"));
   const toolCall = rec.exchange.find((m) => m.content.some((c) => c.type === "tool_use"));
   expect("record preserves the tool_use (the 'did it run gh?' evidence)", Boolean(toolCall));
   expect("record preserves the tool_result", rec.exchange.some((m) => m.content.some((c) => c.type === "tool_result")));
+  expect(
+    "record captures the full input (system + tools + messages)",
+    rec.input && rec.input.system === "You are a test agent." &&
+      rec.input.tools.builtin.length === 1 && rec.input.tools.mcp[0].server === "memory" &&
+      rec.input.messages[0].content[0].text === "check the repo",
+    JSON.stringify(rec.input)?.slice(0, 80),
+  );
 }
 
 // 2. A second append on the same session/day appends (doesn't overwrite).

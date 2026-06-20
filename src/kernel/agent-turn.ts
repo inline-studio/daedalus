@@ -345,12 +345,12 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     // Inspect with: `docker compose exec dae-worker sh -lc 'cat /tmp/dae-context-<agent>.json'`
     // (or `| jq` for structure). This is the empirical answer to "what's actually being sent?"
     // instead of an estimate.
+    const mcpToolDefs: Array<{ server: string; tools: unknown }> = [];
+    for (const [name, server] of mcpServers) {
+      mcpToolDefs.push({ server: name, tools: (server as { tools?: unknown }).tools ?? null });
+    }
     const dumpPath = path.join(os.tmpdir(), `dae-context-${agent.name}.json`);
     try {
-      const mcpToolDefs: Array<{ server: string; tools: unknown }> = [];
-      for (const [name, server] of mcpServers) {
-        mcpToolDefs.push({ server: name, tools: (server as { tools?: unknown }).tools ?? null });
-      }
       await writeFile(
         dumpPath,
         JSON.stringify(
@@ -405,6 +405,14 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
         exchange: newMessages,
         finalText: result.finalText,
         ...(result.notices?.length ? { notices: result.notices } : {}),
+        // The full input handed to the model this turn — system prompt + every tool def + the
+        // replayed history (image base64 elided) — so the log answers "what was actually sent,
+        // and why is the prompt this big?".
+        input: {
+          system,
+          tools: { builtin: builtinTools.map((t) => t.definition), mcp: mcpToolDefs },
+          messages: elideImageData(messages),
+        },
       });
       if (written) debugLogPath = written;
     }
@@ -529,6 +537,26 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     scheduleStore.close();
     attachmentIndex?.close();
   }
+}
+
+// Replace image base64 payloads with a short marker so the debug log's full-input capture stays
+// readable and bounded (one image can be hundreds of KB of base64). Logging only — never replayed.
+function elideImageData(messages: Message[]): Message[] {
+  return messages.map((m) => ({
+    role: m.role,
+    content: m.content.map((p) =>
+      p.type === "image" && p.source.kind === "base64"
+        ? {
+            type: "image" as const,
+            source: {
+              kind: "base64" as const,
+              mediaType: p.source.mediaType,
+              data: `[${p.source.data.length} base64 chars elided]`,
+            },
+          }
+        : p,
+    ),
+  }));
 }
 
 // Pull human-readable reasoning out of a turn's new messages, one notice per thinking block,

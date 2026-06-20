@@ -25,6 +25,15 @@ export interface ConversationLogEntry {
   exchange: Message[];
   finalText: string;
   notices?: string[];
+  // The COMPLETE input handed to the model this turn — the system prompt, every tool definition
+  // (built-in + MCP), and the replayed message history — so you can see exactly what was sent and
+  // why the prompt is the size it is. Image base64 is elided to keep the log readable. The token
+  // counts in `usage.inputTokens` are this payload measured by the provider.
+  input?: {
+    system: string;
+    tools: { builtin: unknown[]; mcp: Array<{ server: string; tools: unknown }> };
+    messages: Message[];
+  };
 }
 
 // Append-only JSONL conversation tracer. One file per session per day

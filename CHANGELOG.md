@@ -13,6 +13,15 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Debug log captures the full input.** Each conversation-log record now includes
+  `input` — the exact system prompt, every tool definition (built-in + MCP), and the
+  replayed message history sent to the model that turn (image base64 elided). This is
+  the empirical answer to "what was actually sent, and why is the prompt this big?" —
+  the persistent, per-turn version of the `/tmp/dae-context` dump. ([#128])
+
+
+### Added
+
 - **Activity chrome survives reload / device-switch (web).** Tool rows and reasoning
   are now reconstructed when a conversation is loaded from history, not just while it
   streams live. `/history` returns structured blocks (text / thinking / tool, with each
