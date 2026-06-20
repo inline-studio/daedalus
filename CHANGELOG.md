@@ -11,6 +11,23 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Added
+
+- **Activity chrome survives reload / device-switch (web).** Tool rows and reasoning
+  are now reconstructed when a conversation is loaded from history, not just while it
+  streams live. `/history` returns structured blocks (text / thinking / tool, with each
+  tool's resolved ✓/✗) for assistant turns, and the client rebuilds the inline flow.
+  Previously, switching chats or opening the same conversation on another device showed
+  only flattened text. ([#127])
+
+### Fixed
+
+- **Mobile: wide tables/code no longer overflow the viewport.** The message bubble
+  lacked `min-width: 0`, so a wide table set its width past the screen edge until you
+  navigated away and back. The bubble now clamps to `min(760px, 100%)` and shrinks
+  properly, so wide content scrolls within the bubble instead. ([#127])
+
+
 ### Fixed
 
 - **Thinking no longer double-rendered (web).** On streaming channels, surfaced
