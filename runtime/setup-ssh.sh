@@ -10,15 +10,21 @@
 # every file in there into $HOME/.ssh/ so git/ssh/scp/rsync find it via the
 # usual lookup paths.
 #
-# StrictModes is disabled in the generated ~/.ssh/config. Rationale:
-#   - The host file is 0600 owned by the user that owns the daedalus install
-#     (typically uid 1000).
-#   - The agent container almost always runs as root (uid 0).
-#   - StrictModes refuses keys not owned by the connecting user — it would
-#     reject the host file as "owned by someone else."
-#   - The check exists to stop another user on a multi-tenant box from
-#     snooping/swapping your key. That threat doesn't apply: the key is
-#     bind-mounted ro from a path we control into a container we spawned.
+# The generated ~/.ssh/config sets StrictHostKeyChecking=accept-new. Rationale:
+#   - A fresh per-turn container has no TTY, so the interactive "authenticity of
+#     host can't be established (yes/no)?" prompt has no one to answer it — the
+#     connection just fails. accept-new trusts a host the first time it's seen and
+#     records it, while still refusing a host whose key later CHANGES (MITM).
+#   - The operator's known_hosts (if mounted) is symlinked in below, so known
+#     hosts like github.com never even reach the prompt; accept-new only covers
+#     first contact with hosts not in that file.
+#
+# NOTE: do NOT add StrictModes here. It is an *sshd* (server) directive and is not
+# a valid ssh *client* keyword — ssh rejects the whole config with "Bad
+# configuration option" and then ignores the keys + known_hosts entirely, which
+# silently breaks every git push/clone. (A private key with too-open permissions is
+# a separate, client-side check that no config option disables — fix it with file
+# perms, not config.)
 #
 # Idempotent: re-runs are no-ops. If the agent (or a previous turn) has
 # already placed its own file at $HOME/.ssh/<name>, we leave it alone — the
@@ -47,14 +53,15 @@ for f in "$DAE_SSH_HOST_DIR"/*; do
   ln -sfn "$f" "$HOME_SSH/$name" 2>/dev/null || true
 done
 
-# Generated config — only if the agent hasn't placed its own. Disables
-# StrictModes for the reason in the file header.
+# Generated config — only if the agent hasn't placed its own. Sets
+# StrictHostKeyChecking=accept-new so a TTY-less container can reach a host on
+# first contact without an unanswerable yes/no prompt. See the file header.
 if [ ! -e "$HOME_SSH/config" ]; then
   cat > "$HOME_SSH/config" <<'SSH_EOF'
 # Written by daedalus agent-turn.sh on container start.
-# See runtime/setup-ssh.sh for why StrictModes is disabled.
+# See runtime/setup-ssh.sh for rationale. Client keywords only.
 Host *
-  StrictModes no
+  StrictHostKeyChecking accept-new
 SSH_EOF
   chmod 600 "$HOME_SSH/config" 2>/dev/null || true
 fi
