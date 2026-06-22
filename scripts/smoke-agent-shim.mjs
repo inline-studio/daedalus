@@ -3,9 +3,14 @@
 // What's under test: when the operator drops an ssh key into <configDir>/ssh/ on
 // the host, the supervisor's bind-mount surfaces it at /etc/daedalus/ssh/ inside
 // every agent container. setup-ssh.sh symlinks it into $HOME/.ssh/ and writes a
-// minimal ~/.ssh/config with StrictModes disabled (the host file's uid almost
-// never matches the container's uid, and the check is guarding against a threat
-// that doesn't apply to a path we control).
+// minimal ~/.ssh/config that sets StrictHostKeyChecking=accept-new so a TTY-less
+// container can reach a host on first contact without an unanswerable prompt.
+//
+// Regression guard (the bug this caught): the config MUST be a valid ssh client
+// config. A prior version wrote `StrictModes no` — an sshd (server) directive that
+// is not a valid client keyword — so ssh rejected the whole file and ignored the
+// keys + known_hosts, silently breaking every git push. We now assert the
+// generated config actually parses (ssh -G).
 //
 // Why this is a smoke not a unit test: it's a /bin/sh script. We drive it from
 // Node by setting $DAE_SSH_HOST_DIR + $HOME and shelling out. No Docker needed —
@@ -14,7 +19,7 @@
 // Covered:
 //   1. No-op when the host hasn't placed keys (the opt-in path).
 //   2. Each file in <host>/ssh/ gets symlinked into $HOME/.ssh/.
-//   3. $HOME/.ssh/config gets the StrictModes-no block.
+//   3. $HOME/.ssh/config gets a VALID StrictHostKeyChecking=accept-new block.
 //   4. Re-running is idempotent (no duplicate config; no symlink churn).
 //   5. Pre-existing $HOME/.ssh/<name> is NOT overwritten (agent's config wins).
 //   6. Pre-existing $HOME/.ssh/config is NOT overwritten (ditto).
@@ -92,11 +97,29 @@ function runShim({ home, hostDir }) {
     );
   }
 
-  // ------- 3. config carries the StrictModes line --------------------------
+  // ------- 3. config carries a VALID accept-new block ----------------------
   const cfgFile = path.join(homeSsh, "config");
   const cfgBody = fs.readFileSync(cfgFile, "utf8");
-  expect("~/.ssh/config has Host * StrictModes no", /Host \*[\s\S]*StrictModes no/.test(cfgBody));
+  expect(
+    "~/.ssh/config has Host * StrictHostKeyChecking accept-new",
+    /Host \*[\s\S]*StrictHostKeyChecking accept-new/.test(cfgBody),
+  );
+  expect("~/.ssh/config does NOT contain the invalid StrictModes keyword", !/strictmodes/i.test(cfgBody));
   expect("~/.ssh/config is 0600", (fs.statSync(cfgFile).mode & 0o777) === 0o600);
+
+  // The assertion that would have caught the original bug: ssh must actually accept
+  // the generated config. `ssh -G` parses config and exits non-zero on a bad option.
+  // Skip (don't fail) if no ssh binary is on the test box — keeps the smoke portable.
+  const sshProbe = spawnSync("ssh", ["-G", "-F", cfgFile, "github.com"], { encoding: "utf8" });
+  if (sshProbe.error && sshProbe.error.code === "ENOENT") {
+    console.log("• ssh not installed — skipping config-parses-cleanly check");
+  } else {
+    expect(
+      "ssh -G accepts the generated config (no 'Bad configuration option')",
+      sshProbe.status === 0 && !/Bad configuration option/i.test(sshProbe.stderr || ""),
+      (sshProbe.stderr || "").trim().split("\n")[0] || "",
+    );
+  }
 
   // ------- 4. idempotent: run twice, no duplication ------------------------
   const beforeMtime = fs.statSync(path.join(homeSsh, "id_ed25519")).mtimeMs;

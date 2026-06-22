@@ -53,6 +53,7 @@ const CI_SAFE = [
   "smoke-safe-path",
   "smoke-section-optout",
   "smoke-schedule-authz",
+  "smoke-schedule-delivery-warn",
   "smoke-schedule-retry",
   "smoke-ssrf",
   "smoke-skill-bootstrap",

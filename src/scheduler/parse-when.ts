@@ -16,7 +16,12 @@ export interface ParsedWhen {
 
 const RELATIVE = /^\s*in\s+(\d+(?:\.\d+)?)\s+(second|seconds|sec|secs|s|minute|minutes|min|mins|m|hour|hours|hr|hrs|h|day|days|d)\s*$/i;
 
-export function parseWhen(input: string, now: Date = new Date()): ParsedWhen {
+// `tz` is the IANA zone cron fields are interpreted in (e.g. "Europe/London"). The agent
+// writes wall-clock cron ("0 7 * * *" = 7am local), so we must evaluate it in the same zone
+// the agent's "# Now" context shows — otherwise "0 7" silently means 7am UTC and fires at the
+// wrong hour. Passed explicitly rather than left to croner's process-local default so the
+// behaviour is pinned and testable. Omit to fall back to the process timezone (unchanged).
+export function parseWhen(input: string, now: Date = new Date(), tz?: string): ParsedWhen {
   if (!input || typeof input !== "string") {
     throw new Error("schedule_message: 'when' is required");
   }
@@ -51,7 +56,7 @@ export function parseWhen(input: string, now: Date = new Date()): ParsedWhen {
   let next: Date | null;
   try {
     // paused: true so we don't actually arm a job — we just want next().
-    const job = new Cron(trimmed, { paused: true }, () => {});
+    const job = new Cron(trimmed, { paused: true, ...(tz ? { timezone: tz } : {}) }, () => {});
     next = job.nextRun(now);
     job.stop();
   } catch (err) {
@@ -67,8 +72,11 @@ export function parseWhen(input: string, now: Date = new Date()): ParsedWhen {
 }
 
 // Compute the next fire for a recurring cron. Used by the poll loop after each fire.
-export function nextCronFire(cron: string, after: Date = new Date()): string {
-  const job = new Cron(cron, { paused: true }, () => {});
+// `tz` matches parseWhen's: evaluate the cron in the same zone the first fire was computed in
+// so a recurring "0 7 * * *" keeps landing at 7am local. Defaults to the process zone, which
+// the supervisor sets to the configured TZ — so re-arms stay consistent with the first fire.
+export function nextCronFire(cron: string, after: Date = new Date(), tz?: string): string {
+  const job = new Cron(cron, { paused: true, ...(tz ? { timezone: tz } : {}) }, () => {});
   const next = job.nextRun(after);
   job.stop();
   if (!next) throw new Error(`cron ${cron} has no future fire`);
