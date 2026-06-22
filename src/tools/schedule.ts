@@ -1,6 +1,7 @@
 import type { ToolImpl, ToolContext } from "./base.js";
 import { ScheduleStore } from "../sessions/schedule-store.js";
 import { parseWhen } from "../scheduler/parse-when.js";
+import { canPushAsync } from "../channels/delivery.js";
 import { loadAgent, listAgents } from "../brain/agents.js";
 
 // SEC-06: an agent may schedule a turn only for itself or for an agent it is allowed to
@@ -53,7 +54,10 @@ export function scheduleMessageTool(store: ScheduleStore): ToolImpl {
             type: "string",
             description:
               `When to fire. Accepts: "in N seconds/minutes/hours/days", a future ISO ` +
-              `timestamp, or a cron expression (recurring).`,
+              `timestamp, or a cron expression (recurring). IMPORTANT: cron fields are ` +
+              `interpreted in your LOCAL timezone (the one shown in your "# Now" context), ` +
+              `NOT UTC. "0 7 * * *" means 07:00 local. The result echoes the first fire in ` +
+              `both local time and UTC — check it matches what you intended.`,
           },
           prompt: {
             type: "string",
@@ -105,9 +109,13 @@ export function scheduleMessageTool(store: ScheduleStore): ToolImpl {
           };
         }
       }
+      // Evaluate cron in the agent's local zone (the supervisor pins TZ to the configured
+      // timezone, which Intl resolves here) so wall-clock cron means what the agent intends
+      // and the result can echo local time — closing the "0 6 meant 06:00 UTC" trap.
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
       let parsed;
       try {
-        parsed = parseWhen(whenStr);
+        parsed = parseWhen(whenStr, new Date(), tz);
       } catch (err) {
         return { content: (err as Error).message, isError: true };
       }
@@ -132,10 +140,20 @@ export function scheduleMessageTool(store: ScheduleStore): ToolImpl {
         recurringCron: parsed.cron ?? null,
       });
       const kind = parsed.cron ? `recurring (cron='${parsed.cron}')` : "one-shot";
+      const localFire = formatLocal(row.dueAt, tz);
+      // Warn (don't block) when the delivery channel can't push: the fire will run but the user
+      // won't be alerted unless they're actively connected — so the agent can tell them to expect
+      // it in that surface, or re-arm somewhere push-capable.
+      const pushWarning = canPushAsync(ctx.originChannel)
+        ? ""
+        : `\n\n⚠️ This is armed on the '${ctx.originChannel}' channel, which can't push ` +
+          `notifications. When it fires the message is written to the conversation but the user ` +
+          `is NOT alerted unless they have ${ctx.originChannel} open. For a reliable scheduled ` +
+          `delivery (e.g. a daily briefing), arm it from a push channel such as Telegram.`;
       return {
         content:
           `scheduled ${kind} message id=${row.id} for agent='${agentName}', ` +
-          `first fire at ${row.dueAt}.`,
+          `first fire at ${localFire} (${tz}) = ${row.dueAt}.${pushWarning}`,
       };
     },
   };
@@ -190,4 +208,23 @@ export function listScheduledMessagesTool(store: ScheduleStore): ToolImpl {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+// Render a UTC ISO instant as wall-clock time in the given IANA zone, so the agent sees the
+// local hour it actually scheduled (e.g. "2026-06-21 07:00" for "0 7 * * *" in Europe/London)
+// alongside the UTC instant. Falls back to the raw ISO if the zone is unusable.
+function formatLocal(iso: string, tz: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
 }
