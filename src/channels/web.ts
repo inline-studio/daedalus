@@ -3,6 +3,7 @@ import type { Channel, ChannelContext, IncomingAttachment, OutgoingMessage } fro
 import type { ContentPart, TurnEventSink } from "../types.js";
 import { COMPACTION_CHANNEL, type SessionStore, type PersistedSession } from "../sessions/store.js";
 import { WEB_UI_HTML, WEB_LOGIN_HTML } from "./web-ui.js";
+import { MARKED_UMD_JS, DOMPURIFY_MIN_JS } from "./web-vendor.js";
 import { verifyPassword, signSession, verifySession, parseCookies } from "./web-auth.js";
 import { log } from "../log.js";
 
@@ -107,6 +108,19 @@ export class WebChannel implements Channel {
         const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
         const pathname = url.pathname;
         const loginMode = Boolean(this.auth);
+
+        // Vendored browser libs for the chat UI (markdown parser + HTML sanitizer).
+        // Static public assets — served before the auth gate and cacheable.
+        if (req.method === "GET" && pathname === "/vendor/marked.umd.js") {
+          res.writeHead(200, jsHeaders());
+          res.end(MARKED_UMD_JS);
+          return;
+        }
+        if (req.method === "GET" && pathname === "/vendor/purify.min.js") {
+          res.writeHead(200, jsHeaders());
+          res.end(DOMPURIFY_MIN_JS);
+          return;
+        }
 
         // --- Login mode: unauthenticated login routes, served before the gate ---
         if (loginMode) {
@@ -766,6 +780,16 @@ function htmlHeaders(): Record<string, string> {
     "Cache-Control": "no-cache, no-store, must-revalidate",
     Pragma: "no-cache",
     Expires: "0",
+  };
+}
+
+// Headers for the vendored /vendor/*.js libs. Their bytes change only on a
+// dependency bump (rare), so a short cache is safe and saves re-fetching ~70KB
+// on every page load.
+function jsHeaders(): Record<string, string> {
+  return {
+    "Content-Type": "text/javascript; charset=utf-8",
+    "Cache-Control": "public, max-age=3600",
   };
 }
 

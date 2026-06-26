@@ -32,6 +32,27 @@ async function run(port, token) {
   return { ch, base };
 }
 
+// Build a browser-like window (jsdom) with the vendored markdown libs loaded,
+// then extract and return the REAL md() from WEB_UI_HTML bound to it. md() now
+// delegates parsing to marked and sanitizing to DOMPurify — both DOM-dependent
+// — so a faithful test needs a DOM rather than the old pure-string eval.
+async function makeMd() {
+  const { JSDOM } = await import("jsdom");
+  const { WEB_UI_HTML } = await import("../dist/channels/web-ui.js");
+  const { MARKED_UMD_JS, DOMPURIFY_MIN_JS } = await import("../dist/channels/web-vendor.js");
+  const { window } = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only" });
+  window.eval(DOMPURIFY_MIN_JS); // defines window.DOMPurify
+  window.eval(MARKED_UMD_JS); // defines window.marked
+  const m = WEB_UI_HTML.match(/function md\(src\) \{[\s\S]*?\n  \}/);
+  if (!m) throw new Error("md() not found in WEB_UI_HTML — anchors moved, update the smoke");
+  // md() references esc() (defined earlier in the IIFE); shim it verbatim.
+  const esc = "function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}";
+  const md = window.eval("(function(){" + esc + "\n" + m[0] + "\nreturn md;})()");
+  // Parse md()'s returned HTML string into a detached node for querying.
+  const frag = (html) => { const d = window.document.createElement("div"); d.innerHTML = html; return d; };
+  return { md, frag };
+}
+
 // 1. No-token channel.
 {
   const { ch, base } = await run(8791);
@@ -39,6 +60,25 @@ async function run(port, token) {
   const html = await home.text();
   ok("GET / serves HTML shell", home.status === 200 && /<!doctype html>/i.test(html) && html.includes("/events"));
   ok("shell includes an inline SVG favicon", /<link rel="icon"[^>]*data:image\/svg\+xml/.test(html));
+
+  // The markdown stack is loaded from the daedalus server (locally vendored),
+  // NOT a CDN — so the UI keeps rendering offline with no third-party requests.
+  ok("shell loads the vendored marked + DOMPurify via local <script src>", /<script src="\/vendor\/purify\.min\.js">/.test(html) && /<script src="\/vendor\/marked\.umd\.js">/.test(html));
+  ok("shell references no external script origin", !/<script src="https?:\/\//.test(html));
+  {
+    const marked = await fetch(base + "/vendor/marked.umd.js");
+    const mjs = await marked.text();
+    ok(
+      "GET /vendor/marked.umd.js → 200 JS that defines the marked global",
+      marked.status === 200 && /javascript/.test(marked.headers.get("content-type") ?? "") && mjs.includes("marked v18"),
+    );
+    const purify = await fetch(base + "/vendor/purify.min.js");
+    const pjs = await purify.text();
+    ok(
+      "GET /vendor/purify.min.js → 200 JS that defines DOMPurify",
+      purify.status === 200 && /javascript/.test(purify.headers.get("content-type") ?? "") && pjs.includes("DOMPurify"),
+    );
+  }
   // Cache-busting headers — without these the browser caches the inline
   // JS/CSS shell aggressively, so a `dae update` never reaches the user
   // until they hard-refresh. Scott hit exactly this after PR #82 deployed.
@@ -272,62 +312,55 @@ async function run(port, token) {
   await ch.stop();
 }
 
-// 6. Markdown table rendering. The renderTable + md functions live inside the
-//    inline IIFE in WEB_UI_HTML — extract and eval them so we can test the
-//    table parser end-to-end (the bug Scott hit: GFM tables landed as raw
-//    `|`-noise paragraphs). Tests cover: header + separator + body roundtrip,
-//    the strict reject (mixed prose with no blank line stays as plain <p>),
-//    and the column-count mismatch heuristic.
+// 6. Markdown rendering pipeline (marked + DOMPurify), run in a jsdom window
+//    with the vendored libs — the same code path the browser executes. Covers
+//    the regressions Scott hit: GFM tables landing as raw `|`-noise paragraphs,
+//    and a code-fence language label ("bash") leaking into the copied snippet.
+//    Also asserts the sanitizer strips active content (our XSS boundary) and
+//    that links are forced to open safely.
 {
-  const { WEB_UI_HTML } = await import("../dist/channels/web-ui.js");
-  // Pull the chunk from `function md(src) {` up to the next `function attachmentHtml(`
-  // — that's md + renderTable, both we need.
-  const start = WEB_UI_HTML.indexOf("function md(src)");
-  const end = WEB_UI_HTML.indexOf("function attachmentHtml");
-  if (start < 0 || end < 0 || end <= start) {
-    ok("md/renderTable extraction from WEB_UI_HTML", false, "anchors moved — update the smoke");
-  } else {
-    // The extracted slice references `esc()` which lives earlier in the IIFE.
-    // Shim it with the same behaviour (verbatim from web-ui.ts).
-    const prelude =
-      "function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }";
-    const factory = new Function(
-      `${prelude} ${WEB_UI_HTML.slice(start, end)} return { md: md, renderTable: renderTable };`,
+  const { md, frag } = await makeMd();
+
+  // 6a. GFM table → real <table> with the right cells.
+  {
+    const src = "Here are the repos:\n\n| Name | Description | Language |\n|------|-------------|----------|\n| daedalus | agent runner | TypeScript |\n| nanoclaw | messaging agent | TypeScript |";
+    const out = md(src);
+    ok("table: emits a <table> with <thead> + <tbody>", /<table>/.test(out) && /<thead>/.test(out) && /<tbody>/.test(out));
+    ok("table: header cell 'Name' wrapped in <th>", /<th>Name<\/th>/.test(out));
+    ok("table: data cells 'daedalus' + 'TypeScript' wrapped in <td>", /<td>daedalus<\/td>/.test(out) && /<td>TypeScript<\/td>/.test(out));
+    ok("table: trailing data row 'nanoclaw' present", /<td>nanoclaw<\/td>/.test(out));
+    ok("table: raw `|` noise no longer in output", !/\| Name \| Description/.test(out));
+  }
+
+  // 6b. Column-count mismatch and lone pipe lines stay paragraphs, not tables.
+  ok("table: header/separator pipe-count mismatch → not a table", !/<table>/.test(md("| a | b |\n|---|---|---|\n| 1 | 2 |")));
+  ok("table: a lone pipe-containing line stays a paragraph", !/<table>/.test(md("just a | pipe | character")));
+
+  // 6c. THE fenced-code bug: the info-string language must NOT be part of the
+  //     code body (it becomes a language-* class instead), so Copy yields only
+  //     the command — not a leading "bash" line that breaks when pasted.
+  {
+    const code = frag(md('```bash\nzip -r out.zip . -x ".git/*"\n```')).querySelector("pre code");
+    ok("fence: language label is not in the code body (Copy is clean)", !code.textContent.includes("bash"));
+    ok("fence: language preserved as a class", code.className === "language-bash");
+    ok("fence: code body intact", code.textContent.includes("zip -r out.zip"));
+  }
+
+  // 6d. Sanitizer strips active content — assistant/tool output is rendered as
+  //     HTML, so this is the XSS boundary.
+  {
+    const out = md("text <img src=x onerror=alert(1)> and <script>alert(2)</script> end");
+    ok("sanitize: inline event handler stripped", !/onerror/.test(out));
+    ok("sanitize: <script> stripped", !/<script/i.test(out));
+  }
+
+  // 6e. Links open in a new tab without leaking the opener.
+  {
+    const a = frag(md("see [docs](https://example.com)")).querySelector("a");
+    ok(
+      "link: gets target=_blank + rel=noopener noreferrer",
+      a.getAttribute("target") === "_blank" && /noopener/.test(a.getAttribute("rel")) && /noreferrer/.test(a.getAttribute("rel")),
     );
-    const api = factory();
-
-    // 6a. Scott's exact bug: a 3-col table renders as <table> with the right cells.
-    {
-      const src = "Here are the repos:\n\n| Name | Description | Language |\n|------|-------------|----------|\n| daedalus | agent runner | TypeScript |\n| nanoclaw | messaging agent | TypeScript |";
-      const out = api.md(src);
-      ok("table: emits a <table> tag", /<table>/.test(out));
-      ok("table: emits <thead> + <tbody>", /<thead>/.test(out) && /<tbody>/.test(out));
-      ok("table: header cell 'Name' wrapped in <th>", /<th>Name<\/th>/.test(out));
-      ok("table: data cell 'daedalus' wrapped in <td>", /<td>daedalus<\/td>/.test(out));
-      ok("table: data cell 'TypeScript' wrapped in <td>", /<td>TypeScript<\/td>/.test(out));
-      ok("table: trailing data row 'nanoclaw' present", /<td>nanoclaw<\/td>/.test(out));
-      ok("table: raw `|` noise no longer in output", !/\| Name \| Description/.test(out));
-    }
-
-    // 6b. Strict reject: prose mixed into the block (no blank line) → renders as <p>.
-    {
-      const src = "| a | b |\n|---|---|\n| 1 | 2 |\nfollow-up sentence";
-      const out = api.md(src);
-      ok("table: mixed prose without blank line → falls back to <p> (no silent drop)", !/<table>/.test(out) && /follow-up sentence/.test(out));
-    }
-
-    // 6c. Column-count mismatch: header has 3 pipes, separator has 4 → not a table.
-    {
-      const src = "| a | b |\n|---|---|---|\n| 1 | 2 |";
-      const out = api.md(src);
-      ok("table: header/separator pipe-count mismatch → not a table", !/<table>/.test(out));
-    }
-
-    // 6d. Negative: a single line with pipes isn't a table.
-    {
-      const out = api.md("just a | pipe | character");
-      ok("table: a lone pipe-containing line stays a paragraph", !/<table>/.test(out));
-    }
   }
 }
 
@@ -574,33 +607,18 @@ async function run(port, token) {
     /\.msg pre\s*\{[^}]*position:\s*relative/.test(WEB_UI_HTML),
   );
 
-  // (b) md() emits the Copy button inside every <pre> block. Re-extract the
-  //     function the same way smoke #6 does and exercise it with a code
-  //     fence input.
-  const start = WEB_UI_HTML.indexOf("function md(src)");
-  const end = WEB_UI_HTML.indexOf("function attachmentHtml");
-  ok("md() extractable", start >= 0 && end > start);
-  if (start >= 0 && end > start) {
-    const prelude =
-      "function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }";
-    const api = new Function(
-      `${prelude} ${WEB_UI_HTML.slice(start, end)} return { md: md };`,
-    )();
-    const out = api.md("```\nconsole.log(1)\n```");
-    ok(
-      "md() emits Copy button inside <pre>",
-      /<pre>[\s\S]*class="copy-btn"[\s\S]*<code>/.test(out),
-    );
-    ok(
-      "md() preserves the code body alongside the button",
-      out.includes("console.log(1)"),
-    );
-    // Inline `code` must NOT get a button — it's only worth one for the
-    // multi-line block form.
-    const inlineOut = api.md("use `cd /tmp` to change");
+  // (b) md() injects a Copy button into each <pre> (added post-sanitize) but
+  //     never into inline <code>. Rendered through the real libs in jsdom.
+  {
+    const { md, frag } = await makeMd();
+    const pre = frag(md("```\nconsole.log(1)\n```")).querySelector("pre");
+    ok("md() emits a Copy button inside <pre>", !!pre && !!pre.querySelector("button.copy-btn"));
+    ok("md() preserves the code body alongside the button", !!pre && pre.querySelector("code").textContent.includes("console.log(1)"));
+    // Inline `code` is not worth a button — only the multi-line block form is.
+    const inline = frag(md("use `cd /tmp` to change"));
     ok(
       "md() does NOT add a copy button to inline <code>",
-      inlineOut.includes("<code>cd /tmp</code>") && !inlineOut.includes("copy-btn"),
+      !!inline.querySelector("code") && !inline.querySelector(".copy-btn"),
     );
   }
 
