@@ -98,6 +98,7 @@ async function handleTurn(
       isSubagent: Boolean(args.isSubagent),
       ...originFields(args),
       ...(args.turnDirective ? { turnDirective: args.turnDirective } : {}),
+      ...(args.remoteExec ? { remoteExec: args.remoteExec } : {}),
       mcpPool: pool,
       onEvent: (ev) => writeLine({ kind: "event", event: ev }),
     });

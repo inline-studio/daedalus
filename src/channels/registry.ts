@@ -66,6 +66,9 @@ export function buildChannels(
         ...(w.userName ? { userName: w.userName } : {}),
         ...(listCommands ? { listCommands } : {}),
         ...(extras?.status ? { status: extras.status } : {}),
+        ...(w.remoteExec?.enabled
+          ? { remoteExec: { enabled: true, timeoutMs: w.remoteExec.timeoutMs } }
+          : {}),
       }),
     );
   }

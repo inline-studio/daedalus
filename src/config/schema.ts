@@ -355,6 +355,22 @@ export const ChannelsConfigSchema = z.object({
       // Telegram-style `[date] Name: …` export). Falls back to the logged-in username
       // (login mode) or "You". Set this to e.g. your full name for nicer debug pastes.
       userName: z.string().optional(),
+      // Remote execution (the `dae remote` CLI): a laptop-side client connects an
+      // outbound SSE stream and becomes the EXECUTOR for its user's turns — bash and
+      // read/write/edit run on the laptop instead of the agent container. Off by
+      // default; turns from users without a connected executor are unaffected either way.
+      remoteExec: z
+        .object({
+          enabled: z.boolean().default(false),
+          // Per-request cap on how long the server waits for the laptop to return a
+          // result (the client enforces the command's own timeout separately).
+          timeoutMs: z.number().int().positive().default(180_000),
+          // Where agent containers reach the supervisor's internal /rpc/exec bridge.
+          // Defaults per dispatch mode (http://daedalus:<port> in docker,
+          // http://127.0.0.1:<port> in-process); set for non-standard topologies.
+          internalUrl: z.string().optional(),
+        })
+        .default({}),
     })
     .optional(),
   telegram: z

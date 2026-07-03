@@ -10,6 +10,7 @@ import { buildProvider } from "../providers/index.js";
 import type { LLMProvider } from "../providers/base.js";
 import { inferContextWindow } from "../providers/model-info.js";
 import { buildRuntime } from "../runtime/factory.js";
+import { RemoteRuntime } from "../runtime/remote.js";
 import { selectBuiltins } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
 import { composeSystemPrompt } from "../brain/composer.js";
@@ -74,6 +75,10 @@ export interface RunAgentTurnInput {
   // Ephemeral skill-trigger directive — injected into the model's view of the last user message
   // for this turn only, never persisted. See IngestResult.turnDirective.
   turnDirective?: string;
+  // Remote execution (`dae remote`): when set, this turn's bash + read/write/edit run on
+  // the user's machine via the supervisor's /rpc/exec bridge instead of locally. Only set
+  // for top-level turns whose originating user has a connected executor.
+  remoteExec?: { userId: string; url: string; token: string };
 }
 
 export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchResult> {
@@ -169,7 +174,11 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     // 5. Runtime for tool exec. In docker mode this is the agent's own container,
     // so HostRuntime runs commands locally inside the container. Per-agent docker
     // bind/network overrides still apply via the manifest's container block.
-    const runtime = buildRuntime(agent, config);
+    // Remote execution overrides everything: when the originating user has a `dae remote`
+    // executor connected, this turn's tools run on THEIR machine via the bridge.
+    const runtime = input.remoteExec
+      ? new RemoteRuntime(input.remoteExec)
+      : buildRuntime(agent, config);
 
     // 6. MCP — connect everything this agent declares + auto-injected memory MCP.
     // In docker mode these are typically HTTP endpoints reachable on the shared

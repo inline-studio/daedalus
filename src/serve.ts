@@ -21,6 +21,8 @@ import { createRequire } from "node:module";
 import { Cron } from "croner";
 import { SkillLearningStore } from "./sessions/skill-learning-store.js";
 import { runSkillCurator } from "./brain/skill-curator.js";
+import { getRpcToken } from "./channels/remote-exec.js";
+import { WebChannel } from "./channels/web.js";
 import { log } from "./log.js";
 
 const PKG_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
@@ -125,6 +127,24 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         typeof ch.streamSink === "function" &&
         dispatcher.streaming === true;
       const onEvent = streaming ? ch.streamSink!(msg.externalUserId, conversationId) : undefined;
+      // Remote execution: when this message's user has a `dae remote` executor connected
+      // (web channel only), the turn's tools run on THEIR machine. The bridge URL defaults
+      // by dispatch topology: in-process turns reach the supervisor on loopback; container/
+      // worker turns reach it by compose service name on the daedalus network.
+      let remoteExec: { userId: string; url: string; token: string } | undefined;
+      const webCfg = config.channels.web;
+      if (
+        webCfg?.remoteExec.enabled &&
+        ch instanceof WebChannel &&
+        ch.remoteConnected(ingested.userId)
+      ) {
+        const port = webCfg.port ?? 8765;
+        const url =
+          webCfg.remoteExec.internalUrl ??
+          (dispatcher.id === "in-process" ? `http://127.0.0.1:${port}` : `http://daedalus:${port}`);
+        remoteExec = { userId: ingested.userId, url, token: getRpcToken() };
+        log.info({ user: ingested.userId }, "remote executor connected — turn will execute locally on it");
+      }
       const result = await dispatcher.dispatch({
         agentName,
         sessionId: ingested.sessionId,
@@ -136,6 +156,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         originExternalUserId: msg.externalUserId,
         ...(onEvent ? { onEvent } : {}),
         ...(ingested.turnDirective ? { turnDirective: ingested.turnDirective } : {}),
+        ...(remoteExec ? { remoteExec } : {}),
       });
       // Pre-reply messages, delivered as their own short bubbles before the reply lands:
       //   - surfaced thinking, but ONLY for buffered channels — streaming channels already render

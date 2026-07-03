@@ -119,6 +119,9 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     const forwardedSecrets: Record<string, string> = {
       ...(this.opts.onecliApiKey ? { ONECLI_API_KEY: this.opts.onecliApiKey } : {}),
       ...(this.opts.forwardEnv ?? {}),
+      // SEC-09: the rpc token is forwarded by NAME (-e DAE_RPC_TOKEN in the arg builder);
+      // its VALUE rides in the docker CLI's env, never the world-readable argv.
+      ...(args.remoteExec ? { DAE_RPC_TOKEN: args.remoteExec.token } : {}),
     };
     const subprocess = execa(bin, dockerArgs, {
       timeout: args.timeoutMs ?? 5 * 60_000,
@@ -280,6 +283,12 @@ export function buildContainerArgs(input: {
   // Live event streaming: the agent-turn entrypoint writes sentinel-framed TurnEvent lines
   // on stdout, which dispatch() parses + forwards. Only set when the caller has a live sink.
   if (input.streamEvents) a.push("-e", "DAE_EVENT_STREAM=ndjson");
+  // Remote execution: user id + bridge URL on the argv (not secret); the token by env
+  // NAME only (value supplied via the dispatcher's env — SEC-09).
+  if (dispatchArgs.remoteExec) {
+    a.push("-e", `DAE_RPC_URL=${dispatchArgs.remoteExec.url}`);
+    a.push("-e", "DAE_RPC_TOKEN");
+  }
   a.push("-e", `DAE_AGENT_IMAGE_DEFAULT=${opts.defaultImage}`);
   a.push("-e", `DAE_AGENT_NETWORK=${opts.network}`);
   a.push("-e", `DAE_AGENT_HOST_BRAIN=${opts.hostBrainPath}`);
@@ -334,6 +343,7 @@ export function buildContainerArgs(input: {
     ...(dispatchArgs.originExternalUserId
       ? ["--origin-external-user", dispatchArgs.originExternalUserId]
       : []),
+    ...(dispatchArgs.remoteExec ? ["--remote-exec-user", dispatchArgs.remoteExec.userId] : []),
   );
   return a;
 }

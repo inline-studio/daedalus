@@ -103,6 +103,39 @@ Subagent **text isn't** streamed to the user — the panel shows lifecycle + too
 activity; the subagent's findings reach the user through the orchestrator's own reply,
 as before. Turn the streaming off globally with `runtime.subagentEventStream: false`.
 
+## Remote execution (`dae remote`)
+
+The inverse of the usual deployment: the agent keeps running on the server — brain,
+sessions, memory, LLM — but its **tools execute on your machine**. On the laptop:
+
+```bash
+dae remote https://chat.example.com --token <web token> --workspace ~/code/my-project
+# login-auth servers:  dae remote https://chat.example.com --user scott
+```
+
+One process, two jobs: a chat REPL (stdin → the server's `/messages`; replies + live
+turn events render from `/events`, sub-agent lines included), and the **executor** for
+your user — a second SSE stream delivers the turn's `bash` / `read` / `write` / `edit`
+requests, they run in your declared workspace, and results flow back. Everything is
+outbound HTTP from the laptop: no open ports, no tunnel, NAT-friendly. Enable
+server-side with `channels.web.remoteExec.enabled: true`.
+
+Scope and safety:
+
+- Only turns **you start from the remote CLI** execute on your machine (the executor is
+  keyed to your user). Telegram/web conversations, schedules, and **subagents** are
+  unaffected — they run server-side as always.
+- Every command asks for confirmation (`y/N/a` — `a` persists a two-token prefix to
+  `~/.daedalus/remote-allow.json` so routine commands stop asking). `--yolo` skips the
+  prompt, but a denylist of catastrophic patterns (`rm -rf`, `sudo`, `mkfs`, …) ALWAYS
+  prompts. File reads/writes are confined to the workspace. Every execution is appended
+  to `~/.daedalus/remote-exec.log`.
+- Without a TTY the client runs executor-only, and anything that would have prompted is
+  refused rather than silently approved.
+- Internally, agent containers reach the laptop via the supervisor's `/rpc/exec` bridge,
+  guarded by a per-boot shared secret (`DAE_RPC_TOKEN` — set it in the compose `.env`
+  when running the warm-worker topology so both containers share it).
+
 ## The other channels
 
 - **CLI** — an interactive REPL (`dae serve` with the cli channel enabled): each stdin

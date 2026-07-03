@@ -73,6 +73,10 @@ program
   .option("--subagent", "system-prompt voice: 'you are operating as a subagent'", false)
   .option("--origin-channel <channel>", "channel the originating user spoke on (for schedule_message routing)")
   .option("--origin-external-user <id>", "external id of the originating user (for schedule_message routing)")
+  .option(
+    "--remote-exec-user <userId>",
+    "run this turn's tools on the user's machine via the remote-exec bridge (needs DAE_RPC_URL + DAE_RPC_TOKEN in env)",
+  )
   .action(
     async (opts: {
       agent: string;
@@ -81,10 +85,22 @@ program
       subagent: boolean;
       originChannel?: string;
       originExternalUser?: string;
+      remoteExecUser?: string;
     }) => {
       const config = loadConfig(program.opts().config);
       await applyOneCli(config.onecli);
       const { runAgentTurn } = await import("./kernel/agent-turn.js");
+      // Remote execution: the dispatcher put the bridge URL + user on the argv/env; the
+      // token rides in env only (SEC-09). All three present → the turn's tools run on
+      // the user's machine.
+      const remoteExec =
+        opts.remoteExecUser && process.env.DAE_RPC_URL && process.env.DAE_RPC_TOKEN
+          ? {
+              userId: opts.remoteExecUser,
+              url: process.env.DAE_RPC_URL,
+              token: process.env.DAE_RPC_TOKEN,
+            }
+          : undefined;
       // Live event streaming across the container hop: when the spawning dispatcher set
       // DAE_EVENT_STREAM=ndjson, write each TurnEvent as a sentinel-framed JSON line as the
       // turn unfolds. The leading newline guarantees the sentinel begins a fresh line even
@@ -101,6 +117,7 @@ program
           ...(opts.originExternalUser
             ? { originExternalUserId: opts.originExternalUser }
             : {}),
+          ...(remoteExec ? { remoteExec } : {}),
           ...(streamEvents
             ? {
                 onEvent: (ev: import("./types.js").TurnEvent) => {
@@ -285,6 +302,40 @@ program
     if (opts.yes) disableOpts.yes = true;
     await runDisable(thing, program.opts().config, disableOpts);
   });
+
+program
+  .command("remote")
+  .description(
+    "connect to a remote daedalus as chat REPL + local EXECUTOR: the agent runs on the server, its bash/read/write run HERE",
+  )
+  .argument("<url>", "the server's web channel URL (same address the web UI uses)")
+  .option("--token <token>", "bearer token (token-auth servers)")
+  .option("--user <username>", "login username (login-auth servers; prompts for the password)")
+  .option("--workspace <dir>", "directory commands and file ops are rooted in", process.cwd())
+  .option("--yolo", "skip per-command confirmation (dangerous commands still prompt)", false)
+  .option("--id <externalUserId>", "override the client identity (default: remote-<hostname>)")
+  .action(
+    async (
+      url: string,
+      opts: { token?: string; user?: string; workspace: string; yolo: boolean; id?: string },
+    ) => {
+      const { runRemoteClient } = await import("./cli/remote-client.js");
+      let password: string | undefined;
+      if (opts.user) {
+        const { secretPrompt } = await import("./setup/secret-prompt.js");
+        password = (await secretPrompt({ message: `Password for ${opts.user}:` })) ?? "";
+      }
+      await runRemoteClient({
+        url,
+        workspace: opts.workspace,
+        yolo: Boolean(opts.yolo),
+        ...(opts.token ? { token: opts.token } : {}),
+        ...(opts.user ? { username: opts.user } : {}),
+        ...(password !== undefined ? { password } : {}),
+        ...(opts.id ? { externalUserId: opts.id } : {}),
+      });
+    },
+  );
 
 program
   .command("serve")

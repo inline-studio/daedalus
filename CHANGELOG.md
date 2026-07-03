@@ -13,6 +13,21 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Remote execution — `dae remote`.** The agent runs on the server; its tools run on
+  your machine. The client is one process with two jobs: a chat REPL on the web
+  channel, and the executor for your user — the turn's `bash`/`read`/`write`/`edit`
+  arrive over an outbound SSE stream, run in your declared workspace, and stream back
+  (no open ports on the laptop). Server-side, a new `RemoteRuntime` slots into the
+  runtime seam and reaches the laptop via the supervisor's `/rpc/exec` bridge (per-boot
+  shared secret), across every dispatch mode. Only turns started from the remote CLI
+  execute remotely; subagents and other channels are untouched. Safety: per-command
+  confirmation with a persistable allowlist, a never-auto-approved denylist for
+  catastrophic patterns (even under `--yolo`), workspace-confined file ops, an audit
+  log, and executor-only headless mode that refuses rather than auto-approves. Enable
+  with `channels.web.remoteExec.enabled: true`.
+
+### Added
+
 - **Skill self-learning.** Daedalus can now grow its own skill library from experience.
   A new `skill_manage` tool (explicit opt-in, excluded from `tools: ['*']`) lets an agent
   create, patch, extend, and archive skills; a post-turn review pass replays substantial

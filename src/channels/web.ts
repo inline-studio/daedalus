@@ -5,6 +5,7 @@ import { COMPACTION_CHANNEL, type SessionStore, type PersistedSession } from "..
 import { WEB_UI_HTML, WEB_LOGIN_HTML } from "./web-ui.js";
 import { MARKED_UMD_JS, DOMPURIFY_MIN_JS } from "./web-vendor.js";
 import { verifyPassword, signSession, verifySession, parseCookies } from "./web-auth.js";
+import { ExecutorRegistry, getRpcToken, type RemoteExecResult } from "./remote-exec.js";
 import { log } from "../log.js";
 
 // Minimal HTTP+SSE channel.
@@ -72,6 +73,9 @@ export class WebChannel implements Channel {
   private userName: string | undefined;
   private listCommands: (() => Promise<WebCommandInfo[]>) | undefined;
   private status: (() => Promise<Record<string, unknown>>) | undefined;
+  // Remote execution bridge (the `dae remote` CLI). Present only when enabled in config.
+  private executors: ExecutorRegistry | undefined;
+  private remoteExecTimeoutMs = 180_000;
 
   constructor(opts: {
     defaultAgent: string;
@@ -95,6 +99,8 @@ export class WebChannel implements Channel {
     // memory backend). Injected by serve so the channel stays supervisor-agnostic; absent
     // (e.g. a bare smoke harness) the endpoint returns {}.
     status?: () => Promise<Record<string, unknown>>;
+    // Remote execution bridge (`dae remote`): /rpc/stream, /rpc/result, /rpc/exec.
+    remoteExec?: { enabled: boolean; timeoutMs?: number };
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -106,6 +112,16 @@ export class WebChannel implements Channel {
     this.userName = opts.userName;
     this.listCommands = opts.listCommands;
     this.status = opts.status;
+    if (opts.remoteExec?.enabled) {
+      this.executors = new ExecutorRegistry();
+      if (opts.remoteExec.timeoutMs) this.remoteExecTimeoutMs = opts.remoteExec.timeoutMs;
+    }
+  }
+
+  // Whether this user currently has a `dae remote` executor connected — serve uses it to
+  // decide whether a turn's tools should execute on the user's machine.
+  remoteConnected(userId: string): boolean {
+    return this.executors?.connected(userId) ?? false;
   }
 
   async start(ctx: ChannelContext): Promise<void> {
@@ -163,6 +179,48 @@ export class WebChannel implements Channel {
           return;
         }
 
+        // Internal remote-exec bridge — agent containers, not users. Guarded by the
+        // per-boot shared secret (never by user auth: containers have no cookie/bearer),
+        // so it sits BEFORE the user gate. 404s when the feature is off so the route
+        // doesn't even exist to probe.
+        if (req.method === "POST" && pathname === "/rpc/exec") {
+          if (!this.executors) {
+            res.writeHead(404);
+            res.end("not found");
+            return;
+          }
+          if (req.headers["x-dae-rpc-token"] !== getRpcToken()) {
+            res.writeHead(401);
+            res.end("unauthorized");
+            return;
+          }
+          const body = await readJson(req);
+          const userId = String(body.userId ?? "");
+          const kind = String(body.kind ?? "exec") as "exec" | "read" | "write";
+          if (!userId || !["exec", "read", "write"].includes(kind)) {
+            res.writeHead(400);
+            res.end("userId and a valid kind are required");
+            return;
+          }
+          const result = await this.executors.submit(
+            userId,
+            {
+              kind,
+              ...(typeof body.cmd === "string" ? { cmd: body.cmd } : {}),
+              ...(typeof body.path === "string" ? { path: body.path } : {}),
+              ...(typeof body.content === "string" ? { content: body.content } : {}),
+              ...(typeof body.timeoutMs === "number" ? { timeoutMs: body.timeoutMs } : {}),
+            },
+            Math.min(
+              typeof body.timeoutMs === "number" ? body.timeoutMs + 10_000 : this.remoteExecTimeoutMs,
+              this.remoteExecTimeoutMs,
+            ),
+          );
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(result));
+          return;
+        }
+
         // --- Gate the API routes ---
         if (loginMode) {
           if (!loginUser) {
@@ -198,6 +256,16 @@ export class WebChannel implements Channel {
           await this.handleConversations(req, res, url, loginUser);
           return;
         }
+        // Executor registration + results (the `dae remote` client's two calls). Behind
+        // the normal user gate: the executor authenticates exactly like any web client.
+        if (req.method === "GET" && pathname === "/rpc/stream") {
+          this.handleRpcStream(req, res, url, loginUser);
+          return;
+        }
+        if (req.method === "POST" && pathname === "/rpc/result") {
+          await this.handleRpcResult(req, res, url, loginUser);
+          return;
+        }
         if (req.method === "GET" && pathname === "/status") {
           // Supervisor snapshot for the UI's status bar. Best-effort: a provider failure
           // degrades to {} rather than erroring the bar.
@@ -231,8 +299,86 @@ export class WebChannel implements Channel {
   async stop(): Promise<void> {
     for (const set of this.streams.values()) for (const r of set) r.end();
     this.streams.clear();
+    this.executors?.closeAll();
     await new Promise<void>((resolve) => this.server?.close(() => resolve()));
     this.server = null;
+  }
+
+  // GET /rpc/stream — a `dae remote` client registers as its user's executor. The SSE
+  // stream carries `request` events (exec/read/write) that the client answers via
+  // POST /rpc/result. One executor per user; a reconnect replaces the previous stream.
+  private handleRpcStream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    forcedUser: string | null,
+  ): void {
+    if (!this.executors || !this.sessions) {
+      res.writeHead(404);
+      res.end("remote execution is not enabled (channels.web.remoteExec.enabled)");
+      return;
+    }
+    const externalUserId = forcedUser ?? url.searchParams.get("externalUserId");
+    if (!externalUserId) {
+      res.writeHead(400);
+      res.end("externalUserId required");
+      return;
+    }
+    const userId = this.sessions.resolveUser(this.id, externalUserId);
+    const workspace = url.searchParams.get("workspace") ?? "";
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.write(`: executor registered\n\n`);
+    this.executors.register(userId, res, workspace);
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(`event: heartbeat\ndata: {}\n\n`);
+      } catch {
+        /* close handler cleans up */
+      }
+    }, this.heartbeatMs);
+    if (typeof heartbeat.unref === "function") heartbeat.unref();
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      this.executors?.unregister(userId, res);
+    };
+    req.on("close", cleanup);
+    res.on("close", cleanup);
+  }
+
+  // POST /rpc/result — the executor answers one request it received on its stream.
+  private async handleRpcResult(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    forcedUser: string | null,
+  ): Promise<void> {
+    if (!this.executors || !this.sessions) {
+      res.writeHead(404);
+      res.end("not found");
+      return;
+    }
+    const externalUserId = forcedUser ?? url.searchParams.get("externalUserId");
+    if (!externalUserId) {
+      res.writeHead(400);
+      res.end("externalUserId required");
+      return;
+    }
+    const userId = this.sessions.resolveUser(this.id, externalUserId);
+    const body = await readJson(req);
+    const result = body as unknown as RemoteExecResult;
+    if (!result || typeof result.id !== "string") {
+      res.writeHead(400);
+      res.end("result with an id required");
+      return;
+    }
+    const delivered = this.executors.deliver(userId, result);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: delivered }));
   }
 
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {

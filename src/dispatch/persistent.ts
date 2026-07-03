@@ -37,6 +37,9 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
       isSubagent: args.isSubagent,
       ...originFields(args),
       ...(args.turnDirective ? { turnDirective: args.turnDirective } : {}),
+      // Internal hop on the trusted docker network — the rpc token rides along so the
+      // worker's turn can reach the supervisor's /rpc/exec bridge.
+      ...(args.remoteExec ? { remoteExec: args.remoteExec } : {}),
     });
 
     // A turn can take a while (LLM + tools), so don't impose a tight timeout —
