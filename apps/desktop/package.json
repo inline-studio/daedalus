@@ -16,6 +16,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "updater.js",
       "setup.html"
     ],
     "mac": {
@@ -35,10 +36,18 @@
         "AppImage"
       ],
       "category": "Utility"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "inline-studio",
+      "repo": "daedalus"
     }
   },
   "devDependencies": {
     "electron": "^43.0.0",
     "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

@@ -12,6 +12,7 @@
 const { app, BrowserWindow, Menu, ipcMain, shell, session } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
+const updater = require("./updater.js");
 
 const SMOKE = process.argv.includes("--smoke-test");
 
@@ -113,6 +114,10 @@ function buildMenu() {
           label: "Change Server…",
           click: () => openSetup(),
         },
+        {
+          label: "Check for Updates…",
+          click: () => updater.checkFromMenu(),
+        },
         { type: "separator" },
         { role: "reload" },
         { role: "toggleDevTools" },
@@ -132,6 +137,10 @@ app.whenReady().then(() => {
   });
   buildMenu();
   createWindow();
+  // Quiet update check at launch (packaged builds only). Signed builds — and Linux —
+  // download + apply via electron-updater; unsigned mac builds fall back to a
+  // GitHub-releases check surfaced only when something newer exists.
+  if (!SMOKE) updater.checkAtLaunch();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

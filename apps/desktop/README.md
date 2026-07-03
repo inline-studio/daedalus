@@ -38,10 +38,26 @@ the page loads and the preload bridge is exposed, then exits.
 npm run dist   # electron-builder → dmg (mac, arm64+x64) / AppImage (linux)
 ```
 
-Unsigned by default. For a signed, notarised mac build (required for distribution beyond
-your own machine), add Apple credentials per the electron-builder docs. Auto-update is
-not wired yet — it needs a signed build + a release feed; planned alongside the CI
-release pipeline.
+Unsigned by default — fine for your own machines (macOS will ask for a one-time
+Privacy & Security override on first launch of a downloaded copy).
+
+## Updates
+
+Distribution + updates run entirely from **GitHub Releases** (tag desktop builds
+`desktop-v<version>` so they don't collide with the server's `v0.1.0-<run>` tags):
+
+- **Linux (AppImage), and macOS once builds are signed:** electron-updater checks the
+  GitHub feed at launch, downloads in the background, and offers "Restart now" — fully
+  automatic.
+- **Unsigned macOS builds:** the OS blocks in-place self-update — Squirrel.Mac (the
+  macOS update engine) only applies updates to code-signed apps (electron-builder:
+  "macOS application must be signed in order for auto updating to work"). These builds
+  fall back to checking the releases API and opening the download page when something
+  newer exists. **Server → Check for Updates…** runs either path on demand.
+
+Signing needs an Apple Developer ID certificate ($99/yr) — it buys the warning-free
+first launch *and* unlocks true in-place auto-update on macOS. Drop the credentials into
+CI per the electron-builder docs when ready; nothing else changes.
 
 ## How it talks to the web UI
 
