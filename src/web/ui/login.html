@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Daedalus — Sign in</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzBkMTExNyIvPjxwYXRoIGQ9Ik01IDI3VjVIMjdWMjdIMTBWMTBIMjJWMjJIMTYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzU4YTZmZiIgc3Ryb2tlLXdpZHRoPSIyLjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==" />
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background: #0d1117; color: #e6edf3; min-height: 100dvh; display: flex; align-items: center; justify-content: center; }
+  form { background: #161b22; border: 1px solid #21262d; border-radius: 12px; padding: 28px 24px;
+         width: 320px; display: flex; flex-direction: column; gap: 12px; }
+  .logo { display: flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 600; margin-bottom: 6px; }
+  .logo img { width: 28px; height: 28px; }
+  input { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; font: inherit; }
+  button { background: #238636; color: #fff; border: 1px solid #2ea043; border-radius: 8px; padding: 10px 12px;
+           font: inherit; cursor: pointer; }
+  button:hover { background: #2ea043; }
+  .err { color: #f85149; font-size: 13px; min-height: 18px; }
+</style>
+</head>
+<body>
+  <form id="f">
+    <div class="logo"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+PHJlY3Qgd2lkdGg9IjMyIiBoZWlnaHQ9IjMyIiByeD0iNyIgZmlsbD0iIzBkMTExNyIvPjxwYXRoIGQ9Ik01IDI3VjVIMjdWMjdIMTBWMTBIMjJWMjJIMTYiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzU4YTZmZiIgc3Ryb2tlLXdpZHRoPSIyLjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPjwvc3ZnPg==" alt="" /> Daedalus</div>
+    <input id="u" name="username" placeholder="Username" autocomplete="username" autofocus />
+    <input id="p" name="password" type="password" placeholder="Password" autocomplete="current-password" />
+    <button type="submit">Sign in</button>
+    <div class="err" id="err"></div>
+  </form>
+<script>
+(function () {
+  var f = document.getElementById("f"), err = document.getElementById("err");
+  f.addEventListener("submit", function (e) {
+    e.preventDefault(); err.textContent = "";
+    fetch("/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: document.getElementById("u").value, password: document.getElementById("p").value })
+    }).then(function (r) {
+      if (r.ok) { location.href = "/"; } else { err.textContent = "Invalid username or password"; }
+    }).catch(function () { err.textContent = "Sign-in failed — try again"; });
+  });
+})();
+</script>
+</body>
+</html>

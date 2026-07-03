@@ -79,6 +79,9 @@ export class Kernel {
   private contextCompacted = false;
   // Running token total across every completion this run (reset per runWithMessages).
   private usageTotal: KernelResult["usage"];
+  // The LAST completion's input-side tokens (incl. cache reads/creations) — i.e. how full
+  // the context window currently is. Drives the turn_complete context readout.
+  private lastInputTokens = 0;
 
   constructor(private opts: KernelOptions) {
     for (const t of opts.builtinTools) this.builtinByName.set(t.definition.name, t);
@@ -114,6 +117,7 @@ export class Kernel {
     this.notices = [];
     this.contextCompacted = false;
     this.usageTotal = undefined;
+    this.lastInputTokens = 0;
 
     // If a separate vision model is configured, turn the freshest image into text up front
     // (a tiny side-call) so the rest of the turn runs entirely on the main model.
@@ -129,6 +133,10 @@ export class Kernel {
       const result = await this.completeFittingContext(messages, signal, undefined, onEvent);
       if (result.usage) {
         this.accumulateUsage(result.usage);
+        this.lastInputTokens =
+          result.usage.inputTokens +
+          (result.usage.cacheReadTokens ?? 0) +
+          (result.usage.cacheCreationTokens ?? 0);
         // Per-turn token visibility. inputTokens is the whole replayed transcript
         // (system + history + this turn's tool I/O), so a climbing number here is the
         // signal that context — not turn count — is what's growing.
@@ -154,7 +162,12 @@ export class Kernel {
 
       if (result.stopReason !== "tool_use") {
         finalText = collectText(result.message.content);
-        onEvent?.({ type: "turn_complete", finalText, ...(this.usageTotal ? { usage: this.usageTotal } : {}) });
+        onEvent?.({
+          type: "turn_complete",
+          finalText,
+          ...(this.usageTotal ? { usage: this.usageTotal } : {}),
+          ...(this.lastInputTokens ? { context: { inputTokens: this.lastInputTokens } } : {}),
+        });
         break;
       }
 
@@ -230,11 +243,22 @@ export class Kernel {
       }
       try {
         const wrap = await this.completeFittingContext(messages, signal, { tools: [] }, onEvent);
-        if (wrap.usage) this.accumulateUsage(wrap.usage);
+        if (wrap.usage) {
+          this.accumulateUsage(wrap.usage);
+          this.lastInputTokens =
+            wrap.usage.inputTokens +
+            (wrap.usage.cacheReadTokens ?? 0) +
+            (wrap.usage.cacheCreationTokens ?? 0);
+        }
         messages.push(wrap.message);
         finalText = collectText(wrap.message.content);
         if (finalText.trim())
-          onEvent?.({ type: "turn_complete", finalText, ...(this.usageTotal ? { usage: this.usageTotal } : {}) });
+          onEvent?.({
+            type: "turn_complete",
+            finalText,
+            ...(this.usageTotal ? { usage: this.usageTotal } : {}),
+            ...(this.lastInputTokens ? { context: { inputTokens: this.lastInputTokens } } : {}),
+          });
       } catch (err) {
         log.warn({ err: (err as Error).message }, "max-turns wrap-up completion failed");
       }

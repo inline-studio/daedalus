@@ -8,6 +8,7 @@ import { budgetTail, estimateTokens } from "./context-budget.js";
 import { compactCompletedLoops } from "./history-compaction.js";
 import { buildProvider } from "../providers/index.js";
 import type { LLMProvider } from "../providers/base.js";
+import { inferContextWindow } from "../providers/model-info.js";
 import { buildRuntime } from "../runtime/factory.js";
 import { selectBuiltins } from "../tools/registry.js";
 import { askUserTool } from "../tools/ask-user.js";
@@ -372,7 +373,20 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       log.warn({ err: (err as Error).message }, "context dump failed");
     }
 
-    const result = await kernel.runWithMessages(messages, undefined, input.onEvent);
+    // Context readout enrichment: the kernel reports how many input tokens the final
+    // completion carried; we add the model's window (manifest override → family inference)
+    // so the UI can show a percentage. Unknown window → the readout stays a plain count.
+    const contextWindow = agent.contextWindow ?? inferContextWindow(agent.model);
+    const onEvent: TurnEventSink | undefined =
+      input.onEvent && contextWindow
+        ? (ev) =>
+            input.onEvent!(
+              ev.type === "turn_complete" && ev.context
+                ? { ...ev, context: { ...ev.context, window: contextWindow } }
+                : ev,
+            )
+        : input.onEvent;
+    const result = await kernel.runWithMessages(messages, undefined, onEvent);
 
     // 9. Persist whatever the kernel produced beyond the existing tail. Skip a
     // content-less, tool-less assistant message (e.g. the model returned an empty

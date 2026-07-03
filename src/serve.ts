@@ -16,7 +16,11 @@ import { PersistentContainerDispatcher } from "./dispatch/persistent.js";
 import type { AgentDispatcher } from "./dispatch/base.js";
 import { loadSchedules, startScheduler } from "./scheduler/cron.js";
 import { startSchedulePoller } from "./scheduler/poller.js";
+import { listAgents } from "./brain/agents.js";
+import { createRequire } from "node:module";
 import { log } from "./log.js";
+
+const PKG_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 
 // Long-running supervisor. Per inbound message:
 //   1. Ingest (attachments, transcripts, persist user message) — supervisor IO
@@ -45,14 +49,6 @@ export async function serve(config: ArtemisConfig): Promise<void> {
   // forget so serving isn't blocked on the download; it's idempotent across restarts.
   void provisionWhisperModel(config);
 
-  const channels = buildChannels(config.channels, sessions, config.identity.name, config.brain.path);
-  if (channels.length === 0) {
-    log.error(
-      "No channels enabled in config.channels — nothing to listen on. Enable at least one (cli/web/telegram/whatsapp).",
-    );
-    return;
-  }
-
   // With persistentAgent, top-level turns go to the long-lived warm worker over HTTP
   // (subagents inside it still spawn ephemeral containers). Otherwise the supervisor
   // dispatches each turn itself per the configured dispatcher.
@@ -60,6 +56,40 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     ? new PersistentContainerDispatcher(config)
     : buildDispatcher(config);
   log.info({ dispatcher: dispatcher.id }, "supervisor dispatcher selected");
+
+  // GET /status snapshot for the web UI's status bar. Everything is resolved lazily at
+  // request time (agents/schedules re-read from the brain so edits show up live); a
+  // failure in any part degrades to a partial snapshot rather than an error.
+  const status = async (): Promise<Record<string, unknown>> => {
+    const [agents, staticSchedules] = await Promise.all([
+      listAgents(config.brain.path).catch(() => [] as string[]),
+      loadSchedules(config.brain.path).catch(() => []),
+    ]);
+    let dynamicSchedules = 0;
+    try {
+      dynamicSchedules = scheduleStore.countActive();
+    } catch {
+      /* partial snapshot is fine */
+    }
+    return {
+      version: PKG_VERSION,
+      dispatcher: dispatcher.id,
+      agents: { count: agents.length, names: agents },
+      schedules: { static: staticSchedules.filter((s) => s.enabled !== false).length, dynamic: dynamicSchedules },
+      memory: { backend: config.memory.backend },
+      channels: Object.entries(config.channels)
+        .filter(([, c]) => (c as { enabled?: boolean } | undefined)?.enabled)
+        .map(([name]) => name),
+    };
+  };
+
+  const channels = buildChannels(config.channels, sessions, config.identity.name, config.brain.path, { status });
+  if (channels.length === 0) {
+    log.error(
+      "No channels enabled in config.channels — nothing to listen on. Enable at least one (cli/web/telegram/whatsapp).",
+    );
+    return;
+  }
 
   const bus = new MessageBus(sessions);
   for (const ch of channels) bus.register(ch);

@@ -71,6 +71,7 @@ export class WebChannel implements Channel {
   private assistantName: string;
   private userName: string | undefined;
   private listCommands: (() => Promise<WebCommandInfo[]>) | undefined;
+  private status: (() => Promise<Record<string, unknown>>) | undefined;
 
   constructor(opts: {
     defaultAgent: string;
@@ -90,6 +91,10 @@ export class WebChannel implements Channel {
     // Slash-commands available to the default agent, for GET /commands (powers the UI's
     // autocomplete). Injected by the registry so the channel stays brain-agnostic.
     listCommands?: () => Promise<WebCommandInfo[]>;
+    // Supervisor snapshot for GET /status (versions, agent/schedule counts, dispatcher,
+    // memory backend). Injected by serve so the channel stays supervisor-agnostic; absent
+    // (e.g. a bare smoke harness) the endpoint returns {}.
+    status?: () => Promise<Record<string, unknown>>;
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -100,6 +105,7 @@ export class WebChannel implements Channel {
     this.assistantName = opts.assistantName ?? "Artemis";
     this.userName = opts.userName;
     this.listCommands = opts.listCommands;
+    this.status = opts.status;
   }
 
   async start(ctx: ChannelContext): Promise<void> {
@@ -190,6 +196,14 @@ export class WebChannel implements Channel {
         }
         if (pathname === "/conversations") {
           await this.handleConversations(req, res, url, loginUser);
+          return;
+        }
+        if (req.method === "GET" && pathname === "/status") {
+          // Supervisor snapshot for the UI's status bar. Best-effort: a provider failure
+          // degrades to {} rather than erroring the bar.
+          const body = this.status ? await this.status().catch(() => ({})) : {};
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(body));
           return;
         }
         if (req.method === "GET" && pathname === "/commands") {
@@ -285,6 +299,7 @@ export class WebChannel implements Channel {
           this.sseEvent(externalUserId, conversationId, "turn_done", {
             text: ev.finalText,
             ...(ev.usage ? { usage: ev.usage } : {}),
+            ...(ev.context ? { context: ev.context } : {}),
           });
           break;
         case "debug_log":
@@ -696,6 +711,7 @@ export class WebChannel implements Channel {
     const toEntry = (s: PersistedSession) => ({
       id: s.id,
       title: s.title,
+      pinned: s.pinned,
       createdAt: s.createdAt,
       lastActiveAt: s.lastActiveAt,
     });
@@ -704,8 +720,32 @@ export class WebChannel implements Channel {
       // Ensure the default/"Main" session exists so the UI always has at least one conversation,
       // and so a brand-new browser gets a stable id to talk to.
       const def = sessions.getOrCreateSession(userId, this.defaultAgent);
-      const conversations = sessions.listSessions(userId, this.defaultAgent).map(toEntry);
-      json(200, { conversations, defaultId: def.id });
+      let list = sessions.listSessions(userId, this.defaultAgent);
+      // Sidebar search: `?q=` filters by title, case-insensitive substring. The default
+      // (title-less) session matches its fixed "Main" label.
+      const q = url.searchParams.get("q")?.trim().toLowerCase();
+      if (q) {
+        list = list.filter((s) => ((s.id === def.id ? s.title ?? "Main" : s.title) ?? "").toLowerCase().includes(q));
+      }
+      json(200, { conversations: list.map(toEntry), defaultId: def.id });
+      return;
+    }
+    if (req.method === "PATCH") {
+      // Pin / unpin (and future per-conversation mutations). Ownership enforced like DELETE.
+      const body = await readJson(req).catch(() => ({}) as Record<string, unknown>);
+      const id = typeof body.id === "string" ? body.id : url.searchParams.get("id");
+      if (!id) {
+        json(400, { error: "id required" });
+        return;
+      }
+      const s = sessions.getSessionById(id);
+      if (!s || s.userId !== userId || s.agentName !== this.defaultAgent) {
+        json(404, { error: "not found" });
+        return;
+      }
+      if (typeof body.pinned === "boolean") sessions.setSessionPinned(id, body.pinned);
+      const updated = sessions.getSessionById(id);
+      json(200, updated ? toEntry(updated) : { ok: true });
       return;
     }
     if (req.method === "POST") {

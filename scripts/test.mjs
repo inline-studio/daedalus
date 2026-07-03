@@ -79,6 +79,7 @@ const CI_SAFE = [
   "smoke-tool-output-limits",
   "smoke-vision",
   "smoke-web-auth",
+  "smoke-web-status",
   "smoke-web-conversations",
   "smoke-web-copy-transcript",
   "smoke-web-ui",

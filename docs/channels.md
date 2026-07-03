@@ -88,7 +88,13 @@ Notes:
   line is a message; replies and attachment notes print to stdout. Good for local dev.
 - **Web** — a minimal HTTP + SSE surface. `POST /messages` to send (optionally with
   base64 attachments), `GET /events?externalUserId=…` for the reply stream. A bearer
-  token (`web.token`) guards it when set.
+  token (`web.token`) guards it when set. The built-in chat UI (served at `GET /`) is a
+  full session workspace: a sidebar with pinned sessions + title search, and a status bar
+  showing gateway state, agent/cron counts, a context-window readout
+  (`65.0k/200.0k · 32%` — the last turn's input tokens vs the agent's `contextWindow`),
+  a session timer, and client/backend versions (`GET /status` powers the supervisor
+  half). The UI's source lives under `src/web/ui/` (plain HTML/CSS/JS), assembled into
+  the served module by `npm run build:web-ui`.
 - **WhatsApp** — Cloud API channel (access token + phone-number id), off by default.
 
 Enable channels in `daedalus.config.yaml` under `channels:` (with `enabled: true` and a

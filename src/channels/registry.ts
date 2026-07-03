@@ -18,6 +18,8 @@ export function buildChannels(
   sessions?: SessionStore,
   identityName?: string,
   brainPath?: string,
+  // Extra web-channel wiring the supervisor owns (GET /status snapshot provider).
+  extras?: { status?: () => Promise<Record<string, unknown>> },
 ): Channel[] {
   const out: Channel[] = [];
   if (config.cli?.enabled) {
@@ -58,6 +60,7 @@ export function buildChannels(
         ...(identityName ? { assistantName: identityName } : {}),
         ...(w.userName ? { userName: w.userName } : {}),
         ...(listCommands ? { listCommands } : {}),
+        ...(extras?.status ? { status: extras.status } : {}),
       }),
     );
   }

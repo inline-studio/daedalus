@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Daedalus</title>
+<!-- Favicon: an inline SVG of a square-spiral labyrinth (Daedalus built the Labyrinth),
+     in the UI accent teal. Inlined as a data URI so the UI stays a single self-contained file. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0c10'/%3E%3Cpath d='M5 27V5H27V27H10V10H22V22H16' fill='none' stroke='%232dd4bf' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<style>
+/*__DAE_STYLES__*/
+</style>
+</head>
+<body>
+  <div id="sb-scrim"></div>
+  <aside id="sidebar">
+    <div class="sb-brand">
+      <svg viewBox="0 0 32 32" width="18" height="18" aria-hidden="true"><path d="M5 27V5H27V27H10V10H22V22H16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <b>DAEDALUS</b>
+    </div>
+    <div class="sb-head"><button id="new-convo" type="button">＋ New session</button></div>
+    <div class="sb-search"><input id="convo-search" type="search" placeholder="Search sessions…" autocomplete="off" /></div>
+    <div id="convo-list"></div>
+    <div class="sb-foot" id="sb-channels"></div>
+  </aside>
+  <div id="main">
+  <header>
+    <button id="sb-toggle" title="Conversations">☰</button>
+    <b id="convo-title">Daedalus</b><span class="meta" id="status">connecting…</span>
+    <span class="sp"></span>
+    <button id="select" title="Select messages to copy (with who-said-what + timestamps)">☑️ select</button>
+    <button id="notify" title="Notify me when Artemis replies and this tab isn't focused">🔔 off</button>
+    <button id="gear">settings</button>
+    <button id="logout" style="display:none">logout</button>
+  </header>
+  <div id="selbar">
+    <button id="sel-cancel" type="button">Cancel</button>
+    <span class="meta" id="sel-count">0 selected</span>
+    <span class="sp"></span>
+    <button id="sel-all" type="button">Select all</button>
+    <button id="sel-copy" type="button">📋 Copy</button>
+  </div>
+  <div id="settings">
+    <label>Bearer token (if your server requires one)</label>
+    <input id="token" type="password" placeholder="leave blank if none" style="min-width:240px" />
+    <button id="save">save</button>
+    <span class="meta" id="uid"></span>
+  </div>
+  <div id="log"><div class="empty">No messages yet. Say hello.</div></div>
+  <button id="new-pill" type="button">↓ new messages</button>
+  <footer>
+    <div id="cmd-menu"></div>
+    <div id="chips"></div>
+    <div class="row">
+      <textarea id="text" rows="1" placeholder="Describe what you need…  (Enter to send, Shift+Enter for newline)"></textarea>
+      <label class="attach" title="Attach files">📎<input id="file" type="file" multiple hidden /></label>
+      <button id="send">Send</button>
+    </div>
+  </footer>
+  </div>
+  <!-- Hermes-style status bar: supervisor state on the left (gateway / agents / cron),
+       session metrics on the right (context window fill, session timer, versions). -->
+  <div id="statusbar">
+    <span class="st-item"><i class="dot" id="st-gw-dot"></i><span id="st-gw">Gateway</span></span>
+    <span class="st-item" id="st-agents" title="agents in the brain">⚙ <b id="st-agents-n">–</b> agents</span>
+    <span class="st-item" id="st-cron" title="schedules (static + agent-armed)">◷ <b id="st-cron-n">–</b> cron</span>
+    <span class="sp"></span>
+    <span class="st-item" id="st-context" title="context window used (last turn)" style="display:none">
+      <span id="st-ctx-text"></span><span class="ctx-track"><i id="st-ctx-fill"></i></span><span id="st-ctx-pct"></span>
+    </span>
+    <span class="st-item" title="time since this page opened">Session <span id="st-session">0:00</span></span>
+    <span class="st-item" id="st-versions"><span title="UI version baked into this page">client __DAE_CLIENT_VERSION__</span> · <span id="st-backend" title="server version">backend –</span></span>
+  </div>
+<!-- Markdown rendering + HTML sanitizing. Served locally by the daedalus server
+     (see web.ts) so the UI keeps working offline with no third-party requests. -->
+<script src="/vendor/purify.min.js"></script>
+<script src="/vendor/marked.umd.js"></script>
+<script>
+/*__DAE_APP_JS__*/
+</script>
+</body>
+</html>

@@ -149,6 +149,11 @@ export type TurnEvent =
       type: "turn_complete";
       finalText: string;
       usage?: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheCreationTokens?: number };
+      // Context-size readout: how full the model's window was on the LAST completion of the
+      // loop (input + cache tokens ≈ the whole replayed transcript). `window` is the model's
+      // context size when known (manifest `contextWindow` or family inference) — when absent
+      // the UI shows a plain count instead of a percentage.
+      context?: { inputTokens: number; window?: number };
     }
   // The conversation debug log for this turn (when enabled). Surfaced as activity chrome — like
   // tool/reasoning — rather than a separate chat message. Emitted by agent-turn after the run.

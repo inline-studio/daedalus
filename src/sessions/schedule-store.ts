@@ -319,6 +319,15 @@ export class ScheduleStore {
   // as a pre-existing schedule and ask "reschedule or leave?" instead of just
   // delivering it. Pending-only gives the agent the set of genuinely upcoming
   // schedules without the self-collision.
+  // Number of armed (pending/firing) runtime schedules — the web status bar's "cron" count.
+  countActive(): number {
+    this.ensureFreshConnection();
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM scheduled_messages WHERE status IN ('pending','firing')`)
+      .get() as { n: number } | undefined;
+    return row ? Number(row.n) : 0;
+  }
+
   listForAgent(byAgent: string): ScheduledMessage[] {
     this.ensureFreshConnection();
     const rows = this.db

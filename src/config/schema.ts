@@ -471,6 +471,11 @@ export const AgentManifestSchema = z.object({
   maxTurns: z.number().int().positive().default(50),
   maxTokens: z.number().int().positive().default(4096),
   temperature: z.number().min(0).max(2).optional(),
+  // The model's context window in tokens — powers the web UI's context readout
+  // (65.0k/256.0k · 25%). Optional: well-known model families are inferred (see
+  // providers/model-info.ts); set this for LiteLLM aliases and local models. When neither
+  // is known the UI shows a plain token count instead of a percentage.
+  contextWindow: z.number().int().positive().optional(),
   // Model reasoning ("thinking").
   //   enabled      — request Anthropic extended thinking (budget_tokens). ANTHROPIC ONLY: the
   //                  OpenAI-compatible path emits reasoning on its own, so this flag is ignored
