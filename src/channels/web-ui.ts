@@ -138,6 +138,15 @@ export const WEB_UI_HTML = `<!doctype html>
      feel (à la ChatGPT/Claude). Only the user's own messages get a bubble. */
   .msg.assistant { align-self: flex-start; background: transparent; padding: 0; line-height: 1.6; }
   .msg p { margin: 0 0 8px; } .msg p:last-child { margin-bottom: 0; }
+  /* Headings inside a chat bubble. marked emits real h1-h6 (the old renderer
+     forced everything to h2); keep them compact so a leading "# Title" heading
+     doesn't blow out the bubble. */
+  .msg h1, .msg h2, .msg h3, .msg h4, .msg h5, .msg h6 { margin: 12px 0 6px; line-height: 1.3; font-weight: 600; }
+  .msg :first-child { margin-top: 0; }
+  .msg h1 { font-size: 1.35em; } .msg h2 { font-size: 1.2em; } .msg h3 { font-size: 1.08em; }
+  .msg h4, .msg h5, .msg h6 { font-size: 1em; }
+  .msg blockquote { margin: 8px 0; padding: 0 12px; border-left: 3px solid #30363d; color: #9da7b3; }
+  .msg ul, .msg ol { margin: 0 0 8px; padding-left: 22px; }
   .msg pre { position: relative; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px; padding-right: 60px; overflow-x: auto; }
   .msg code { background: #0d1117; border: 1px solid #30363d; border-radius: 4px; padding: 1px 4px; font-size: 13px; }
   .msg pre code { background: none; border: none; padding: 0; }
@@ -301,6 +310,10 @@ export const WEB_UI_HTML = `<!doctype html>
     </div>
   </footer>
   </div>
+<!-- Markdown rendering + HTML sanitizing. Served locally by the daedalus server
+     (see web.ts) so the UI keeps working offline with no third-party requests. -->
+<script src="/vendor/purify.min.js"></script>
+<script src="/vendor/marked.umd.js"></script>
 <script>
 (function () {
   var LS = window.localStorage;
@@ -384,75 +397,39 @@ export const WEB_UI_HTML = `<!doctype html>
 
   function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
 
-  // Minimal Markdown → HTML (escape first, then a safe subset).
+  // Markdown → sanitized HTML. marked does the GFM parse (headings, lists,
+  // tables, fenced code with a language-* class), DOMPurify strips anything
+  // unsafe before it reaches the DOM. Both are loaded as /vendor/*.js includes
+  // ahead of this script. We then add a Copy button to each code block and
+  // force links open safely in a new tab.
   function md(src) {
-    var blocks = [];
-    var h = esc(src == null ? "" : src);
-    h = h.replace(/\\\`\\\`\\\`([\\s\\S]*?)\\\`\\\`\\\`/g, function (_, c) {
-      blocks.push("<pre><button class=\\"copy-btn\\" type=\\"button\\">Copy</button><code>" + c.replace(/^\\n/, "") + "</code></pre>"); return "\\u0000" + (blocks.length - 1) + "\\u0000";
-    });
-    h = h.replace(/\\\`([^\\\`]+)\\\`/g, "<code>$1</code>");
-    h = h.replace(/^### (.*)$/gm, "<h3>$1</h3>").replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h2>$1</h2>");
-    h = h.replace(/\\*\\*([^*]+)\\*\\*/g, "<strong>$1</strong>").replace(/\\*([^*]+)\\*/g, "<em>$1</em>");
-    h = h.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)\\s]+)\\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-    // unordered lists
-    h = h.replace(/(?:^|\\n)((?:- .*(?:\\n|$))+)/g, function (m, list) {
-      var items = list.trim().split(/\\n/).map(function (li) { return "<li>" + li.replace(/^- /, "") + "</li>"; }).join("");
-      return "\\n<ul>" + items + "</ul>";
-    });
-    // paragraphs / line breaks for the rest. A paragraph block that LOOKS
-    // like a GFM table (first line is pipe-delimited, second line is a
-    // dash-and-pipe separator) becomes a real <table>; otherwise wraps in <p>.
-    h = h.split(/\\n{2,}/).map(function (para) {
-      if (/^\\s*<(h2|h3|ul|pre)/.test(para)) return para;
-      var tbl = renderTable(para);
-      if (tbl) return tbl;
-      return "<p>" + para.replace(/\\n/g, "<br>") + "</p>";
-    }).join("");
-    h = h.replace(/\\u0000(\\d+)\\u0000/g, function (_, i) { return blocks[+i]; });
-    return h;
-  }
-
-  // Render a GFM table block to a <table> element, or return null when the
-  // block isn't one. Called by md() per paragraph block — runs AFTER
-  // htmlEscape, so the input pipe chars are still raw.
-  // Expected shape:
-  //   | header1 | header2 |
-  //   |---------|---------|
-  //   | cell    | cell    |
-  // Separator row tolerates spaces and colon alignment markers; both leading
-  // and trailing pipes are required (matches what Claude emits).
-  function renderTable(block) {
-    var lines = block.split(/\\n/).map(function (l) { return l.trim(); }).filter(Boolean);
-    if (lines.length < 2) return null;
-    var hdr = lines[0], sep = lines[1];
-    if (!/^\\|.+\\|$/.test(hdr)) return null;
-    if (!/^\\|[\\s:|-]+\\|$/.test(sep)) return null;
-    // Header pipe count must equal separator pipe count, otherwise it's a
-    // false positive (e.g. a code-snippet-looking line followed by an
-    // unrelated dashes row).
-    if ((hdr.match(/\\|/g) || []).length !== (sep.match(/\\|/g) || []).length) return null;
-    function cells(line) {
-      return line.slice(1, -1).split("|").map(function (c) { return c.trim(); });
+    if (src == null) src = "";
+    var raw;
+    try {
+      raw = window.marked.parse(String(src), { gfm: true, breaks: true });
+    } catch (_e) {
+      raw = "<p>" + esc(String(src)) + "</p>";
     }
-    var headers = cells(hdr);
-    var bodyLines = lines.slice(2);
-    // Strict: every post-separator line must be a pipe row. Mixing prose into
-    // the block would otherwise be silently dropped when we replace the whole
-    // block with <table>. Bail out and let it render as a normal paragraph.
-    for (var i = 0; i < bodyLines.length; i++) {
-      if (!/^\\|.+\\|$/.test(bodyLines[i])) return null;
+    var box = document.createElement("div");
+    box.innerHTML = window.DOMPurify.sanitize(raw);
+    // Copy button per code block, added AFTER sanitize so DOMPurify can't drop
+    // it. The click handler reads the <code> textContent, so the button label
+    // and the language class never end up in the copied snippet.
+    var pres = box.querySelectorAll("pre");
+    for (var i = 0; i < pres.length; i++) {
+      if (pres[i].querySelector(".copy-btn")) continue;
+      var btn = document.createElement("button");
+      btn.className = "copy-btn";
+      btn.type = "button";
+      btn.textContent = "Copy";
+      pres[i].insertBefore(btn, pres[i].firstChild);
     }
-    var thead = "<thead><tr>" + headers.map(function (h) { return "<th>" + h + "</th>"; }).join("") + "</tr></thead>";
-    var tbody = "<tbody>" + bodyLines.map(function (l) {
-      var c = cells(l);
-      // Pad/truncate to the header column count so a row with extra/missing
-      // pipes doesn't break alignment.
-      while (c.length < headers.length) c.push("");
-      if (c.length > headers.length) c = c.slice(0, headers.length);
-      return "<tr>" + c.map(function (x) { return "<td>" + x + "</td>"; }).join("") + "</tr>";
-    }).join("") + "</tbody>";
-    return "<table>" + thead + tbody + "</table>";
+    var links = box.querySelectorAll("a[href]");
+    for (var j = 0; j < links.length; j++) {
+      links[j].setAttribute("target", "_blank");
+      links[j].setAttribute("rel", "noopener noreferrer");
+    }
+    return box.innerHTML;
   }
 
   function attachmentHtml(a) {
