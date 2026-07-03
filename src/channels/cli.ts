@@ -9,9 +9,13 @@ export class CliChannel implements Channel {
   readonly defaultAgent: string;
   private rl: readline.Interface | null = null;
   private externalUser = "local";
+  // Live subagent verbosity: "summary" (spawn/tool/completion lines), "full" (+ each
+  // subagent's final reply text), "off" (spawns stay opaque).
+  private subagentEvents: "summary" | "full" | "off";
 
-  constructor(opts: { defaultAgent: string }) {
+  constructor(opts: { defaultAgent: string; subagentEvents?: "summary" | "full" | "off" }) {
     this.defaultAgent = opts.defaultAgent;
+    this.subagentEvents = opts.subagentEvents ?? "summary";
   }
 
   async start(ctx: ChannelContext): Promise<void> {
@@ -58,6 +62,39 @@ export class CliChannel implements Channel {
       }
     };
     return (ev) => {
+      // Subagent activity (origin-tagged events) prints as dim prefixed lines — handled
+      // BEFORE the switch so a subagent's text_delta never streams into the top-level reply.
+      if (ev.origin) {
+        if (this.subagentEvents === "off") return;
+        const label = ev.origin.path.join(" › ");
+        const line = (s: string) => {
+          endThinking();
+          process.stdout.write(`\x1b[2m[${label}] ${s}\x1b[0m\n`);
+        };
+        switch (ev.type) {
+          case "subagent_start":
+            line(`⚙ started: ${clip(ev.prompt, 100)}`);
+            break;
+          case "tool_use":
+            line(`tool: ${ev.name}`);
+            break;
+          case "subagent_end":
+            line(
+              ev.status === "complete"
+                ? "done"
+                : ev.status === "pending_question"
+                  ? "needs input"
+                  : "failed",
+            );
+            break;
+          case "turn_complete":
+            if (this.subagentEvents === "full" && ev.finalText) {
+              line(`reply: ${clip(ev.finalText, 300)}`);
+            }
+            break;
+        }
+        return;
+      }
       switch (ev.type) {
         case "thinking_delta":
           if (!inThinking) {
@@ -85,4 +122,9 @@ export class CliChannel implements Channel {
       }
     };
   }
+}
+
+function clip(s: string, n: number): string {
+  const one = s.replace(/\s+/g, " ").trim();
+  return one.length > n ? one.slice(0, n) + "…" : one;
 }

@@ -34,7 +34,7 @@ import { buildSecretsBackend } from "./secrets/store/factory.js";
 import { SecretsOpUnsupported } from "./secrets/store/base.js";
 import { initUserConfig } from "./init.js";
 import { runInstall, findComposeFile } from "./install.js";
-import { DISPATCH_RESULT_SENTINEL } from "./dispatch/base.js";
+import { DISPATCH_RESULT_SENTINEL, DISPATCH_EVENT_SENTINEL } from "./dispatch/base.js";
 import { exportMempalace } from "./cli/export-mempalace.js";
 import { runUpdate } from "./cli/update.js";
 import prompts from "prompts";
@@ -85,6 +85,11 @@ program
       const config = loadConfig(program.opts().config);
       await applyOneCli(config.onecli);
       const { runAgentTurn } = await import("./kernel/agent-turn.js");
+      // Live event streaming across the container hop: when the spawning dispatcher set
+      // DAE_EVENT_STREAM=ndjson, write each TurnEvent as a sentinel-framed JSON line as the
+      // turn unfolds. The leading newline guarantees the sentinel begins a fresh line even
+      // when interleaved with other stdout noise (same trick as the result line below).
+      const streamEvents = process.env.DAE_EVENT_STREAM === "ndjson";
       try {
         const result = await runAgentTurn({
           config,
@@ -95,6 +100,19 @@ program
           ...(opts.originChannel ? { originChannel: opts.originChannel } : {}),
           ...(opts.originExternalUser
             ? { originExternalUserId: opts.originExternalUser }
+            : {}),
+          ...(streamEvents
+            ? {
+                onEvent: (ev: import("./types.js").TurnEvent) => {
+                  try {
+                    process.stdout.write(
+                      "\n" + DISPATCH_EVENT_SENTINEL + JSON.stringify(ev) + "\n",
+                    );
+                  } catch {
+                    /* an unserialisable event must never break the turn */
+                  }
+                },
+              }
             : {}),
         });
         // The container dispatcher parses the sentinel-framed result line (BUG-01). The leading

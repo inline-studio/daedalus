@@ -82,6 +82,27 @@ Notes:
 - The CLI channel notes attachments (`[attachment: shot.png …]`) since a terminal can't
   render them; the Web channel streams them base64 over SSE.
 
+## Live sub-agent activity
+
+Streaming surfaces (Web, CLI) show delegated work as it happens. When the orchestrator
+calls `spawn_subagent`, the subagent's own turn events flow back tagged with an origin
+(`path` — the agent chain, e.g. `["cypher"]` or `["cypher", "reviewer"]` for a nested
+spawn — plus a `spawnId` grouping one delegation). This works across every dispatch
+mode: per-turn agent containers stream sentinel-framed event lines on stdout, which the
+container dispatcher forwards to the live sink.
+
+- **Web** renders each spawn as a collapsible panel inline in the reply — the delegated
+  prompt, then tool rows resolving ✓/✗ live, then a done / needs-input / failed state.
+- **CLI** prints dim prefixed lines (`[cypher] ⚙ started: …`, `[cypher] tool: bash`,
+  `[cypher] done`). Verbosity: `channels.cli.subagentEvents: summary` (default) /
+  `full` (adds each subagent's final reply text) / `off`.
+- Buffered channels (Telegram, WhatsApp) are unaffected — they still get only the
+  orchestrator's final reply.
+
+Subagent **text isn't** streamed to the user — the panel shows lifecycle + tool
+activity; the subagent's findings reach the user through the orchestrator's own reply,
+as before. Turn the streaming off globally with `runtime.subagentEventStream: false`.
+
 ## The other channels
 
 - **CLI** — an interactive REPL (`dae serve` with the cli channel enabled): each stdin

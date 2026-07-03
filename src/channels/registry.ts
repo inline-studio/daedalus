@@ -23,7 +23,12 @@ export function buildChannels(
 ): Channel[] {
   const out: Channel[] = [];
   if (config.cli?.enabled) {
-    out.push(new CliChannel({ defaultAgent: config.cli.defaultAgent }));
+    out.push(
+      new CliChannel({
+        defaultAgent: config.cli.defaultAgent,
+        subagentEvents: config.cli.subagentEvents,
+      }),
+    );
   }
   if (config.web?.enabled) {
     // Built-in login is active only when all three pieces are present (username + password

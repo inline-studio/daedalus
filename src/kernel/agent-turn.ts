@@ -209,6 +209,9 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       sessions,
       userId,
       dispatcher,
+      // Forward this turn's live sink so delegated work streams to the user. The
+      // wrapper in spawn_subagent re-tags subagent events with their origin.
+      ...(input.onEvent ? { onEvent: input.onEvent } : {}),
     });
     if (orchestratorTool) builtinTools.push(orchestratorTool);
 
