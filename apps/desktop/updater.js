@@ -1,10 +1,12 @@
 // Update checking, two tiers:
 //
-//   1. electron-updater against the GitHub Releases feed — downloads and applies in
-//      place. Works on Linux (AppImage) as-is and on macOS ONCE BUILDS ARE SIGNED:
-//      Squirrel.Mac validates the app's code signature before applying an update, so an
-//      unsigned mac build cannot self-update (electron-builder: "macOS application must
-//      be signed in order for auto updating to work").
+//   1. electron-updater against the rolling `desktop-latest` GitHub release (generic
+//      provider — the plain GitHub provider scans the repo's NEWEST release, which is
+//      almost always a server release here). Downloads and applies in place. Works on
+//      Linux/Windows as-is and on macOS ONCE BUILDS ARE SIGNED: Squirrel.Mac validates
+//      the app's code signature before applying an update, so an unsigned mac build
+//      cannot self-update (electron-builder: "macOS application must be signed in
+//      order for auto updating to work").
 //
 //   2. Fallback for exactly that unsigned-mac case (and any feed error): ask the GitHub
 //      releases API for the newest desktop release and open its page for a manual

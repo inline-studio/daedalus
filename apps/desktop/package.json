@@ -39,9 +39,8 @@
       "category": "Utility"
     },
     "publish": {
-      "provider": "github",
-      "owner": "inline-studio",
-      "repo": "daedalus"
+      "provider": "generic",
+      "url": "https://github.com/inline-studio/daedalus/releases/download/desktop-latest"
     },
     "win": {
       "target": [

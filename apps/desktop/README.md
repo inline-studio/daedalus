@@ -48,10 +48,19 @@ npm run dist   # electron-builder → dmg (mac, arm64+x64) / NSIS installer (win
 Unsigned by default — fine for your own machines (macOS will ask for a one-time
 Privacy & Security override on first launch of a downloaded copy).
 
-## Updates
+## Release & updates
 
-Distribution + updates run entirely from **GitHub Releases** (tag desktop builds
-`desktop-v<version>` so they don't collide with the server's `v0.1.0-<run>` tags):
+Releases are built by the **Desktop release** workflow
+(`.github/workflows/desktop.yml`): run it from the Actions tab with a version number
+and it builds all three platforms and publishes two releases — an immutable
+`desktop-v<version>` and the rolling **`desktop-latest`**, which is the auto-update
+feed (the app uses electron-updater's *generic* provider against it; the plain GitHub
+provider would scan the repo's newest release, which is almost always a *server*
+release here). macOS signing + notarisation activate automatically once the
+`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` /
+`APPLE_TEAM_ID` repo secrets exist.
+
+How updates behave per platform:
 
 - **Linux (AppImage), Windows (NSIS), and macOS once builds are signed:**
   electron-updater checks the GitHub feed at launch, downloads in the background, and

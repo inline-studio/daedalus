@@ -1,0 +1,125 @@
+name: Desktop release
+
+# Builds and releases the desktop app (apps/desktop) — deliberately SEPARATE from ci.yml:
+# the server releases on every main push (v0.1.0-<run>), while desktop releases are
+# manual (workflow_dispatch with a version) because three-OS Electron builds are slow
+# and the app's cadence is independent of the server's.
+#
+# Publishing model: every run creates an immutable `desktop-v<version>` release AND
+# updates the rolling `desktop-latest` release with the same assets (installers +
+# electron-updater's latest*.yml feeds). The app's auto-updater uses the GENERIC
+# provider pointed at desktop-latest's download URL — NOT the GitHub provider, which
+# scans the repo's newest release and would find a server release instead.
+#
+# macOS signing/notarisation activate automatically when the secrets exist
+# (CSC_LINK + CSC_KEY_PASSWORD for the Developer ID cert; APPLE_ID +
+# APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID for notarisation). Without them the
+# build is unsigned: fine for personal use; in-place mac auto-update stays disabled
+# (Squirrel.Mac requires a signature) and the app falls back to open-the-release-page.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Desktop app version (e.g. 0.2.0) — tags desktop-v<version>"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            artifact: mac
+          - os: windows-latest
+            artifact: win
+          - os: ubuntu-latest
+            artifact: linux
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Stamp version
+        run: npm version ${{ github.event.inputs.version }} --no-git-tag-version
+
+      - name: Build installers
+        env:
+          # Signing (mac): only when the secrets are configured. Auto-discovery is
+          # disabled so an unsigned CI keychain never fails the build.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --publish never
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir -p out
+          # Installers + the electron-updater feed files (latest*.yml + blockmaps).
+          find dist -maxdepth 1 -type f \
+            \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" -o -name "*.AppImage" \
+               -o -name "latest*.yml" -o -name "*.blockmap" \) \
+            -exec cp {} out/ \;
+          ls -la out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.artifact }}
+          path: apps/desktop/out/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Create the versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ github.event.inputs.version }}"
+          gh release create "desktop-v${V}" assets/* \
+            --title "Daedalus Desktop v${V}" \
+            --notes "Desktop app v${V} (dmg / NSIS / AppImage). Auto-update feed: the desktop-latest release." \
+            --latest=false
+
+      - name: Update the rolling desktop-latest release (the auto-update feed)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ github.event.inputs.version }}"
+          if gh release view desktop-latest >/dev/null 2>&1; then
+            # Replace assets in place; the tag itself stays.
+            for f in assets/*; do gh release upload desktop-latest "$f" --clobber; done
+            gh release edit desktop-latest \
+              --title "Daedalus Desktop (latest: v${V})" \
+              --notes "Rolling auto-update feed. Current version: v${V} (see desktop-v${V})." \
+              --latest=false
+          else
+            gh release create desktop-latest assets/* \
+              --title "Daedalus Desktop (latest: v${V})" \
+              --notes "Rolling auto-update feed. Current version: v${V} (see desktop-v${V})." \
+              --latest=false
+          fi

@@ -13,6 +13,17 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Desktop release workflow.** `.github/workflows/desktop.yml` (manual dispatch with a
+  version) builds the app on all three platforms and publishes an immutable
+  `desktop-v<version>` release plus the rolling **`desktop-latest`** release that
+  serves as the auto-update feed — the updater now uses electron-updater's generic
+  provider against it, because the plain GitHub provider scans the repo's newest
+  release, which is almost always a *server* release (`v0.1.0-<run>`). macOS
+  signing/notarisation activate automatically once the Apple credential secrets exist;
+  unsigned builds still release fine.
+
+### Added
+
 - **Executor placement + environment awareness.** A sub-agent can declare
   `execution: executor` in its frontmatter to REQUIRE the user's machine — for
   sub-agent stacks whose tooling lives on the host (host-only CLIs, local projects).
