@@ -154,7 +154,10 @@ Scope and safety:
 - **Web** — a minimal HTTP + SSE surface. `POST /messages` to send (optionally with
   base64 attachments), `GET /events?externalUserId=…` for the reply stream. A bearer
   token (`web.token`) guards it when set. The built-in chat UI (served at `GET /`) is a
-  full session workspace: a sidebar with pinned sessions + title search + a section per
+  full session workspace: a sidebar with **Skills & Tools** (the library with lifecycle
+  actions — approve/reject pending agent-created skills, pin/unpin, archive; gated on
+  `brain.writable`) and **Artifacts** (searchable per-user file catalogue with
+  ownership-checked downloads) panels, pinned sessions + title search, a section per
   enabled messaging channel (the cross-channel Main thread, click-to-open), and a
   status bar showing gateway state, agent/cron counts, a context-window readout
   (`65.0k/200.0k · 32%` — the last turn's input tokens vs the agent's `contextWindow`),

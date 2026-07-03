@@ -82,6 +82,18 @@ export class WebChannel implements Channel {
   private listAgentDetails: (() => Promise<Array<Record<string, unknown>>>) | undefined;
   private listSchedules: (() => Promise<Record<string, unknown>>) | undefined;
   private listActivity: ((userId: string) => Promise<Array<Record<string, unknown>>>) | undefined;
+  private skillsProvider:
+    | {
+        list: () => Promise<Record<string, unknown>>;
+        action: (name: string, action: string) => Promise<{ ok: boolean; error?: string }>;
+      }
+    | undefined;
+  private artifactsProvider:
+    | {
+        list: (userId: string, q: string) => Promise<Array<Record<string, unknown>>>;
+        read: (userId: string, ref: string) => Promise<{ data: Buffer; mediaType: string; filename?: string } | null>;
+      }
+    | undefined;
 
   constructor(opts: {
     defaultAgent: string;
@@ -115,6 +127,16 @@ export class WebChannel implements Channel {
     listAgentDetails?: () => Promise<Array<Record<string, unknown>>>;
     listSchedules?: () => Promise<Record<string, unknown>>;
     listActivity?: (userId: string) => Promise<Array<Record<string, unknown>>>;
+    // Skills + artifacts panels (GET /skills, POST /skills/action, GET /artifacts,
+    // GET /artifacts/file) — injected by serve like the other viewer providers.
+    skillsProvider?: {
+      list: () => Promise<Record<string, unknown>>;
+      action: (name: string, action: string) => Promise<{ ok: boolean; error?: string }>;
+    };
+    artifactsProvider?: {
+      list: (userId: string, q: string) => Promise<Array<Record<string, unknown>>>;
+      read: (userId: string, ref: string) => Promise<{ data: Buffer; mediaType: string; filename?: string } | null>;
+    };
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -134,6 +156,8 @@ export class WebChannel implements Channel {
     this.listAgentDetails = opts.listAgentDetails;
     this.listSchedules = opts.listSchedules;
     this.listActivity = opts.listActivity;
+    this.skillsProvider = opts.skillsProvider;
+    this.artifactsProvider = opts.artifactsProvider;
   }
 
   // Whether this user currently has a `dae remote` executor connected — serve uses it to
@@ -311,6 +335,75 @@ export class WebChannel implements Channel {
         }
         if (req.method === "POST" && pathname === "/rpc/result") {
           await this.handleRpcResult(req, res, url, loginUser);
+          return;
+        }
+        if (req.method === "GET" && pathname === "/skills") {
+          const body = this.skillsProvider
+            ? await this.skillsProvider.list().catch(() => ({ skills: [], pending: [] }))
+            : { skills: [], pending: [] };
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(body));
+          return;
+        }
+        if (req.method === "POST" && pathname === "/skills/action") {
+          if (!this.skillsProvider) {
+            res.writeHead(404);
+            res.end("not available");
+            return;
+          }
+          const body = await readJson(req);
+          const name = typeof body.name === "string" ? body.name : "";
+          const action = typeof body.action === "string" ? body.action : "";
+          if (!name || !action) {
+            res.writeHead(400);
+            res.end("name and action required");
+            return;
+          }
+          const result = await this.skillsProvider.action(name, action).catch((err) => ({
+            ok: false,
+            error: (err as Error).message,
+          }));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.method === "GET" && pathname === "/artifacts") {
+          const artUser = loginUser ?? url.searchParams.get("externalUserId");
+          let files: Array<Record<string, unknown>> = [];
+          if (artUser && this.artifactsProvider && this.sessions) {
+            const userId = this.sessions.resolveUser(this.id, artUser);
+            files = await this.artifactsProvider
+              .list(userId, url.searchParams.get("q") ?? "")
+              .catch(() => []);
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ files }));
+          return;
+        }
+        if (req.method === "GET" && pathname === "/artifacts/file") {
+          const artUser = loginUser ?? url.searchParams.get("externalUserId");
+          const ref = url.searchParams.get("ref") ?? "";
+          if (!artUser || !ref || !this.artifactsProvider || !this.sessions) {
+            res.writeHead(400);
+            res.end("externalUserId and ref required");
+            return;
+          }
+          const userId = this.sessions.resolveUser(this.id, artUser);
+          const file = await this.artifactsProvider.read(userId, ref).catch(() => null);
+          if (!file) {
+            res.writeHead(404);
+            res.end("not found");
+            return;
+          }
+          // Content-Disposition uses a sanitised ASCII fallback name; inline rendering is
+          // left to the browser for images/PDFs via the real media type.
+          const safeName = (file.filename ?? "artifact").replace(/[^\w.-]+/g, "_").slice(0, 80) || "artifact";
+          res.writeHead(200, {
+            "Content-Type": file.mediaType || "application/octet-stream",
+            "Content-Length": file.data.length,
+            "Content-Disposition": `attachment; filename="${safeName}"`,
+          });
+          res.end(file.data);
           return;
         }
         if (req.method === "GET" && pathname === "/activity") {

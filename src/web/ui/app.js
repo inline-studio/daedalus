@@ -1548,6 +1548,173 @@
     renderCronPopover();
   });
 
+  // --- Modal panels: Skills & Tools / Artifacts (sidebar nav) -------------------------------
+  function closePanel() {
+    $("panel-overlay").style.display = "none";
+  }
+  function openPanel(title) {
+    $("panel-title").textContent = title;
+    $("panel-body").innerHTML = "";
+    $("panel-overlay").style.display = "flex";
+    return $("panel-body");
+  }
+  $("panel-close").addEventListener("click", closePanel);
+  $("panel-overlay").addEventListener("click", function (e) { if (e.target === $("panel-overlay")) closePanel(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && $("panel-overlay").style.display !== "none") closePanel();
+  });
+
+  function pRow(title, badges, sub, actions) {
+    var el = document.createElement("div");
+    el.className = "p-row";
+    var main = document.createElement("div");
+    main.className = "main";
+    var t = document.createElement("div");
+    t.className = "title";
+    t.appendChild(document.createTextNode(title));
+    (badges || []).forEach(function (b) {
+      var s = document.createElement("span");
+      s.className = "badge " + (b.cls || "");
+      s.textContent = b.label;
+      t.appendChild(s);
+    });
+    main.appendChild(t);
+    if (sub) {
+      var d = document.createElement("span");
+      d.className = "sub";
+      d.textContent = sub;
+      d.title = sub;
+      main.appendChild(d);
+    }
+    el.appendChild(main);
+    if (actions && actions.length) {
+      var act = document.createElement("div");
+      act.className = "p-act";
+      actions.forEach(function (a) { act.appendChild(a); });
+      el.appendChild(act);
+    }
+    return el;
+  }
+  function actBtn(label, cls, fn) {
+    var b = document.createElement("button");
+    b.type = "button";
+    if (cls) b.className = cls;
+    b.textContent = label;
+    b.addEventListener("click", fn);
+    return b;
+  }
+  function skillAction(name, action) {
+    fetch("/skills/action?externalUserId=" + encodeURIComponent(uid), {
+      method: "POST", headers: authHeaders(), body: JSON.stringify({ name: name, action: action }),
+    })
+      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (j && !j.ok) statusEl.textContent = "skill " + action + " failed: " + (j.error || "unknown");
+        renderSkillsPanel();
+      })
+      .catch(function () { statusEl.textContent = "skill " + action + " failed"; });
+  }
+  function renderSkillsPanel() {
+    var body = openPanel("Skills & Tools");
+    fetch("/skills?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
+      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j) return;
+        body.innerHTML = "";
+        var writable = Boolean(j.writable);
+        if (!writable) {
+          var note = document.createElement("div");
+          note.className = "panel-note";
+          note.textContent = "Brain is read-only — lifecycle actions are disabled (brain.writable).";
+          body.appendChild(note);
+        }
+        var pending = j.pending || [];
+        if (pending.length) {
+          group(body, "Pending approval");
+          pending.forEach(function (p) {
+            body.appendChild(pRow(
+              p.name,
+              [{ label: p.patchesExisting ? "patch" : "new", cls: "pending" }],
+              p.description,
+              writable ? [
+                actBtn("Approve", "ok", function () { skillAction(p.name, "approve"); }),
+                actBtn("Reject", "danger", function () { skillAction(p.name, "reject"); }),
+              ] : [],
+            ));
+          });
+        }
+        group(body, "Skills");
+        (j.skills || []).forEach(function (s) {
+          var badges = [];
+          if (s.origin === "agent") badges.push({ label: "agent", cls: "agent" });
+          if (s.status === "stale") badges.push({ label: "stale", cls: "stale" });
+          if (s.pinned) badges.push({ label: "✦ pinned", cls: "agent" });
+          var actions = [];
+          if (writable) {
+            actions.push(actBtn(s.pinned ? "Unpin" : "Pin", "", function () {
+              skillAction(s.name, s.pinned ? "unpin" : "pin");
+            }));
+            if (s.origin === "agent") {
+              actions.push(actBtn("Archive", "danger", function () {
+                if (window.confirm("Archive skill '" + s.name + "'? (recoverable under skills/.archive)")) {
+                  skillAction(s.name, "archive");
+                }
+              }));
+            }
+          }
+          body.appendChild(pRow(s.name, badges, s.description || "(no description)", actions));
+        });
+        if (!(j.skills || []).length && !pending.length) body.appendChild(pRow("(no skills)", [], ""));
+      })
+      .catch(function () {});
+  }
+  function fmtBytes(n) {
+    if (!n && n !== 0) return "";
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+    if (n >= 1024) return Math.round(n / 1024) + " KB";
+    return n + " B";
+  }
+  function renderArtifactsPanel() {
+    var body = openPanel("Artifacts");
+    var searchWrap = document.createElement("div");
+    searchWrap.className = "panel-search";
+    var input = document.createElement("input");
+    input.type = "search";
+    input.placeholder = "Search files…";
+    searchWrap.appendChild(input);
+    body.appendChild(searchWrap);
+    var list = document.createElement("div");
+    body.appendChild(list);
+    function load(q) {
+      fetch("/artifacts?externalUserId=" + encodeURIComponent(uid) + (q ? "&q=" + encodeURIComponent(q) : ""), { headers: authHeaders() })
+        .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+        .then(function (j) {
+          if (!j) return;
+          list.innerHTML = "";
+          (j.files || []).forEach(function (f) {
+            var dl = document.createElement("a");
+            dl.textContent = "Download";
+            dl.href = "/artifacts/file?externalUserId=" + encodeURIComponent(uid) +
+              "&ref=" + encodeURIComponent(f.ref) + (token ? "&token=" + encodeURIComponent(token) : "");
+            var sub = [f.mediaType, fmtBytes(f.bytes), String(f.uploadedAt || "").slice(0, 10), f.summary]
+              .filter(Boolean).join(" · ");
+            list.appendChild(pRow(f.filename || f.ref.slice(0, 18) + "…", [], sub, [dl]));
+          });
+          if (!(j.files || []).length) list.appendChild(pRow(q ? "(no matches)" : "(no files yet)", [], ""));
+        })
+        .catch(function () {});
+    }
+    var debounce = null;
+    input.addEventListener("input", function () {
+      clearTimeout(debounce);
+      var q = input.value.trim();
+      debounce = setTimeout(function () { load(q); }, 250);
+    });
+    load("");
+  }
+  $("nav-skills").addEventListener("click", renderSkillsPanel);
+  $("nav-artifacts").addEventListener("click", renderArtifactsPanel);
+
   // Continuous light poll: pulses the agents button while anything is in flight, shows
   // the active count, and live-refreshes the agents popover when it's open.
   function pollActivity() {

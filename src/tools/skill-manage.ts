@@ -138,6 +138,37 @@ export async function rejectPendingSkill(brainPath: string, name: string): Promi
   await fs.rm(from, { recursive: true, force: true });
 }
 
+// Pin / unpin a live skill (curator exemption). Frontmatter rewrite, validated.
+export async function setSkillPinned(brainPath: string, name: string, pinned: boolean): Promise<void> {
+  if (!NAME_RE.test(name)) throw new Error(`invalid skill name '${name}'`);
+  const dir = path.join(skillsRoot(brainPath), name);
+  assertUnderBrain(brainPath, dir);
+  const read = await readSkillAt(dir);
+  if (!read) throw new Error(`no skill '${name}'`);
+  const text = renderSkillFile(name, { ...read.data, pinned }, read.body);
+  await fs.writeFile(path.join(dir, "SKILL.md"), text, "utf8");
+  await commitBrainChange(brainPath, `skill(${name}): ${pinned ? "pin" : "unpin"}`);
+}
+
+// Archive a live skill (recoverable move to skills/.archive). Same guard rails as the
+// tool's archive action: pinned and human-authored skills are refused.
+export async function archiveSkill(brainPath: string, name: string): Promise<void> {
+  if (!NAME_RE.test(name)) throw new Error(`invalid skill name '${name}'`);
+  const skill = await loadSkill(brainPath, name);
+  if (!skill) throw new Error(`no skill '${name}'`);
+  if (skill.manifest.pinned) throw new Error(`skill '${name}' is pinned`);
+  if (skill.manifest.origin !== "agent") throw new Error(`skill '${name}' is human-authored`);
+  const dest = path.join(
+    skillsRoot(brainPath),
+    ARCHIVE_DIR,
+    `${name}-${new Date().toISOString().slice(0, 10)}`,
+  );
+  assertUnderBrain(brainPath, dest);
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  await fs.rename(path.join(skillsRoot(brainPath), name), dest);
+  await commitBrainChange(brainPath, `skill(${name}): archive`);
+}
+
 // --- The tool ---
 
 export function buildSkillManageTool(config: ArtemisConfig): ToolImpl {

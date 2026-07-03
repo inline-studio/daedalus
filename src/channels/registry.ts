@@ -27,6 +27,16 @@ export function buildChannels(
     schedules?: () => Promise<Record<string, unknown>>;
     // In-flight turns for a user (GET /activity) — what every agent is doing right now.
     activity?: (userId: string) => Promise<Array<Record<string, unknown>>>;
+    // Skills panel: the library + pending queue, and the lifecycle actions.
+    skills?: {
+      list: () => Promise<Record<string, unknown>>;
+      action: (name: string, action: string) => Promise<{ ok: boolean; error?: string }>;
+    };
+    // Artifacts panel: the per-user attachment catalogue + ownership-checked reads.
+    artifacts?: {
+      list: (userId: string, q: string) => Promise<Array<Record<string, unknown>>>;
+      read: (userId: string, ref: string) => Promise<{ data: Buffer; mediaType: string; filename?: string } | null>;
+    };
   },
 ): Channel[] {
   const out: Channel[] = [];
@@ -104,6 +114,8 @@ export function buildChannels(
         ...(extras?.abort ? { abortTurn: extras.abort } : {}),
         ...(extras?.schedules ? { listSchedules: extras.schedules } : {}),
         ...(extras?.activity ? { listActivity: extras.activity } : {}),
+        ...(extras?.skills ? { skillsProvider: extras.skills } : {}),
+        ...(extras?.artifacts ? { artifactsProvider: extras.artifacts } : {}),
         ...(listAgentDetails ? { listAgentDetails } : {}),
         ...(w.remoteExec?.enabled
           ? { remoteExec: { enabled: true, timeoutMs: w.remoteExec.timeoutMs } }

@@ -369,6 +369,25 @@ export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> 
         prompt();
         return;
       }
+      if (text === "/skills") {
+        void fetch(`${base}/skills?externalUserId=${encodeURIComponent(externalUserId)}`, { headers: authHeaders() })
+          .then((r) => (r.ok ? (r.json() as Promise<{ skills?: Array<Record<string, unknown>>; pending?: Array<Record<string, unknown>> }>) : null))
+          .then((j) => {
+            for (const p of j?.pending ?? []) {
+              process.stdout.write(`${String(p.name).padEnd(24)} ${dim(`PENDING (${p.patchesExisting ? "patch" : "new"}) — dae skill approve|reject ${p.name}`)}\n`);
+            }
+            for (const s of j?.skills ?? []) {
+              const marks = [s.origin === "agent" ? "agent" : null, s.status === "stale" ? "stale" : null, s.pinned ? "pinned" : null]
+                .filter(Boolean)
+                .join(", ");
+              process.stdout.write(`${String(s.name).padEnd(24)} ${dim(`${marks ? "[" + marks + "] " : ""}${s.description ?? ""}`)}\n`);
+            }
+            if (!j?.skills?.length && !j?.pending?.length) process.stdout.write(dim("(no skills)\n"));
+            prompt();
+          })
+          .catch(() => { process.stdout.write(dim("[skills fetch failed]\n")); prompt(); });
+        return;
+      }
       if (text === "/activity") {
         void fetch(`${base}/activity?externalUserId=${encodeURIComponent(externalUserId)}`, { headers: authHeaders() })
           .then((r) => (r.ok ? (r.json() as Promise<{ turns?: Array<Record<string, unknown>> }>) : null))

@@ -19,6 +19,16 @@
       <b>DAEDALUS</b>
     </div>
     <div class="sb-head"><button id="new-convo" type="button">＋ New session</button></div>
+    <nav class="sb-nav">
+      <button class="sb-nav-item" id="nav-skills" type="button">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M10.5 2.5a3 3 0 0 0-3.9 3.9L2.5 10.5a1.4 1.4 0 0 0 0 2 1.4 1.4 0 0 0 2 0l4.1-4.1a3 3 0 0 0 3.9-3.9L10.4 6.6 9.4 5.6 11.5 3.5Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+        Skills &amp; Tools
+      </button>
+      <button class="sb-nav-item" id="nav-artifacts" type="button">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M9.5 1.5H4A1.5 1.5 0 0 0 2.5 3v10A1.5 1.5 0 0 0 4 14.5h8A1.5 1.5 0 0 0 13.5 13V5.5Zm0 0V5.5H13.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+        Artifacts
+      </button>
+    </nav>
     <div class="sb-search"><input id="convo-search" type="search" placeholder="Search sessions…" autocomplete="off" /></div>
     <div id="convo-list"></div>
     <div class="sb-foot" id="sb-channels"></div>
@@ -70,6 +80,14 @@
   </div>
   <!-- Hermes-style status bar: supervisor state on the left (gateway / agents / cron),
        session metrics on the right (context window fill, session timer, versions). -->
+  <!-- Centered modal panel: Skills & Tools / Artifacts (larger than the status-bar
+       popovers; overlay click or Esc closes). -->
+  <div id="panel-overlay" style="display:none">
+    <div id="panel">
+      <div class="panel-head"><span id="panel-title"></span><button id="panel-close" type="button" title="Close">✕</button></div>
+      <div class="panel-body" id="panel-body"></div>
+    </div>
+  </div>
   <!-- The agents/cron items are BUTTONS: clicking opens an anchored popover with the
        live detail (agents + what they're doing right now; schedules + next fires). -->
   <div id="popover" style="display:none">

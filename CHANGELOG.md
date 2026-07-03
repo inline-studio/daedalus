@@ -13,6 +13,19 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Skills & Tools + Artifacts panels.** Two sidebar nav items (the reference layout's
+  top-nav) opening modal panels. **Skills**: the live library with badges
+  (agent-created / stale / pinned) and the lifecycle actions the self-learning system
+  defines — approve/reject the pending queue, pin/unpin (curator exemption), archive
+  (agent-created only, recoverable) — via `GET /skills` + `POST /skills/action`; all
+  actions gated on `brain.writable` and mirroring `dae skill`'s guard rails. Per-agent
+  granting stays in frontmatter by design (no enable/disable switch). **Artifacts**: a
+  searchable browser over the per-user attachment catalogue (uploads + agent-generated
+  files) with ownership-checked downloads (`GET /artifacts`, `GET /artifacts/file`).
+  The remote CLI gains `/skills`.
+
+### Added
+
 - **Live activity view.** The status bar's **agents** button pulses while anything is
   in flight and shows the active count; clicking it opens an Agents · Activity popover —
   in-flight turns across all your conversations AND scheduled fires, each with a live

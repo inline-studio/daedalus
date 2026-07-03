@@ -137,11 +137,85 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     };
   };
 
+  // Skills panel: the live library + the pending-approval queue, with the lifecycle
+  // actions the self-learning system already defines (approve/reject/pin/unpin/archive).
+  // Mutations require a writable brain — the same gate skill_manage enforces.
+  const skillsProvider = {
+    list: async (): Promise<Record<string, unknown>> => {
+      const { listPendingSkills } = await import("./tools/skill-manage.js");
+      const { listSkills, loadSkill } = await import("./brain/skills.js");
+      const names = await listSkills(config.brain.path).catch(() => []);
+      const skills: Array<Record<string, unknown>> = [];
+      for (const n of names) {
+        const s = await loadSkill(config.brain.path, n).catch(() => null);
+        if (!s) continue;
+        skills.push({
+          name: s.manifest.name,
+          description: s.manifest.description,
+          version: s.manifest.version,
+          origin: s.manifest.origin,
+          status: s.manifest.status,
+          pinned: s.manifest.pinned,
+          triggers: s.manifest.triggers,
+        });
+      }
+      const pending = await listPendingSkills(config.brain.path).catch(() => []);
+      return { skills, pending, writable: config.brain.writable };
+    },
+    action: async (name: string, action: string): Promise<{ ok: boolean; error?: string }> => {
+      if (!config.brain.writable) {
+        return { ok: false, error: "the brain is mounted read-only (brain.writable is false)" };
+      }
+      const sm = await import("./tools/skill-manage.js");
+      try {
+        if (action === "approve") await sm.approvePendingSkill(config.brain.path, name);
+        else if (action === "reject") await sm.rejectPendingSkill(config.brain.path, name);
+        else if (action === "pin") await sm.setSkillPinned(config.brain.path, name, true);
+        else if (action === "unpin") await sm.setSkillPinned(config.brain.path, name, false);
+        else if (action === "archive") await sm.archiveSkill(config.brain.path, name);
+        else return { ok: false, error: `unknown action '${action}'` };
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  };
+
+  // Artifacts panel: the per-user attachment catalogue (uploads + agent-generated files),
+  // with ownership-checked downloads out of the content-addressable store.
+  const artifactsProvider = {
+    list: async (userId: string, q: string): Promise<Array<Record<string, unknown>>> => {
+      if (!attachmentIndex) return [];
+      const rows = q.trim() ? attachmentIndex.search(userId, q, 50) : attachmentIndex.recent(userId, 50);
+      return rows.map((r) => ({
+        ref: r.ref,
+        filename: r.filename,
+        mediaType: r.mediaType,
+        bytes: r.bytes,
+        summary: r.summary,
+        uploadedAt: r.uploadedAt,
+      }));
+    },
+    read: async (
+      userId: string,
+      ref: string,
+    ): Promise<{ data: Buffer; mediaType: string; filename?: string } | null> => {
+      if (!attachmentIndex) return null;
+      const meta = attachmentIndex.getByRef(userId, ref);
+      if (!meta) return null;
+      const data = await attachments.readBuffer(ref);
+      if (!data) return null;
+      return { data, mediaType: meta.mediaType, ...(meta.filename ? { filename: meta.filename } : {}) };
+    },
+  };
+
   const channels = buildChannels(config.channels, sessions, config.identity.name, config.brain.path, {
     status,
     abort: abortTurn,
     schedules: listSchedulesForUi,
     activity: async (userId) => activity.listForUser(userId) as unknown as Array<Record<string, unknown>>,
+    skills: skillsProvider,
+    artifacts: artifactsProvider,
   });
   if (channels.length === 0) {
     log.error(
