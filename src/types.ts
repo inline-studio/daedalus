@@ -128,12 +128,23 @@ export type ProviderStreamEvent =
   // Terminal event: the complete, assembled result. Always the last event of a successful stream.
   | { type: "result"; result: CompletionResult };
 
+// Identifies which subagent an event came from, when a turn's event didn't originate in the
+// top-level agent itself. Attached by the orchestrator's spawn_subagent wrapper at each hop:
+// `path` is the chain of subagent names from the user-facing agent down to the emitter (e.g.
+// ["cypher"] for a direct subagent, ["cypher", "reviewer"] for its nested spawn), and `spawnId`
+// groups every event belonging to one top-level spawn_subagent call so a UI can render them as
+// one activity panel. Events with no `origin` are the top-level agent's own.
+export interface TurnEventOrigin {
+  path: string[];
+  spawnId: string;
+}
+
 // Kernel/channel-facing turn events. A superset of the provider deltas with the loop structure a
 // UI needs to render a turn live: round boundaries, the assembled tool call, and tool-execution
 // progress. The kernel forwards provider deltas as-is and adds the structural events. A sink that
 // receives these can render token-by-token (text_delta/thinking_delta), show tool activity
 // (tool_use → tool_running → tool_result), and know when the turn's reply is final (turn_complete).
-export type TurnEvent =
+export type TurnEvent = { origin?: TurnEventOrigin } & (
   | { type: "turn_start"; turn: number }
   | { type: "text_delta"; text: string }
   | { type: "thinking_delta"; text: string }
@@ -149,9 +160,21 @@ export type TurnEvent =
       type: "turn_complete";
       finalText: string;
       usage?: { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheCreationTokens?: number };
+      // Context-size readout: how full the model's window was on the LAST completion of the
+      // loop (input + cache tokens ≈ the whole replayed transcript). `window` is the model's
+      // context size when known (manifest `contextWindow` or family inference) — when absent
+      // the UI shows a plain count instead of a percentage.
+      context?: { inputTokens: number; window?: number };
     }
   // The conversation debug log for this turn (when enabled). Surfaced as activity chrome — like
   // tool/reasoning — rather than a separate chat message. Emitted by agent-turn after the run.
-  | { type: "debug_log"; path: string };
+  | { type: "debug_log"; path: string }
+  // Subagent lifecycle brackets, emitted by the orchestrator's spawn_subagent handler. Both carry
+  // an `origin` naming the spawned agent; every event the subagent's own turn produces arrives
+  // between them, re-tagged with the same origin. `status: "error"` means the dispatch threw
+  // (the subagent never produced a result).
+  | { type: "subagent_start"; prompt: string }
+  | { type: "subagent_end"; status: "complete" | "pending_question" | "error" }
+);
 
 export type TurnEventSink = (event: TurnEvent) => void;

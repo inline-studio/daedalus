@@ -46,10 +46,19 @@ export interface DispatchArgs {
   // string, so it crosses the container/worker hop. The turn injects it into the model's view of
   // the last user message for THIS turn only — it is never persisted (see IngestResult).
   turnDirective?: string;
-  // Optional live turn-event sink. Only meaningful for the IN-PROCESS dispatcher — it's a
-  // function, so the container/worker dispatchers (which JSON-serialise these args) drop it, and
-  // those paths stay buffered until streaming is wired across the process hop (Phase 2).
+  // Optional live turn-event sink. The in-process dispatcher forwards it directly; the
+  // persistent worker forwards events over its NDJSON HTTP stream; the one-shot container
+  // dispatcher forwards sentinel-framed event lines from the container's stdout. All three
+  // deliver the same TurnEvents, so streaming surfaces work regardless of dispatch mode.
   onEvent?: TurnEventSink;
+  // Remote execution (`dae remote` / the desktop executor): set by serve when the
+  // originating user has a connected executor. The turn's bash + read/write/edit then
+  // run on that user's machine via the supervisor's /rpc/exec bridge at `url`, guarded
+  // by `token` (the per-boot DAE_RPC_TOKEN). `env` describes the executor's machine
+  // (hostname/platform/arch/workspace) for the turn's execution-environment context
+  // line. Threaded into subagent spawns ONLY when the sub-agent declares
+  // `execution: executor` (see kernel/orchestrator.ts).
+  remoteExec?: { userId: string; url: string; token: string; env?: Record<string, string> };
 }
 
 // A file the agent attached to its reply (via the `attach_to_reply` tool). Carried as a
@@ -92,10 +101,15 @@ export type DispatchResult =
 
 export interface AgentDispatcher {
   readonly id: string;
+  // Abort an in-flight turn for this session, when the implementation supports it.
+  // Fire-and-forget best-effort: returns true when an in-flight turn was found and an
+  // abort was issued. In-process cancels via AbortSignal; the worker forwards to its
+  // own per-turn controllers; the container dispatcher force-removes the container.
+  abort?(sessionId: string): Promise<boolean>;
   // True when this dispatcher honors DispatchArgs.onEvent (forwards live turn events to the
-  // caller). In-process and the persistent worker do; the one-shot container dispatcher does not
-  // (its result crosses a stdout boundary as a single framed line). serve uses this to decide
-  // whether to engage a channel's streaming sink.
+  // caller). All three implementations now do — in-process directly, the persistent worker over
+  // its NDJSON HTTP stream, the one-shot container via sentinel-framed stdout event lines. serve
+  // uses this to decide whether to engage a channel's streaming sink.
   readonly streaming?: boolean;
   dispatch(args: DispatchArgs): Promise<DispatchResult>;
 }
@@ -106,6 +120,14 @@ export interface AgentDispatcher {
 // framed with this sentinel and the parser accepts ONLY a sentinel-framed line. Shared between
 // the entrypoint (src/index.ts) and the parser (dispatch/container.ts).
 export const DISPATCH_RESULT_SENTINEL = "__DAE_DISPATCH_RESULT__ ";
+
+// Same framing idea for LIVE turn events crossing the container hop: when the dispatcher asks
+// for streaming (DAE_EVENT_STREAM=ndjson), the agent-turn entrypoint writes each TurnEvent as a
+// sentinel-framed JSON line on stdout as the turn unfolds, and the container dispatcher parses
+// those lines and forwards them to DispatchArgs.onEvent. Events are display-facing chrome, not
+// control flow — a forged or garbled event line can at worst mislabel UI activity; the turn's
+// RESULT still only ever comes from the DISPATCH_RESULT_SENTINEL line.
+export const DISPATCH_EVENT_SENTINEL = "__DAE_TURN_EVENT__ ";
 
 // IMP-02: the optional origin identity (channel + external user id) is threaded into several
 // dispatch payloads (in-process, persistent worker, agent-worker) the same way; build it once,

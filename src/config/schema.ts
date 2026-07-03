@@ -63,6 +63,11 @@ export const RuntimeConfigSchema = z.object({
       containerPath: z.string().default("/shared"),
     })
     .default({ enabled: true, hostPath: "./data/shared", containerPath: "/shared" }),
+  // Live subagent event streaming. When true (default), a dispatcher with a live event
+  // sink asks spawned agent-turn containers to stream their TurnEvents back over stdout
+  // (DAE_EVENT_STREAM=ndjson), so streaming surfaces show delegated work as it happens.
+  // Turn off to keep subagent turns opaque (buffered final-result-only, the old behaviour).
+  subagentEventStream: z.boolean().default(true),
   // SEC-03: default resource limits applied to EVERY agent container. Deliberately
   // CONSERVATIVE (1 CPU / 1 GB / 512 pids) so a runaway agent can't starve co-located
   // services or take down the host — an agent that needs more raises them in its own
@@ -150,6 +155,47 @@ export const MemoryConfigSchema = z.object({
     .default({ enabled: true, maxFactsPerTurn: 8 }),
 });
 export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
+
+// Skill self-learning: the post-turn review pass that lets the agent create/patch its own
+// skills (via the skill_manage tool), plus the staleness curator that ages unused
+// agent-created skills out. Off by default — turning it on also requires `brain.writable:
+// true` (skill_manage refuses to write otherwise).
+export const SkillsConfigSchema = z.object({
+  learning: z
+    .object({
+      enabled: z.boolean().default(false),
+      // Optional model override for the review pass, used with the AGENT'S provider. Leave
+      // unset to reuse the agent's own model — same model means the review replays a warm
+      // prompt-cache prefix, so the pass is cheap.
+      model: z.string().optional(),
+      // Run the review only after substantial turns: at least this many tool calls, OR a
+      // skill was loaded this turn, OR the accumulated per-session nudge counter (below)
+      // crossed its threshold. Keeps trivial turns from paying an extra LLM call.
+      minToolCalls: z.number().int().positive().default(5),
+      // Cross-turn backstop: total tool calls accumulated in a session since the last
+      // skill_manage use; crossing it arms the next review even for small turns.
+      nudgeInterval: z.number().int().positive().default(10),
+      // When true (the default), skill_manage stages every create/patch under
+      // skills/.pending/ for human review (`dae skill pending|approve|reject`) instead of
+      // writing live. Turn off once the generated skills have earned trust.
+      writeApproval: z.boolean().default(true),
+      // Tool-loop budget for one review pass (it's a mini agent turn with only skill_manage).
+      maxReviewTurns: z.number().int().positive().default(6),
+      curator: z
+        .object({
+          enabled: z.boolean().default(true),
+          // When the curator sweep runs (cron, supervisor timezone).
+          schedule: z.string().default("0 4 * * 0"),
+          // Agent-created skills unused for this long are marked status: stale…
+          staleAfterDays: z.number().int().positive().default(30),
+          // …and this long moves them to skills/.archive/ (never deleted).
+          archiveAfterDays: z.number().int().positive().default(90),
+        })
+        .default({ enabled: true, schedule: "0 4 * * 0", staleAfterDays: 30, archiveAfterDays: 90 }),
+    })
+    .default({}),
+});
+export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
 
 // DEPRECATED. MemPalace has been removed from the daedalus stack (Graphiti is the memory
 // backend — see GraphitiConfigSchema). This schema is retained only so older configs that
@@ -282,7 +328,15 @@ export const StreamingConfigSchema = z.object({
 export type StreamingConfig = z.infer<typeof StreamingConfigSchema>;
 
 export const ChannelsConfigSchema = z.object({
-  cli: z.object({ enabled: z.boolean().default(false), defaultAgent: z.string() }).optional(),
+  cli: z
+    .object({
+      enabled: z.boolean().default(false),
+      defaultAgent: z.string(),
+      // How much live subagent activity to print: "summary" (default — spawn, tool names,
+      // completion), "full" (also each subagent's final reply text), "off" (opaque spawns).
+      subagentEvents: z.enum(["summary", "full", "off"]).default("summary"),
+    })
+    .optional(),
   web: z
     .object({
       enabled: z.boolean().default(false),
@@ -301,6 +355,22 @@ export const ChannelsConfigSchema = z.object({
       // Telegram-style `[date] Name: …` export). Falls back to the logged-in username
       // (login mode) or "You". Set this to e.g. your full name for nicer debug pastes.
       userName: z.string().optional(),
+      // Remote execution (the `dae remote` CLI): a laptop-side client connects an
+      // outbound SSE stream and becomes the EXECUTOR for its user's turns — bash and
+      // read/write/edit run on the laptop instead of the agent container. Off by
+      // default; turns from users without a connected executor are unaffected either way.
+      remoteExec: z
+        .object({
+          enabled: z.boolean().default(false),
+          // Per-request cap on how long the server waits for the laptop to return a
+          // result (the client enforces the command's own timeout separately).
+          timeoutMs: z.number().int().positive().default(180_000),
+          // Where agent containers reach the supervisor's internal /rpc/exec bridge.
+          // Defaults per dispatch mode (http://daedalus:<port> in docker,
+          // http://127.0.0.1:<port> in-process); set for non-standard topologies.
+          internalUrl: z.string().optional(),
+        })
+        .default({}),
     })
     .optional(),
   telegram: z
@@ -397,6 +467,7 @@ export const ArtemisConfigSchema = z.object({
   }),
   mcp: McpConfigSchema.default({}),
   memory: MemoryConfigSchema.default({ backend: "none", brainSync: { enabled: false, schedule: "0 */6 * * *" } }),
+  skills: SkillsConfigSchema.default({}),
   mempalace: MempalaceConfigSchema.default({
     localHttp: {
       enabled: false,
@@ -471,6 +542,19 @@ export const AgentManifestSchema = z.object({
   maxTurns: z.number().int().positive().default(50),
   maxTokens: z.number().int().positive().default(4096),
   temperature: z.number().min(0).max(2).optional(),
+  // The model's context window in tokens — powers the web UI's context readout
+  // (65.0k/256.0k · 25%). Optional: well-known model families are inferred (see
+  // providers/model-info.ts); set this for LiteLLM aliases and local models. When neither
+  // is known the UI shows a plain token count instead of a percentage.
+  contextWindow: z.number().int().positive().optional(),
+  // Where this agent's tools execute when spawned as a SUBAGENT:
+  //   "server"   — (default) the usual container/worker placement.
+  //   "executor" — REQUIRES the user's machine: the parent turn's connected executor
+  //                (`dae remote` / the desktop app). For sub-agents whose tooling lives
+  //                on the host (host-only CLIs, local projects). Spawning one without a
+  //                connected executor fails fast with a clear message. Top-level turns
+  //                ignore this — their placement is the per-conversation toggle.
+  execution: z.enum(["server", "executor"]).default("server"),
   // Model reasoning ("thinking").
   //   enabled      — request Anthropic extended thinking (budget_tokens). ANTHROPIC ONLY: the
   //                  OpenAI-compatible path emits reasoning on its own, so this flag is ignored
@@ -541,5 +625,14 @@ export const SkillManifestSchema = z.object({
       secrets: z.array(z.string()).default([]),
     })
     .default({ secrets: [] }),
+  // Who authored this skill. "agent" marks skills created by the skill-learning review pass
+  // (via skill_manage); the staleness curator only ever touches those — human-authored skills
+  // (the default, since existing SKILL.md files carry no origin) are never auto-transitioned.
+  origin: z.enum(["human", "agent"]).default("human"),
+  // Lifecycle state, managed by the curator: "stale" (unused past the threshold) demotes the
+  // skill in the system-prompt menu; archival moves the whole directory to skills/.archive/.
+  status: z.enum(["active", "stale"]).default("active"),
+  // Pinned skills are exempt from every curator transition (never marked stale or archived).
+  pinned: z.boolean().default(false),
 });
 export type SkillManifest = z.infer<typeof SkillManifestSchema>;

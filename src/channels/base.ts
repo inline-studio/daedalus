@@ -19,6 +19,11 @@ export interface IncomingMessage {
   conversationId?: string;
   // Routing override: if set, the named agent handles this message instead of the channel default.
   addressedTo?: string;
+  // Execution placement for THIS message's turn (web-only, needs remoteExec enabled).
+  // "local" (the default when the user's executor is connected) runs the turn's tools on
+  // the user's machine; "server" opts a message out and keeps everything server-side.
+  // Ignored when no executor is connected.
+  execution?: "local" | "server";
   text?: string;
   attachments?: IncomingAttachment[];
   receivedAt: string; // ISO

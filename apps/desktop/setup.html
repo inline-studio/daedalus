@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Connect to Daedalus</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
+         background: #0a0c10; color: #dbe4ec;
+         font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         -webkit-app-region: drag; }
+  .card { width: min(440px, 90vw); background: #0d1014; border: 1px solid #1b212a;
+          border-radius: 14px; padding: 28px; -webkit-app-region: no-drag; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; color: #2dd4bf; }
+  .brand b { color: #dbe4ec; font-size: 13px; letter-spacing: .18em; }
+  p { color: #8b949e; font-size: 13.5px; margin: 6px 0 18px; }
+  input { width: 100%; background: #0a0c10; color: #dbe4ec; border: 1px solid #2a313c;
+          border-radius: 9px; padding: 11px 13px; font: inherit; }
+  input:focus { outline: none; border-color: #14b8a6; }
+  button { width: 100%; margin-top: 12px; background: #14b8a6; color: #04211d; border: 1px solid #2dd4bf;
+           border-radius: 9px; padding: 11px; font: inherit; font-weight: 600; cursor: pointer; }
+  button:hover { background: #2dd4bf; }
+  .err { color: #f85149; font-size: 13px; min-height: 18px; margin-top: 10px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><path d="M5 27V5H27V27H10V10H22V22H16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <b>DAEDALUS</b>
+    </div>
+    <p>Where does your daedalus web channel live? Use the same URL you'd open in a
+       browser — your proxy address (e.g. <code>https://chat.example.com</code>) or a
+       local port (e.g. <code>http://127.0.0.1:8765</code>). Login happens in the app.</p>
+    <input id="url" type="url" placeholder="https://chat.example.com" autofocus />
+    <button id="go">Connect</button>
+    <div class="err" id="err"></div>
+  </div>
+<script>
+  const go = () => {
+    const url = document.getElementById("url").value.trim();
+    if (!url) return;
+    window.daedalusSetup.connect(url).then((r) => {
+      if (!r.ok) document.getElementById("err").textContent = r.error || "Couldn't connect.";
+    });
+  };
+  document.getElementById("go").addEventListener("click", go);
+  document.getElementById("url").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import { bashTool } from "./bash.js";
 import { readTool, writeTool, editTool, globTool } from "./file.js";
 import { webFetchTool, webSearchTool } from "./web.js";
+import { buildSkillManageTool } from "./skill-manage.js";
 import {
   scheduleMessageTool,
   cancelScheduledMessageTool,
@@ -25,6 +26,14 @@ const STATIC_TOOLS: Record<string, ToolImpl> = {
 const FACTORY_TOOLS: Record<string, ToolFactory> = {
   web_fetch: (c) => webFetchTool(c.web),
   web_search: (c) => webSearchTool(c.web),
+};
+
+// Explicit-opt-in tools: resolvable by NAME but excluded from the '*' wildcard (and from
+// builtinNames). skill_manage rewrites the brain — an agent gets it only by naming it in
+// `tools:` (or via the skill-review pass, which builds it directly); a subagent that was
+// handed wildcard tools must not silently inherit the ability to edit its own skills.
+const EXPLICIT_ONLY_TOOLS: Record<string, ToolFactory> = {
+  skill_manage: (c) => buildSkillManageTool(c),
 };
 
 // Tools that need a ScheduleStore (runtime scheduling). The store is opened by
@@ -66,7 +75,7 @@ export function selectBuiltins(
       out.push(STATIC_TOOLS[n]);
       continue;
     }
-    const f = FACTORY_TOOLS[n];
+    const f = FACTORY_TOOLS[n] ?? EXPLICIT_ONLY_TOOLS[n];
     if (f) {
       out.push(f(config));
       continue;

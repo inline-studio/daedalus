@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { ToolImpl, ToolContext } from "../tools/base.js";
+import type { TurnEventSink } from "../types.js";
 import type { ArtemisConfig, AgentManifest } from "../config/schema.js";
 import { loadAgent, listAgents } from "../brain/agents.js";
 import type { SessionStore } from "../sessions/store.js";
@@ -14,6 +16,14 @@ export interface OrchestratorContext {
   // dispatcher (synchronous kernel call). In docker mode this is the container
   // dispatcher (docker run a fresh subagent container, recursively).
   dispatcher: AgentDispatcher;
+  // The parent turn's live event sink, when it has one. spawn_subagent forwards the
+  // subagent's turn events into it — re-tagged with a TurnEventOrigin and bracketed by
+  // subagent_start/subagent_end — so streaming surfaces can show delegated work live.
+  onEvent?: TurnEventSink;
+  // The parent turn's remote-exec grant (the user's connected executor), when it has
+  // one. Only threaded into sub-agents that DECLARE `execution: executor` — everything
+  // else stays server-side regardless of the parent's placement.
+  remoteExec?: { userId: string; url: string; token: string; env?: Record<string, string> };
 }
 
 // `spawn_subagent` — the orchestrator's only handle to specialists. The subagent's
@@ -76,6 +86,21 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
       }
       const sub = await loadAgent(ctx.config.brain.path, name);
 
+      // Executor placement (WS7): a sub-agent declaring `execution: executor` must run
+      // its tools on the user's machine. Without a connected executor there is nothing
+      // to run on — fail fast with a message the orchestrator can relay, instead of
+      // silently executing host-only tooling inside a container where it doesn't exist.
+      const wantsExecutor = sub.manifest.execution === "executor";
+      if (wantsExecutor && !ctx.remoteExec) {
+        return {
+          content:
+            `subagent '${name}' requires the user's machine (execution: executor), but no ` +
+            `executor is connected for this conversation. Ask the user to start ` +
+            "`dae remote` (or enable Local Execution in the desktop app) and try again.",
+          isError: true,
+        };
+      }
+
       // The subagent owns its own per-user session (keyed by userId + subagent name).
       // Append the inbound turn before dispatching so the agent reads it from history.
       const subSession = ctx.sessions.getOrCreateSession(ctx.userId, sub.manifest.name);
@@ -103,18 +128,41 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
         });
       }
 
-      const result = await ctx.dispatcher.dispatch({
-        agentName: sub.manifest.name,
-        sessionId: subSession.id,
-        userId: ctx.userId,
-        isSubagent: true,
-        // Propagate the parent turn's origin so a subagent that arms
-        // schedule_message still routes deliveries back to the real user.
-        ...(toolCtx.originChannel ? { originChannel: toolCtx.originChannel } : {}),
-        ...(toolCtx.originExternalUserId
-          ? { originExternalUserId: toolCtx.originExternalUserId }
-          : {}),
-      });
+      // Live subagent visibility: bracket the dispatch with subagent_start/subagent_end and
+      // re-tag every event the subagent's turn emits with an origin naming it. A nested
+      // spawn's events arrive here already tagged by the child's own wrapper — prepend this
+      // hop's agent name so `path` reads user-facing-first, and overwrite `spawnId` so the
+      // whole delegation tree groups under the top-level spawn call.
+      const sink = ctx.onEvent;
+      const spawnId = randomUUID().slice(0, 8);
+      const origin = { path: [name], spawnId };
+      sink?.({ type: "subagent_start", prompt, origin });
+      let result;
+      try {
+        result = await ctx.dispatcher.dispatch({
+          agentName: sub.manifest.name,
+          sessionId: subSession.id,
+          userId: ctx.userId,
+          isSubagent: true,
+          // Propagate the parent turn's origin so a subagent that arms
+          // schedule_message still routes deliveries back to the real user.
+          ...(toolCtx.originChannel ? { originChannel: toolCtx.originChannel } : {}),
+          ...(toolCtx.originExternalUserId
+            ? { originExternalUserId: toolCtx.originExternalUserId }
+            : {}),
+          ...(sink
+            ? {
+                onEvent: (ev) =>
+                  sink({ ...ev, origin: { path: [name, ...(ev.origin?.path ?? [])], spawnId } }),
+              }
+            : {}),
+          ...(wantsExecutor && ctx.remoteExec ? { remoteExec: ctx.remoteExec } : {}),
+        });
+      } catch (err) {
+        sink?.({ type: "subagent_end", status: "error", origin });
+        throw err;
+      }
+      sink?.({ type: "subagent_end", status: result.status, origin });
 
       if (result.status === "pending_question") {
         return {

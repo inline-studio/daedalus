@@ -9,7 +9,12 @@ import type { LoadedSkill } from "../brain/skills.js";
 // (subject to the usual context-window trimming) for the rest of the session, so a
 // skill is read at most once per session — the same read-on-demand pattern the brain
 // already uses for its per-stack coding standards.
-export function buildLoadSkillTool(skills: LoadedSkill[]): ToolImpl {
+// `onLoad` (optional) is called with the skill name on every successful load — the
+// skill-learning usage tracker hangs off it so the staleness curator knows what's alive.
+export function buildLoadSkillTool(
+  skills: LoadedSkill[],
+  onLoad?: (skill: string) => void,
+): ToolImpl {
   const byName = new Map(skills.map((s) => [s.manifest.name, s]));
   const names = [...byName.keys()];
   return {
@@ -50,6 +55,11 @@ export function buildLoadSkillTool(skills: LoadedSkill[]): ToolImpl {
           }.`,
           isError: true,
         };
+      }
+      try {
+        onLoad?.(name);
+      } catch {
+        /* usage tracking must never break a load */
       }
       if (!skill.body) {
         return { content: `Skill '${name}' has no instructions body.` };

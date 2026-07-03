@@ -16,7 +16,17 @@ import { PersistentContainerDispatcher } from "./dispatch/persistent.js";
 import type { AgentDispatcher } from "./dispatch/base.js";
 import { loadSchedules, startScheduler } from "./scheduler/cron.js";
 import { startSchedulePoller } from "./scheduler/poller.js";
+import { listAgents } from "./brain/agents.js";
+import { createRequire } from "node:module";
+import { Cron } from "croner";
+import { SkillLearningStore } from "./sessions/skill-learning-store.js";
+import { runSkillCurator } from "./brain/skill-curator.js";
+import { getRpcToken } from "./channels/remote-exec.js";
+import { WebChannel } from "./channels/web.js";
+import { ActivityRegistry, withActivityTracking } from "./kernel/activity.js";
 import { log } from "./log.js";
+
+const PKG_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 
 // Long-running supervisor. Per inbound message:
 //   1. Ingest (attachments, transcripts, persist user message) — supervisor IO
@@ -45,21 +55,174 @@ export async function serve(config: ArtemisConfig): Promise<void> {
   // forget so serving isn't blocked on the download; it's idempotent across restarts.
   void provisionWhisperModel(config);
 
-  const channels = buildChannels(config.channels, sessions, config.identity.name, config.brain.path);
+  // With persistentAgent, top-level turns go to the long-lived warm worker over HTTP
+  // (subagents inside it still spawn ephemeral containers). Otherwise the supervisor
+  // dispatches each turn itself per the configured dispatcher. Wrapped with activity
+  // tracking — the single choke point every top-level turn (channel + scheduled) flows
+  // through — so GET /activity can show what every agent is doing right now.
+  const activity = new ActivityRegistry();
+  const dispatcher: AgentDispatcher = withActivityTracking(
+    config.runtime.persistentAgent
+      ? new PersistentContainerDispatcher(config)
+      : buildDispatcher(config),
+    activity,
+  );
+  log.info({ dispatcher: dispatcher.id }, "supervisor dispatcher selected");
+
+  // GET /status snapshot for the web UI's status bar. Everything is resolved lazily at
+  // request time (agents/schedules re-read from the brain so edits show up live); a
+  // failure in any part degrades to a partial snapshot rather than an error.
+  const status = async (): Promise<Record<string, unknown>> => {
+    const [agents, staticSchedules] = await Promise.all([
+      listAgents(config.brain.path).catch(() => [] as string[]),
+      loadSchedules(config.brain.path).catch(() => []),
+    ]);
+    let dynamicSchedules = 0;
+    try {
+      dynamicSchedules = scheduleStore.countActive();
+    } catch {
+      /* partial snapshot is fine */
+    }
+    return {
+      version: PKG_VERSION,
+      dispatcher: dispatcher.id,
+      agents: { count: agents.length, names: agents },
+      schedules: { static: staticSchedules.filter((s) => s.enabled !== false).length, dynamic: dynamicSchedules },
+      memory: { backend: config.memory.backend },
+      channels: Object.entries(config.channels)
+        .filter(([, c]) => (c as { enabled?: boolean } | undefined)?.enabled)
+        .map(([name]) => name),
+    };
+  };
+
+  // Stop button: abort the in-flight turn for a conversation via the dispatcher's own
+  // mechanism (AbortSignal / worker forward / docker rm). The set remembers which
+  // conversations were deliberately stopped so the dispatch failure that follows is
+  // reported as a quiet "stopped", not an error.
+  const abortedConvos = new Set<string>();
+  const abortTurn = async (conversationId: string): Promise<boolean> => {
+    const ok = (await dispatcher.abort?.(conversationId)) ?? false;
+    if (ok) {
+      abortedConvos.add(conversationId);
+      log.info({ conversationId }, "turn abort requested by user");
+    }
+    return ok;
+  };
+
+  // GET /schedules viewer: static brain schedules + live agent-armed rows, read fresh
+  // per request so brain edits and newly-armed callbacks show up without a restart.
+  const listSchedulesForUi = async (): Promise<Record<string, unknown>> => {
+    const statics = await loadSchedules(config.brain.path).catch(() => []);
+    let dynamic: unknown[] = [];
+    try {
+      dynamic = scheduleStore.listActive().map((s) => ({
+        id: s.id,
+        agent: s.agentName,
+        prompt: s.prompt.length > 140 ? s.prompt.slice(0, 140) + "…" : s.prompt,
+        nextFire: s.dueAt,
+        recurring: s.recurringCron,
+        createdBy: s.createdByAgent,
+      }));
+    } catch {
+      /* partial view is fine */
+    }
+    return {
+      static: statics.map((s) => ({
+        name: s.name,
+        agent: s.agent,
+        schedule: s.schedule,
+        enabled: s.enabled !== false,
+      })),
+      dynamic,
+    };
+  };
+
+  // Skills panel: the live library + the pending-approval queue, with the lifecycle
+  // actions the self-learning system already defines (approve/reject/pin/unpin/archive).
+  // Mutations require a writable brain — the same gate skill_manage enforces.
+  const skillsProvider = {
+    list: async (): Promise<Record<string, unknown>> => {
+      const { listPendingSkills } = await import("./tools/skill-manage.js");
+      const { listSkills, loadSkill } = await import("./brain/skills.js");
+      const names = await listSkills(config.brain.path).catch(() => []);
+      const skills: Array<Record<string, unknown>> = [];
+      for (const n of names) {
+        const s = await loadSkill(config.brain.path, n).catch(() => null);
+        if (!s) continue;
+        skills.push({
+          name: s.manifest.name,
+          description: s.manifest.description,
+          version: s.manifest.version,
+          origin: s.manifest.origin,
+          status: s.manifest.status,
+          pinned: s.manifest.pinned,
+          triggers: s.manifest.triggers,
+        });
+      }
+      const pending = await listPendingSkills(config.brain.path).catch(() => []);
+      return { skills, pending, writable: config.brain.writable };
+    },
+    action: async (name: string, action: string): Promise<{ ok: boolean; error?: string }> => {
+      if (!config.brain.writable) {
+        return { ok: false, error: "the brain is mounted read-only (brain.writable is false)" };
+      }
+      const sm = await import("./tools/skill-manage.js");
+      try {
+        if (action === "approve") await sm.approvePendingSkill(config.brain.path, name);
+        else if (action === "reject") await sm.rejectPendingSkill(config.brain.path, name);
+        else if (action === "pin") await sm.setSkillPinned(config.brain.path, name, true);
+        else if (action === "unpin") await sm.setSkillPinned(config.brain.path, name, false);
+        else if (action === "archive") await sm.archiveSkill(config.brain.path, name);
+        else return { ok: false, error: `unknown action '${action}'` };
+        return { ok: true };
+      } catch (err) {
+        return { ok: false, error: (err as Error).message };
+      }
+    },
+  };
+
+  // Artifacts panel: the per-user attachment catalogue (uploads + agent-generated files),
+  // with ownership-checked downloads out of the content-addressable store.
+  const artifactsProvider = {
+    list: async (userId: string, q: string): Promise<Array<Record<string, unknown>>> => {
+      if (!attachmentIndex) return [];
+      const rows = q.trim() ? attachmentIndex.search(userId, q, 50) : attachmentIndex.recent(userId, 50);
+      return rows.map((r) => ({
+        ref: r.ref,
+        filename: r.filename,
+        mediaType: r.mediaType,
+        bytes: r.bytes,
+        summary: r.summary,
+        uploadedAt: r.uploadedAt,
+      }));
+    },
+    read: async (
+      userId: string,
+      ref: string,
+    ): Promise<{ data: Buffer; mediaType: string; filename?: string } | null> => {
+      if (!attachmentIndex) return null;
+      const meta = attachmentIndex.getByRef(userId, ref);
+      if (!meta) return null;
+      const data = await attachments.readBuffer(ref);
+      if (!data) return null;
+      return { data, mediaType: meta.mediaType, ...(meta.filename ? { filename: meta.filename } : {}) };
+    },
+  };
+
+  const channels = buildChannels(config.channels, sessions, config.identity.name, config.brain.path, {
+    status,
+    abort: abortTurn,
+    schedules: listSchedulesForUi,
+    activity: async (userId) => activity.listForUser(userId) as unknown as Array<Record<string, unknown>>,
+    skills: skillsProvider,
+    artifacts: artifactsProvider,
+  });
   if (channels.length === 0) {
     log.error(
       "No channels enabled in config.channels — nothing to listen on. Enable at least one (cli/web/telegram/whatsapp).",
     );
     return;
   }
-
-  // With persistentAgent, top-level turns go to the long-lived warm worker over HTTP
-  // (subagents inside it still spawn ephemeral containers). Otherwise the supervisor
-  // dispatches each turn itself per the configured dispatcher.
-  const dispatcher: AgentDispatcher = config.runtime.persistentAgent
-    ? new PersistentContainerDispatcher(config)
-    : buildDispatcher(config);
-  log.info({ dispatcher: dispatcher.id }, "supervisor dispatcher selected");
 
   const bus = new MessageBus(sessions);
   for (const ch of channels) bus.register(ch);
@@ -92,6 +255,26 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         typeof ch.streamSink === "function" &&
         dispatcher.streaming === true;
       const onEvent = streaming ? ch.streamSink!(msg.externalUserId, conversationId) : undefined;
+      // Remote execution: when this message's user has a `dae remote` executor connected
+      // (web channel only), the turn's tools run on THEIR machine. The bridge URL defaults
+      // by dispatch topology: in-process turns reach the supervisor on loopback; container/
+      // worker turns reach it by compose service name on the daedalus network.
+      let remoteExec: { userId: string; url: string; token: string; env?: Record<string, string> } | undefined;
+      const webCfg = config.channels.web;
+      if (
+        webCfg?.remoteExec.enabled &&
+        msg.execution !== "server" && // per-message opt-out (WS6e); default is local
+        ch instanceof WebChannel &&
+        ch.remoteConnected(ingested.userId)
+      ) {
+        const port = webCfg.port ?? 8765;
+        const url =
+          webCfg.remoteExec.internalUrl ??
+          (dispatcher.id === "in-process" ? `http://127.0.0.1:${port}` : `http://daedalus:${port}`);
+        const env = ch.executorInfo(ingested.userId) ?? undefined;
+        remoteExec = { userId: ingested.userId, url, token: getRpcToken(), ...(env ? { env } : {}) };
+        log.info({ user: ingested.userId, ...env }, "remote executor connected — turn will execute locally on it");
+      }
       const result = await dispatcher.dispatch({
         agentName,
         sessionId: ingested.sessionId,
@@ -103,6 +286,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         originExternalUserId: msg.externalUserId,
         ...(onEvent ? { onEvent } : {}),
         ...(ingested.turnDirective ? { turnDirective: ingested.turnDirective } : {}),
+        ...(remoteExec ? { remoteExec } : {}),
       });
       // Pre-reply messages, delivered as their own short bubbles before the reply lands:
       //   - surfaced thinking, but ONLY for buffered channels — streaming channels already render
@@ -151,6 +335,9 @@ export async function serve(config: ArtemisConfig): Promise<void> {
       if (!replyAlreadyStreamed || outgoing.attachments?.length) {
         await ch.send(msg.externalUserId, outgoing);
       }
+      // A late Stop that didn't land (the turn finished first) shouldn't mislabel the
+      // NEXT failure in this conversation as a deliberate stop.
+      if (conversationId) abortedConvos.delete(conversationId);
       // The debug-log pointer is no longer sent as its own message — it's surfaced as activity
       // chrome via the `debug_log` turn event (streaming channels), alongside tool/reasoning.
       log.info(
@@ -158,6 +345,15 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         "turn complete",
       );
     } catch (err) {
+      // A deliberately stopped turn is not an error — the user pressed Stop, so the
+      // dispatch failing is exactly what they asked for. Quiet notice, no scary message.
+      if (conversationId && abortedConvos.delete(conversationId)) {
+        log.info({ agent: agentName, conversationId }, "turn stopped by user");
+        await ch
+          .send(msg.externalUserId, { text: "⏹ Stopped.", conversationId })
+          .catch(() => undefined);
+        return;
+      }
       // The operator gets the full stack via log.error. The USER (over telegram/web/
       // wherever) gets a humanised explanation — see kernel/error-message.ts. The raw
       // message is incomprehensible noise to anyone not reading the source.
@@ -200,6 +396,30 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     bus,
   });
 
+  // Skill staleness curator: a deterministic cron sweep that ages unused agent-created
+  // skills out (stale → archived, never deleted). Needs the brain writable — without that
+  // there's nothing it could do, so it simply doesn't start.
+  let curatorJob: Cron | undefined;
+  let skillLearningStore: SkillLearningStore | undefined;
+  const learning = config.skills.learning;
+  if (learning.enabled && learning.curator.enabled && config.brain.writable) {
+    skillLearningStore = new SkillLearningStore(config.sessions.dbPath);
+    const store = skillLearningStore;
+    curatorJob = new Cron(learning.curator.schedule, async () => {
+      try {
+        await runSkillCurator({
+          brainPath: config.brain.path,
+          store,
+          staleAfterDays: learning.curator.staleAfterDays,
+          archiveAfterDays: learning.curator.archiveAfterDays,
+        });
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, "skill-curator: sweep threw (ignored)");
+      }
+    });
+    log.info({ schedule: learning.curator.schedule }, "skill curator armed");
+  }
+
   log.info(
     { schedules: running.length, channels: channels.length, dispatcher: dispatcher.id },
     "daedalus serving",
@@ -208,10 +428,12 @@ export async function serve(config: ArtemisConfig): Promise<void> {
   const shutdown = async () => {
     log.info("shutting down");
     poller.stop();
+    curatorJob?.stop();
     for (const r of running) r.job.stop();
     await bus.stopAll();
     sessions.close();
     scheduleStore.close();
+    skillLearningStore?.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);

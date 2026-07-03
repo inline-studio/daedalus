@@ -25,7 +25,8 @@
     "graphiti.config.yaml"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
+    "build": "node scripts/build-web-ui.mjs && tsc -p tsconfig.json && chmod +x dist/index.js",
+    "build:web-ui": "node scripts/build-web-ui.mjs",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",

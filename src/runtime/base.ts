@@ -1,5 +1,7 @@
 // Execution runtime abstraction. The kernel calls this for shell-style tool execution.
-// Two implementations: HostRuntime (run on host) and DockerRuntime (run in a per-agent container).
+// Three implementations: HostRuntime (run in the current process's environment),
+// DockerRuntime (run in a per-agent container), and RemoteRuntime (run on the user's
+// machine via the `dae remote` executor bridge).
 
 export interface ExecOptions {
   cwd?: string;
@@ -23,6 +25,12 @@ export interface ExecResult {
 }
 
 export interface Runtime {
-  readonly id: "host" | "docker";
+  readonly id: "host" | "docker" | "remote";
   exec(cmd: string, opts: ExecOptions): Promise<ExecResult>;
+  // Optional file-op routing. When a runtime implements these, the read/write/edit tools
+  // go through it instead of the local fs — so a remote-executing turn reads and writes
+  // the USER'S files, coherently with where its bash runs. Runtimes without them (host,
+  // docker) keep the direct-fs behaviour.
+  readFile?(path: string): Promise<string>;
+  writeFile?(path: string, content: string): Promise<void>;
 }

@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { ToolImpl } from "./base.js";
+import type { ToolImpl, ToolContext } from "./base.js";
 import {
   READ_DEFAULT_LINES,
   READ_MAX_LINES,
@@ -8,6 +8,21 @@ import {
   GLOB_DEFAULT_LIMIT,
   GLOB_MAX_LIMIT,
 } from "./limits.js";
+
+// File-op routing: a runtime that implements readFile/writeFile (RemoteRuntime — the
+// `dae remote` executor) gets the read/write/edit traffic, so file tools operate on the
+// SAME machine the turn's bash runs on. Host/docker runtimes keep the direct fs path.
+async function readVia(ctx: ToolContext | undefined, p: string): Promise<string> {
+  return ctx?.runtime?.readFile ? ctx.runtime.readFile(p) : fs.readFile(p, "utf8");
+}
+async function writeVia(ctx: ToolContext | undefined, p: string, content: string): Promise<void> {
+  if (ctx?.runtime?.writeFile) {
+    await ctx.runtime.writeFile(p, content);
+    return;
+  }
+  await fs.mkdir(path.dirname(p), { recursive: true });
+  await fs.writeFile(p, content, "utf8");
+}
 
 // Path safety: writes/edits are blocked against the brain dir unless brainWritable.
 function assertWritable(target: string, ctx: { brainPath: string; brainWritable: boolean }): void {
@@ -45,9 +60,9 @@ export const readTool: ToolImpl = {
       additionalProperties: false,
     },
   },
-  async invoke(input) {
+  async invoke(input, ctx) {
     const p = String(input.path ?? "");
-    const text = await fs.readFile(p, "utf8");
+    const text = await readVia(ctx, p);
     const lines = text.split("\n");
     const total = lines.length;
     const offset = clampInt(input.offset, 1, Math.max(1, total), 1);
@@ -91,8 +106,7 @@ export const writeTool: ToolImpl = {
   async invoke(input, ctx) {
     const p = String(input.path ?? "");
     assertWritable(p, ctx);
-    await fs.mkdir(path.dirname(p), { recursive: true });
-    await fs.writeFile(p, String(input.content ?? ""), "utf8");
+    await writeVia(ctx, p, String(input.content ?? ""));
     return { content: `wrote ${p}` };
   },
 };
@@ -174,12 +188,12 @@ export const editTool: ToolImpl = {
   async invoke(input, ctx) {
     const p = String(input.path ?? "");
     assertWritable(p, ctx);
-    const text = await fs.readFile(p, "utf8");
+    const text = await readVia(ctx, p);
     const oldStr = String(input.old_string ?? "");
     const idx = text.indexOf(oldStr);
     if (idx === -1) return { content: "old_string not found", isError: true };
     const next = text.slice(0, idx) + String(input.new_string ?? "") + text.slice(idx + oldStr.length);
-    await fs.writeFile(p, next, "utf8");
+    await writeVia(ctx, p, next);
     return { content: `edited ${p}` };
   },
 };

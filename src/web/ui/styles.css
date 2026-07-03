@@ -1,0 +1,420 @@
+/* Theme tokens. Dark, near-black panels with a teal accent (the Hermes-style look).
+   Everything structural references these so a future light theme is a token swap. */
+:root {
+  color-scheme: dark;
+  --bg: #0a0c10;            /* page + chat column */
+  --bg-panel: #0d1014;      /* sidebar / header / composer chrome */
+  --bg-raised: #12161c;     /* cards, hovers, user bubble */
+  --bg-inset: #0d1117;      /* code blocks, tool rows */
+  --border: #1b212a;
+  --border-strong: #2a313c;
+  --text: #dbe4ec;
+  --text-soft: #c9d1d9;
+  --text-muted: #8b949e;
+  --text-dim: #6e7681;
+  --accent: #2dd4bf;        /* teal */
+  --accent-soft: rgba(45, 212, 191, 0.14);
+  --accent-strong: #14b8a6;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+}
+* { box-sizing: border-box; }
+/* App frame: sidebar | chat on the top row, the status bar spanning the bottom. */
+body { margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+       background: var(--bg); color: var(--text); height: 100dvh;
+       display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+/* Conversation sidebar. A column: brand, "New session", search, the scrollable session list
+   (PINNED + SESSIONS groups), and a channel-badge footer. On narrow screens it slides over
+   the chat instead of taking a column (see the media query). */
+#sidebar { grid-row: 1; display: flex; flex-direction: column; min-height: 0;
+           background: var(--bg-panel); border-right: 1px solid var(--border); }
+.sb-brand { display: flex; align-items: center; gap: 8px; padding: 14px 14px 6px; color: var(--text-soft); }
+/* Desktop shell on macOS: the title bar is hidden, so the traffic lights float over the
+   sidebar — push the brand down clear of them, and let the brand row drag the window. */
+body.desktop-mac .sb-brand { padding-top: 40px; -webkit-app-region: drag; }
+body.desktop-mac header { -webkit-app-region: drag; }
+body.desktop-mac header button { -webkit-app-region: no-drag; }
+.sb-brand svg { color: var(--accent); flex-shrink: 0; }
+.sb-brand b { font-size: 12.5px; font-weight: 700; letter-spacing: 0.18em; }
+#sidebar .sb-head { padding: 10px 10px 6px; }
+#new-convo { width: 100%; background: transparent; color: var(--text-soft); border: 1px solid var(--border-strong);
+             border-radius: 8px; padding: 9px 12px; cursor: pointer; font: inherit; text-align: left; }
+#new-convo:hover { background: var(--bg-raised); color: var(--text); border-color: var(--accent-strong); }
+/* Sidebar nav (Skills & Tools / Artifacts) — quiet rows under New session. */
+.sb-nav { padding: 0 10px 4px; display: flex; flex-direction: column; gap: 1px; }
+.sb-nav-item { display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px 10px;
+               background: transparent; border: none; border-radius: 8px; cursor: pointer;
+               color: var(--text-soft); font: inherit; font-size: 13.5px; text-align: left; }
+.sb-nav-item:hover { background: var(--bg-raised); color: var(--text); }
+.sb-nav-item svg { color: var(--text-dim); flex-shrink: 0; }
+.sb-nav-item:hover svg { color: var(--accent); }
+.sb-search { padding: 2px 10px 8px; }
+.sb-search input { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                   border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 13px; }
+.sb-search input:focus { outline: none; border-color: var(--accent-strong); }
+.sb-search input::placeholder { color: var(--text-dim); }
+#convo-list { flex: 1; overflow-y: auto; padding: 2px 8px 6px; display: flex; flex-direction: column; gap: 2px; }
+/* Group labels (PINNED / SESSIONS n) — quiet all-caps like the reference. */
+.convo-group { display: flex; align-items: center; gap: 6px; padding: 10px 8px 4px;
+               font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em; color: var(--text-dim);
+               user-select: none; }
+.convo-group .n { color: var(--text-dim); font-weight: 400; }
+.convo { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: 8px;
+         cursor: pointer; color: var(--text-soft); }
+.convo:hover { background: var(--bg-raised); }
+.convo.active { background: var(--accent-soft); color: var(--text); }
+.convo .title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; }
+.convo .pin, .convo .del { color: var(--text-muted); border: none; background: none; cursor: pointer;
+                           font-size: 13px; padding: 0 3px; visibility: hidden; line-height: 1; }
+.convo:hover .pin, .convo:hover .del { visibility: visible; }
+.convo.pinned .pin { visibility: visible; color: var(--accent); }
+.convo .pin:hover { color: var(--accent); }
+.convo .del:hover { color: var(--err); }
+/* Rows shared by the status-bar popovers (agents / cron / activity). */
+.sb-item-row { padding: 5px 10px; border-radius: 6px; font-size: 12.5px; color: var(--text-soft);
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-item-row:hover { background: var(--bg-raised); }
+.sb-item-row .sub { color: var(--text-dim); font-size: 11px; display: block;
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-item-row .off { color: var(--warn); }
+.sb-item-row.jump { cursor: pointer; }
+.sb-item-row.jump .sub { color: var(--accent); }
+/* Live pulse on the status bar's agents button while anything is in flight. */
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); display: inline-block; }
+.live-dot.on { background: var(--accent); animation: livepulse 1.6s infinite ease-in-out; }
+@keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+/* Sidebar channel sections (Hermes-style): the cross-channel Main thread per enabled
+   messaging channel, e.g. TELEGRAM → "Main thread". */
+.sb-ch-head { display: flex; align-items: center; gap: 6px; padding: 8px 8px 2px;
+              font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em; color: var(--text-dim);
+              text-transform: uppercase; }
+.sb-ch-head .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.sb-foot { padding: 4px 8px 10px; border-top: 1px solid var(--border); min-height: 20px; }
+/* The chat column: header + log + composer, to the right of the sidebar. min-width:0 lets
+   it shrink instead of overflowing. */
+#main { grid-row: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+/* Hamburger toggles the sidebar on narrow screens; hidden on wide ones. */
+#sb-toggle { display: none; }
+@media (max-width: 720px) {
+  body { grid-template-columns: minmax(0, 1fr); }
+  #sb-toggle { display: inline-block; }
+  #sidebar { position: fixed; z-index: 30; top: 0; left: 0; height: 100dvh; width: 270px;
+             transform: translateX(-100%); transition: transform .18s ease;
+             box-shadow: 2px 0 12px rgba(0,0,0,.5); }
+  body.sb-open #sidebar { transform: translateX(0); }
+  /* Dim the chat behind the open drawer; tap it to close. */
+  #sb-scrim { display: none; position: fixed; inset: 0; z-index: 20; background: rgba(0,0,0,.5); }
+  body.sb-open #sb-scrim { display: block; }
+  /* The status bar's right side is dense; hide the versions on small screens. */
+  #st-versions { display: none; }
+}
+/* Slim header (the reference look): small title, quiet borderless icon buttons. */
+header { display: flex; align-items: center; gap: 8px; padding: 5px 12px; min-height: 38px;
+         border-bottom: 1px solid var(--border); background: var(--bg); }
+header b { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden;
+           text-overflow: ellipsis; max-width: 40vw; }
+header .sp, #statusbar .sp { flex: 1; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px;
+            background: transparent; color: var(--text-muted); border: none; border-radius: 7px;
+            padding: 0; cursor: pointer; font-size: 14px; line-height: 1; }
+.icon-btn:hover { background: var(--bg-raised); color: var(--text); }
+.icon-btn.on { color: var(--accent); }
+#settings { display: none; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--bg); gap: 8px; }
+#settings.on { display: flex; flex-wrap: wrap; align-items: center; }
+#settings input { background: var(--bg); color: var(--text); border: 1px solid var(--border-strong); border-radius: 6px; padding: 6px 8px; }
+#settings label { font-size: 13px; color: var(--text-muted); }
+/* Selection action bar (Telegram-style). Hidden until the user enters select mode; then it
+   shows the count, Select all/none, Copy, and Cancel. While selecting, message bubbles are
+   tappable to toggle and the selected ones get an accent ring. */
+#selbar { display: none; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--bg);
+          align-items: center; gap: 10px; }
+#selbar.on { display: flex; }
+#selbar button { background: var(--bg-raised); color: var(--text); border: 1px solid var(--border-strong); border-radius: 6px;
+                 padding: 5px 10px; cursor: pointer; font-size: 13px; }
+#selbar button:hover { background: var(--border-strong); }
+#selbar #sel-copy { background: var(--accent-strong); border-color: var(--accent); color: #04211d; font-weight: 600; }
+#selbar #sel-copy:disabled { opacity: .5; cursor: default; }
+body.selecting .msg { cursor: pointer; }
+/* The ring sits inside the bubble's box so it doesn't get clipped by the log's overflow. */
+.msg.selected { box-shadow: inset 0 0 0 2px var(--accent); }
+/* Telegram-style tick badge on a selected bubble — the ring alone is hard to see, so a
+   check circle makes selection unambiguous on any bubble colour. Anchored to the bubble's
+   corner, just outside it; the page-coloured border lifts it off the bubble. */
+.msg.selected::after { content: "✓"; position: absolute; top: -8px; width: 20px; height: 20px;
+                       display: flex; align-items: center; justify-content: center;
+                       background: var(--accent-strong); color: #04211d; border: 2px solid var(--bg);
+                       border-radius: 50%; font-size: 12px; line-height: 1; z-index: 2; }
+/* User bubbles are right-aligned → badge on their left; assistant left-aligned → badge right,
+   so it always sits in the gutter, never over the text. */
+.msg.user.selected::after { left: -8px; }
+.msg.assistant.selected::after { right: -8px; }
+/* Chat-app convention: messages anchored to the BOTTOM. A previous
+   iteration used justify-content: flex-end here, which works when content
+   fits the container but has a long-standing Chromium bug when content
+   OVERFLOWS — the top of the content becomes unreachable and the scrollbar
+   never appears. (Brave on macOS reproduces this reliably.)
+   The robust pattern is margin-top: auto on the first child: it absorbs
+   extra space when the conversation is short (anchors to bottom), and
+   collapses to 0 when the content overflows (native scroll works as the
+   browser expects). The flex column + overflow-y: auto stay the same. */
+#log { flex: 1; overflow-y: auto; padding: 20px 18px; display: flex;
+       flex-direction: column; gap: 18px;
+       /* Reserve the scrollbar gutter so the layout doesn't shift sideways when the bar
+          appears/disappears mid-stream (the horizontal "wobble"). */
+       scrollbar-gutter: stable; }
+#log > :first-child { margin-top: auto; }
+/* Flex children can be shrunk by default, which would let the browser
+   compress tall message bubbles instead of letting #log scroll. Lock
+   their intrinsic size so scroll behaviour is predictable. */
+#log > * { flex-shrink: 0; }
+/* max-width clamps to the viewport on mobile (min(760px,100%)) and min-width:0 lets the bubble
+   shrink below its content's intrinsic width — so a wide table/code block scrolls WITHIN the
+   bubble (it has overflow-x:auto) instead of pushing the whole message past the screen edge. */
+.msg { position: relative; max-width: min(760px, 100%); min-width: 0; width: fit-content;
+       white-space: normal; word-wrap: break-word; }
+/* Block containers inside the reply must also be allowed to shrink, or a wide child re-expands
+   them past the bubble. */
+.reply-block, .stream-prose, .stream-mono, .turn-meta { min-width: 0; max-width: 100%; }
+.msg pre { max-width: 100%; }
+/* User messages: a raised dark card (the reference look), not a coloured bubble. */
+.msg.user { align-self: flex-end; background: var(--bg-raised); color: var(--text);
+            border: 1px solid var(--border); padding: 10px 14px;
+            border-radius: 12px; border-bottom-right-radius: 5px; }
+/* Assistant replies are borderless — plain text, not a boxed bubble — for a lighter, modern
+   feel (à la ChatGPT/Claude). Only the user's own messages get a card. */
+.msg.assistant { align-self: flex-start; background: transparent; padding: 0; line-height: 1.6; }
+.msg p { margin: 0 0 8px; } .msg p:last-child { margin-bottom: 0; }
+/* Headings inside a chat bubble. marked emits real h1-h6 (the old renderer
+   forced everything to h2); keep them compact so a leading "# Title" heading
+   doesn't blow out the bubble. */
+.msg h1, .msg h2, .msg h3, .msg h4, .msg h5, .msg h6 { margin: 12px 0 6px; line-height: 1.3; font-weight: 600; }
+.msg :first-child { margin-top: 0; }
+.msg h1 { font-size: 1.35em; } .msg h2 { font-size: 1.2em; } .msg h3 { font-size: 1.08em; }
+.msg h4, .msg h5, .msg h6 { font-size: 1em; }
+.msg blockquote { margin: 8px 0; padding: 0 12px; border-left: 3px solid var(--border-strong); color: var(--text-muted); }
+.msg ul, .msg ol { margin: 0 0 8px; padding-left: 22px; }
+.msg pre { position: relative; background: var(--bg-inset); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px; padding-right: 60px; overflow-x: auto; }
+/* Inline code — teal-tinted chips, like the reference. */
+.msg code { background: var(--bg-inset); border: 1px solid var(--border-strong); border-radius: 4px; padding: 1px 5px;
+            font-size: 13px; color: var(--accent); }
+.msg pre code { background: none; border: none; padding: 0; color: var(--text-soft); }
+/* Copy button on every <pre><code> block. Always visible (not hover-only)
+   so it works on touch too. padding-right above leaves room for it. */
+.copy-btn { position: absolute; top: 6px; right: 6px;
+            background: var(--bg-raised); color: var(--text); border: 1px solid var(--border-strong);
+            border-radius: 6px; padding: 2px 8px; font-size: 12px;
+            font-family: inherit; cursor: pointer; line-height: 1.4; }
+.copy-btn:hover { background: var(--border-strong); }
+.copy-btn.copied { background: var(--accent-strong); border-color: var(--accent); color: #04211d; }
+.msg.user code { color: var(--accent); }
+.msg.user pre { background: var(--bg-inset); border-color: var(--border-strong); }
+/* System notices (e.g. "conversation compacted" markers replayed from /history) —
+   centered, dashed, muted: clearly not something either party said. */
+.msg.notice { align-self: center; background: transparent; border: 1px dashed var(--border-strong);
+              color: var(--text-muted); font-size: 12px; max-width: 640px; padding: 8px 12px; border-radius: 10px; }
+/* Activity chrome — tool calls, reasoning, debug pointers. Deliberately subordinate to the
+   reply itself: muted, small, pill/inset styling so they read as "what the assistant did",
+   not "what it said". A .chrome row holds the chips; .reasoning is a quieter inset block. */
+.chrome { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; line-height: 1.4;
+        color: var(--text-muted); background: var(--bg-raised); border: 1px solid var(--border); border-radius: 999px;
+        padding: 3px 10px; }
+.chip .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.chip .k { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--text-soft); }
+.chip.debug { cursor: pointer; }
+.chip.debug .dot { background: var(--text-dim); }
+.chip.debug:hover { color: var(--text-soft); border-color: var(--border-strong); }
+/* Reasoning: a collapsible "💭 Thinking" disclosure, deliberately unlike the reply — muted,
+   italic, smaller, behind a header — so it reads as the model's scratchpad, not the answer. */
+.reasoning { margin: 6px 0; }
+.reasoning .rhead { display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+                    font-size: 12px; color: var(--text-dim); user-select: none; }
+.reasoning .rhead .chev { font-size: 10px; color: var(--text-dim); }
+.reasoning .rbody { border-left: 2px solid var(--border-strong); margin: 4px 0 0 4px; padding: 2px 0 2px 10px;
+                    color: var(--text-dim); font-size: 12.5px; font-style: italic; line-height: 1.5;
+                    white-space: pre-wrap; }
+.reasoning.collapsed .rbody { display: none; }
+/* In-progress streamed reply: raw text typed out, swapped for rendered markdown when the turn
+   completes. Prose stays proportional/normal; only code fences and table rows go monospace (so
+   they stay aligned and read as code), slightly muted to signal "being written". */
+.stream-prose { white-space: pre-wrap; line-height: 1.6; }
+.stream-mono { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+               font-size: 13px; line-height: 1.5; color: var(--text-soft); }
+/* Claude-style tool-call rows: a collapsible header (name + primary-arg summary + state) that
+   expands to the full input. Running = "…", resolved = ✓ / ✗.
+   Tool rows sit inline in the reply flow (chronological), each with its own vertical margin. */
+.tool-call { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-inset); overflow: hidden; max-width: 560px; margin: 6px 0; }
+.reply-block + .tool-call, .tool-call + .reply-block, .reasoning + .tool-call { margin-top: 8px; }
+.tool-call .head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
+.tool-call .head:hover { background: var(--bg-raised); }
+.tool-call .chev { color: var(--text-dim); width: 10px; flex-shrink: 0; }
+.tool-call .label { color: var(--text-muted); flex-shrink: 0; }
+.tool-call .name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-soft); }
+.tool-call .sum { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
+                  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+.tool-call .state { flex-shrink: 0; font-size: 11px; color: var(--text-dim); }
+.tool-call.ok .state { color: var(--ok); }
+.tool-call.err .state { color: var(--err); }
+.tool-call .detail { display: none; border-top: 1px solid var(--border); padding: 8px 10px; }
+.tool-call.open .detail { display: block; }
+.tool-call .detail pre { margin: 0; white-space: pre-wrap; word-break: break-all;
+                         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--text-soft); }
+/* Subagent activity panel — a collapsible inset grouping one spawn_subagent call's live
+   activity (prompt + tool rows). Same visual family as .tool-call, slightly recessed. */
+.subagent { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-panel); overflow: hidden; max-width: 560px; margin: 6px 0; }
+.subagent .shead { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
+.subagent .shead:hover { background: var(--bg-raised); }
+.subagent .chev { color: var(--text-dim); width: 10px; flex-shrink: 0; }
+.subagent .slabel { color: var(--text-soft); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; flex-shrink: 0; }
+.subagent .state { flex-shrink: 0; margin-left: auto; font-size: 11px; color: var(--text-dim); }
+.subagent.running .state { color: var(--warn); }
+.subagent.done .state { color: var(--ok); }
+.subagent.err .state { color: var(--err); }
+.subagent .sbody { border-top: 1px solid var(--border); padding: 6px 10px; }
+.subagent.collapsed .sbody { display: none; }
+.subagent .sprompt { color: var(--text-dim); font-size: 11.5px; margin-bottom: 4px; white-space: nowrap;
+                     overflow: hidden; text-overflow: ellipsis; }
+.subagent .tool-call { max-width: none; }
+.msg img { max-width: 100%; border-radius: 8px; margin-top: 6px; }
+.msg a { color: var(--accent); }
+.msg a.file { display: inline-block; margin-top: 6px; }
+.msg table { border-collapse: collapse; margin: 8px 0; display: block; overflow-x: auto; max-width: 100%; }
+.msg th, .msg td { border: 1px solid var(--border-strong); padding: 6px 10px; text-align: left; vertical-align: top; }
+.msg th { background: var(--bg-inset); font-weight: 600; }
+/* "Thinking…" indicator — an assistant-aligned bubble with three pulsing dots,
+   shown between sending a message and the first reply event (replies can take
+   ~30s, and without this the UI looked frozen). It is purely a DOM element in
+   the log (id #thinking); it is never recorded into the convo transcript. */
+.msg.thinking { display: flex; gap: 5px; align-items: center; padding: 14px 16px; }
+.msg.thinking i { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted);
+                  animation: think 1.4s infinite ease-in-out both; }
+.msg.thinking i:nth-child(2) { animation-delay: .2s; }
+.msg.thinking i:nth-child(3) { animation-delay: .4s; }
+@keyframes think { 0%, 80%, 100% { opacity: .3; transform: translateY(0); }
+                   40% { opacity: 1; transform: translateY(-4px); } }
+.meta { font-size: 11px; color: var(--text-muted); margin: 0 4px; }
+/* Live turn timer (next to the thinking dots) + per-reply footer with elapsed time / tokens. */
+.thinking .elapsed { font-size: 12px; color: var(--text-dim); margin-left: 6px; }
+.turn-meta { font-size: 11px; color: var(--text-dim); margin-top: 6px; font-variant-numeric: tabular-nums; }
+footer { position: relative; border-top: 1px solid var(--border); background: var(--bg); padding: 12px 16px; }
+/* Slash-command autocomplete — floats above the input while the draft is a lone "/prefix";
+   ↑/↓ choose, Tab/Enter complete, Esc dismisses. Populated from GET /commands. */
+#cmd-menu { position: absolute; bottom: calc(100% + 4px); left: 14px; right: 14px;
+            background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 8px;
+            box-shadow: 0 -4px 16px rgba(0,0,0,.4); overflow: hidden; display: none; z-index: 11; }
+#cmd-menu.on { display: block; }
+#cmd-menu .item { display: flex; gap: 10px; align-items: baseline; padding: 8px 12px; cursor: pointer; }
+#cmd-menu .item.active { background: var(--border-strong); }
+#cmd-menu .item .name { font-weight: 600; }
+#cmd-menu .item .desc { color: var(--text-muted); font-size: 12px; overflow: hidden;
+                        text-overflow: ellipsis; white-space: nowrap; }
+#chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+#chips .chip { background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 6px; padding: 3px 8px; font-size: 12px; }
+#chips .chip b { cursor: pointer; margin-left: 6px; color: var(--err); }
+.row { display: flex; gap: 8px; align-items: flex-end; }
+textarea { flex: 1; resize: none; background: var(--bg-raised); color: var(--text); border: 1px solid var(--border-strong);
+           border-radius: 12px; padding: 10px 14px; font: inherit; max-height: 180px; }
+textarea:focus { outline: none; border-color: var(--accent-strong); }
+textarea::placeholder { color: var(--text-dim); }
+.row button, .row label.attach { background: var(--accent-strong); color: #04211d; border: 1px solid var(--accent);
+           border-radius: 10px; padding: 10px 15px; cursor: pointer; font: inherit; font-weight: 600; }
+.row label.attach { background: transparent; border-color: var(--border-strong); color: var(--text-soft); font-weight: 400; }
+.row label.attach:hover { background: var(--bg-raised); }
+.row button:disabled { opacity: .5; cursor: default; }
+/* Execution-placement toggle: visible only when the user's executor is connected. */
+#exec-toggle { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted);
+               border-radius: 10px; padding: 10px 12px; cursor: pointer; font: inherit; font-size: 13px;
+               white-space: nowrap; }
+#exec-toggle.local { color: var(--accent); border-color: var(--accent-strong); }
+#exec-toggle:hover { background: var(--bg-raised); }
+/* Send becomes Stop while a turn is in flight. */
+.row button.stop { background: transparent; color: var(--err); border-color: var(--err); }
+.row button.stop:hover { background: rgba(248, 81, 73, 0.12); }
+.empty { color: var(--text-muted); text-align: center; margin: auto; }
+/* "New messages below" pill — appears in the log when new messages arrive
+   while the user has scrolled up; clicking it jumps to the bottom. */
+#new-pill { position: fixed; bottom: 118px; left: 50%; transform: translateX(-50%);
+            background: var(--accent-strong); color: #04211d; border: 1px solid var(--accent); border-radius: 999px;
+            padding: 6px 14px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,.4); display: none; z-index: 10; }
+#new-pill:hover { background: var(--accent); }
+#new-pill.on { display: block; }
+/* Status bar — full-width strip under both columns: supervisor state on the left
+   (gateway / agents / cron), session metrics on the right (context fill, timer, versions). */
+#statusbar { grid-column: 1 / -1; grid-row: 2; display: flex; align-items: center; gap: 16px;
+             padding: 5px 14px; background: var(--bg-panel); border-top: 1px solid var(--border);
+             font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums;
+             white-space: nowrap; overflow: hidden; }
+#statusbar .st-item { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+/* Clickable status items (agents / cron) — quiet buttons in the bar. */
+.st-btn { background: transparent; border: none; color: inherit; font: inherit; padding: 2px 6px;
+          border-radius: 6px; cursor: pointer; }
+.st-btn:hover { background: var(--bg-raised); color: var(--text-soft); }
+#st-active-n { color: var(--accent); }
+/* Popover anchored above the status bar (agents+activity / cron detail). */
+#popover { position: fixed; bottom: 34px; left: 10px; z-index: 40; width: min(380px, calc(100vw - 20px));
+           background: var(--bg-panel); border: 1px solid var(--border-strong); border-radius: 10px;
+           box-shadow: 0 8px 28px rgba(0,0,0,.55); overflow: hidden; }
+#popover .pop-head { display: flex; align-items: center; justify-content: space-between;
+                     padding: 8px 12px; border-bottom: 1px solid var(--border);
+                     font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em;
+                     color: var(--text-dim); text-transform: uppercase; }
+#popover .pop-head button { background: none; border: none; color: var(--text-dim); cursor: pointer;
+                            font-size: 12px; padding: 0 2px; }
+#popover .pop-head button:hover { color: var(--text); }
+#popover .pop-body { max-height: 320px; overflow-y: auto; padding: 6px; }
+.pop-group { padding: 8px 10px 2px; font-size: 10px; font-weight: 700; letter-spacing: 0.14em;
+             color: var(--text-dim); text-transform: uppercase; }
+/* Centered modal panel (Skills & Tools / Artifacts). */
+#panel-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.55);
+                 display: flex; align-items: center; justify-content: center; }
+#panel { width: min(600px, calc(100vw - 32px)); max-height: min(70vh, 640px); display: flex;
+         flex-direction: column; background: var(--bg-panel); border: 1px solid var(--border-strong);
+         border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.6); overflow: hidden; }
+#panel .panel-head { display: flex; align-items: center; justify-content: space-between;
+                     padding: 10px 14px; border-bottom: 1px solid var(--border);
+                     font-size: 11px; font-weight: 700; letter-spacing: 0.14em;
+                     color: var(--text-dim); text-transform: uppercase; }
+#panel .panel-head button { background: none; border: none; color: var(--text-dim); cursor: pointer;
+                            font-size: 13px; padding: 0 2px; }
+#panel .panel-head button:hover { color: var(--text); }
+#panel .panel-body { overflow-y: auto; padding: 8px; }
+.panel-note { padding: 6px 10px; font-size: 12px; color: var(--text-dim); }
+.panel-search { padding: 4px 8px 8px; }
+.panel-search input { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
+                      border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 13px; }
+.panel-search input:focus { outline: none; border-color: var(--accent-strong); }
+/* Skill / artifact rows: title + badges on the first line, description under, actions right. */
+.p-row { display: flex; align-items: flex-start; gap: 8px; padding: 7px 10px; border-radius: 8px; }
+.p-row:hover { background: var(--bg-raised); }
+.p-row .main { flex: 1; min-width: 0; }
+.p-row .title { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px;
+                white-space: nowrap; overflow: hidden; }
+.p-row .sub { color: var(--text-dim); font-size: 11.5px; display: block;
+              white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.badge { font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+         padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border-strong);
+         color: var(--text-muted); flex-shrink: 0; }
+.badge.agent { color: var(--accent); border-color: var(--accent-strong); }
+.badge.stale { color: var(--warn); border-color: var(--warn); }
+.badge.pending { color: var(--warn); border-color: var(--warn); }
+.p-act { display: flex; gap: 4px; flex-shrink: 0; }
+.p-act button, .p-act a { background: transparent; border: 1px solid var(--border-strong);
+                          color: var(--text-muted); border-radius: 6px; padding: 3px 8px;
+                          font: inherit; font-size: 11.5px; cursor: pointer; text-decoration: none; }
+.p-act button:hover, .p-act a:hover { background: var(--bg-raised); color: var(--text); }
+.p-act .ok { color: var(--accent); border-color: var(--accent-strong); }
+.p-act .danger:hover { color: var(--err); border-color: var(--err); }
+#statusbar b { color: var(--text-soft); font-weight: 600; }
+#statusbar .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); flex-shrink: 0; }
+#statusbar .dot.ok { background: var(--ok); }
+#statusbar .dot.warn { background: var(--warn); }
+#statusbar .dot.err { background: var(--err); }
+/* Context-window fill: a small track with an accent fill, like the reference's block meter. */
+.ctx-track { width: 72px; height: 7px; border-radius: 4px; background: var(--bg-inset);
+             border: 1px solid var(--border); overflow: hidden; display: inline-block; }
+.ctx-track i { display: block; height: 100%; width: 0; background: var(--accent-strong); border-radius: 3px;
+               transition: width .3s ease; }
+.ctx-track i.warn { background: var(--warn); }
+.ctx-track i.err { background: var(--err); }

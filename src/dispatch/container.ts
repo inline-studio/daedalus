@@ -1,10 +1,12 @@
 import { execa } from "execa";
 import path from "node:path";
+import readline from "node:readline";
 import type { ArtemisConfig, ResolvedLimits } from "../config/schema.js";
 import { resolveContainerLimits } from "../config/schema.js";
 import { loadAgent } from "../brain/agents.js";
+import type { TurnEvent, TurnEventSink } from "../types.js";
 import type { AgentDispatcher, DispatchArgs, DispatchResult } from "./base.js";
-import { DISPATCH_RESULT_SENTINEL } from "./base.js";
+import { DISPATCH_RESULT_SENTINEL, DISPATCH_EVENT_SENTINEL } from "./base.js";
 import { log } from "../log.js";
 
 // Spawns one short-lived container per agent turn via the local docker socket.
@@ -75,7 +77,25 @@ export interface ContainerDispatcherOptions {
 
 export class ContainerAgentDispatcher implements AgentDispatcher {
   readonly id = "container";
+  // Honors DispatchArgs.onEvent: the container writes sentinel-framed TurnEvent lines on
+  // stdout as its turn unfolds (DAE_EVENT_STREAM=ndjson), parsed + forwarded live below.
+  readonly streaming = true;
+  // In-flight container names by sessionId — abort() force-removes them (the container
+  // equivalent of firing an AbortSignal; the turn persists nothing further).
+  private inflight = new Map<string, Set<string>>();
   constructor(private config: ArtemisConfig, private opts: ContainerDispatcherOptions) {}
+
+  async abort(sessionId: string): Promise<boolean> {
+    const names = this.inflight.get(sessionId);
+    if (!names || names.size === 0) return false;
+    const bin = this.opts.bin ?? "docker";
+    for (const name of names) {
+      await execa(bin, ["rm", "-f", name]).catch((err) =>
+        log.warn({ container: name, err: (err as Error).message }, "abort: docker rm failed"),
+      );
+    }
+    return true;
+  }
 
   async dispatch(args: DispatchArgs): Promise<DispatchResult> {
     // Per-agent image override comes from the manifest's container.image.
@@ -91,7 +111,17 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     const limits = resolveContainerLimits(loaded?.manifest.container, this.config.runtime.limits);
 
     const containerName = `dae-${sanitize(args.agentName)}-${Date.now().toString(36)}`;
-    const dockerArgs = this.buildArgs({ containerName, image, args, mountDockerSock, limits });
+    // Stream the turn's events back only when the caller wants them (a live sink) and the
+    // operator hasn't opted out — otherwise the container stays buffered-result-only.
+    const streamEvents = Boolean(args.onEvent) && this.config.runtime.subagentEventStream;
+    const dockerArgs = this.buildArgs({
+      containerName,
+      image,
+      args,
+      mountDockerSock,
+      limits,
+      streamEvents,
+    });
 
     log.info(
       { agent: args.agentName, image, container: containerName },
@@ -104,8 +134,11 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     const forwardedSecrets: Record<string, string> = {
       ...(this.opts.onecliApiKey ? { ONECLI_API_KEY: this.opts.onecliApiKey } : {}),
       ...(this.opts.forwardEnv ?? {}),
+      // SEC-09: the rpc token is forwarded by NAME (-e DAE_RPC_TOKEN in the arg builder);
+      // its VALUE rides in the docker CLI's env, never the world-readable argv.
+      ...(args.remoteExec ? { DAE_RPC_TOKEN: args.remoteExec.token } : {}),
     };
-    const result = await execa(bin, dockerArgs, {
+    const subprocess = execa(bin, dockerArgs, {
       timeout: args.timeoutMs ?? 5 * 60_000,
       reject: false,
       env: { ...process.env, ...forwardedSecrets },
@@ -113,6 +146,26 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
       // the mounted session DB). Close stdin immediately so it doesn't block.
       input: "",
     });
+    // Forward sentinel-framed event lines as they arrive. Reading stdout here doesn't
+    // consume it away from execa's own buffering — both listen on the same stream — so the
+    // final sentinel-framed DispatchResult parse below still sees the full output.
+    if (streamEvents && args.onEvent && subprocess.stdout) {
+      forwardEventLines(subprocess.stdout, args.onEvent);
+    }
+    // Track for abort() while the container runs.
+    let names = this.inflight.get(args.sessionId);
+    if (!names) {
+      names = new Set();
+      this.inflight.set(args.sessionId, names);
+    }
+    names.add(containerName);
+    let result: Awaited<typeof subprocess>;
+    try {
+      result = await subprocess;
+    } finally {
+      names.delete(containerName);
+      if (names.size === 0) this.inflight.delete(args.sessionId);
+    }
 
     // BUG-17: remove the container on EVERY failure path (timeout / non-zero exit / unparseable
     // result), not only timeout. `--rm` covers a clean exit but not a wedged container; this
@@ -148,6 +201,7 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     args: DispatchArgs;
     mountDockerSock: boolean;
     limits: ResolvedLimits;
+    streamEvents: boolean;
   }): string[] {
     return buildContainerArgs({
       containerName: opts.containerName,
@@ -157,8 +211,42 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
       brainWritable: this.config.brain.writable,
       mountDockerSock: opts.mountDockerSock,
       limits: opts.limits,
+      streamEvents: opts.streamEvents,
     });
   }
+}
+
+// Attach a line reader to a spawning container's stdout and forward every sentinel-framed
+// TurnEvent line to the sink. Garbled lines are skipped (events are display chrome, never
+// control flow), and a throwing sink is contained so rendering bugs can't kill the dispatch.
+export function forwardEventLines(stdout: NodeJS.ReadableStream, sink: TurnEventSink): void {
+  const rl = readline.createInterface({ input: stdout });
+  rl.on("line", (line) => {
+    const ev = parseEventLine(line);
+    if (!ev) return;
+    try {
+      sink(ev);
+    } catch (err) {
+      log.warn({ err: (err as Error).message }, "turn-event sink threw (ignored)");
+    }
+  });
+  rl.on("error", () => undefined);
+}
+
+// Parse one stdout line into a TurnEvent, or null when it isn't a (valid) event line.
+// Exported for tests.
+export function parseEventLine(line: string): TurnEvent | null {
+  const idx = line.indexOf(DISPATCH_EVENT_SENTINEL);
+  if (idx === -1) return null;
+  try {
+    const parsed = JSON.parse(line.slice(idx + DISPATCH_EVENT_SENTINEL.length).trim()) as unknown;
+    if (parsed && typeof parsed === "object" && typeof (parsed as { type?: unknown }).type === "string") {
+      return parsed as TurnEvent;
+    }
+  } catch {
+    /* not an event line — ignore */
+  }
+  return null;
 }
 
 // Pure, side-effect-free arg builder so tests can inspect what we'd hand to
@@ -175,6 +263,8 @@ export function buildContainerArgs(input: {
   mountDockerSock: boolean;
   // SEC-03: resolved per-agent resource limits (manifest override → conservative default).
   limits: ResolvedLimits;
+  // Ask the container to stream its TurnEvents on stdout (DAE_EVENT_STREAM=ndjson).
+  streamEvents?: boolean;
 }): string[] {
   const { containerName, image, dispatchArgs, opts, brainWritable, mountDockerSock, limits } = input;
   const a: string[] = [];
@@ -218,6 +308,19 @@ export function buildContainerArgs(input: {
   // name inside agent-turn (see applyOneCli call site).
   a.push("-e", "DAE_CONFIG=/etc/daedalus/config.yaml");
   a.push("-e", "DAE_DISPATCHER=container"); // nested subagent spawns recurse
+  // Live event streaming: the agent-turn entrypoint writes sentinel-framed TurnEvent lines
+  // on stdout, which dispatch() parses + forwards. Only set when the caller has a live sink.
+  if (input.streamEvents) a.push("-e", "DAE_EVENT_STREAM=ndjson");
+  // Remote execution: user id + bridge URL on the argv (not secret); the token by env
+  // NAME only (value supplied via the dispatcher's env — SEC-09). The machine
+  // description crosses as JSON for the execution-environment context line.
+  if (dispatchArgs.remoteExec) {
+    a.push("-e", `DAE_RPC_URL=${dispatchArgs.remoteExec.url}`);
+    a.push("-e", "DAE_RPC_TOKEN");
+    if (dispatchArgs.remoteExec.env) {
+      a.push("-e", `DAE_RPC_ENV=${JSON.stringify(dispatchArgs.remoteExec.env)}`);
+    }
+  }
   a.push("-e", `DAE_AGENT_IMAGE_DEFAULT=${opts.defaultImage}`);
   a.push("-e", `DAE_AGENT_NETWORK=${opts.network}`);
   a.push("-e", `DAE_AGENT_HOST_BRAIN=${opts.hostBrainPath}`);
@@ -272,6 +375,7 @@ export function buildContainerArgs(input: {
     ...(dispatchArgs.originExternalUserId
       ? ["--origin-external-user", dispatchArgs.originExternalUserId]
       : []),
+    ...(dispatchArgs.remoteExec ? ["--remote-exec-user", dispatchArgs.remoteExec.userId] : []),
   );
   return a;
 }

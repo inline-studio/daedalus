@@ -2,6 +2,7 @@ import type { ChannelsConfig } from "../config/schema.js";
 import type { SessionStore } from "../sessions/store.js";
 import { loadAgent } from "../brain/agents.js";
 import { loadAgentCommands } from "../brain/commands.js";
+import { listAgents } from "../brain/agents.js";
 import type { Channel } from "./base.js";
 import { CliChannel } from "./cli.js";
 import { WebChannel, type WebCommandInfo } from "./web.js";
@@ -18,10 +19,34 @@ export function buildChannels(
   sessions?: SessionStore,
   identityName?: string,
   brainPath?: string,
+  // Extra web-channel wiring the supervisor owns: the GET /status snapshot provider, the
+  // POST /abort in-flight-turn canceller, and the GET /schedules viewer.
+  extras?: {
+    status?: () => Promise<Record<string, unknown>>;
+    abort?: (conversationId: string) => Promise<boolean>;
+    schedules?: () => Promise<Record<string, unknown>>;
+    // In-flight turns for a user (GET /activity) — what every agent is doing right now.
+    activity?: (userId: string) => Promise<Array<Record<string, unknown>>>;
+    // Skills panel: the library + pending queue, and the lifecycle actions.
+    skills?: {
+      list: () => Promise<Record<string, unknown>>;
+      action: (name: string, action: string) => Promise<{ ok: boolean; error?: string }>;
+    };
+    // Artifacts panel: the per-user attachment catalogue + ownership-checked reads.
+    artifacts?: {
+      list: (userId: string, q: string) => Promise<Array<Record<string, unknown>>>;
+      read: (userId: string, ref: string) => Promise<{ data: Buffer; mediaType: string; filename?: string } | null>;
+    };
+  },
 ): Channel[] {
   const out: Channel[] = [];
   if (config.cli?.enabled) {
-    out.push(new CliChannel({ defaultAgent: config.cli.defaultAgent }));
+    out.push(
+      new CliChannel({
+        defaultAgent: config.cli.defaultAgent,
+        subagentEvents: config.cli.subagentEvents,
+      }),
+    );
   }
   if (config.web?.enabled) {
     // Built-in login is active only when all three pieces are present (username + password
@@ -31,6 +56,33 @@ export function buildChannels(
       w.username && w.passwordHash && w.sessionSecret
         ? { username: w.username, passwordHash: w.passwordHash, sessionSecret: w.sessionSecret }
         : undefined;
+    // GET /agents viewer: every agent's manifest summary, read fresh from the brain per
+    // request (edits show live). Failures degrade to an empty list.
+    const listAgentDetails = brainPath
+      ? async (): Promise<Array<Record<string, unknown>>> => {
+          try {
+            const names = await listAgents(brainPath);
+            const out: Array<Record<string, unknown>> = [];
+            for (const n of names) {
+              const a = await loadAgent(brainPath, n).catch(() => null);
+              if (!a) continue;
+              out.push({
+                name: a.manifest.name,
+                description: a.manifest.description,
+                provider: a.manifest.provider,
+                model: a.manifest.model,
+                tools: a.manifest.tools,
+                skills: a.manifest.skills,
+                subagents: a.manifest.subagents,
+                ...(a.manifest.container?.image ? { image: a.manifest.container.image } : {}),
+              });
+            }
+            return out;
+          } catch {
+            return [];
+          }
+        }
+      : undefined;
     // Resolve the default agent's slash-commands on demand (per request, so brain edits
     // show up live). Any load failure degrades to "no commands" rather than failing the UI.
     const listCommands = brainPath
@@ -58,6 +110,16 @@ export function buildChannels(
         ...(identityName ? { assistantName: identityName } : {}),
         ...(w.userName ? { userName: w.userName } : {}),
         ...(listCommands ? { listCommands } : {}),
+        ...(extras?.status ? { status: extras.status } : {}),
+        ...(extras?.abort ? { abortTurn: extras.abort } : {}),
+        ...(extras?.schedules ? { listSchedules: extras.schedules } : {}),
+        ...(extras?.activity ? { listActivity: extras.activity } : {}),
+        ...(extras?.skills ? { skillsProvider: extras.skills } : {}),
+        ...(extras?.artifacts ? { artifactsProvider: extras.artifacts } : {}),
+        ...(listAgentDetails ? { listAgentDetails } : {}),
+        ...(w.remoteExec?.enabled
+          ? { remoteExec: { enabled: true, timeoutMs: w.remoteExec.timeoutMs } }
+          : {}),
       }),
     );
   }

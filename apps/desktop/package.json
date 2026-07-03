@@ -1,0 +1,63 @@
+{
+  "name": "daedalus-desktop",
+  "productName": "Daedalus",
+  "version": "0.1.0",
+  "description": "Desktop shell for the daedalus web UI — native notifications, dock badge, persistent login.",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "electron . --smoke-test",
+    "dist": "electron-builder --publish never"
+  },
+  "build": {
+    "appId": "studio.in-line.daedalus",
+    "productName": "Daedalus",
+    "files": [
+      "main.js",
+      "preload.js",
+      "updater.js",
+      "executor.js",
+      "setup.html"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility"
+    },
+    "publish": {
+      "provider": "generic",
+      "url": "https://github.com/inline-studio/daedalus/releases/download/desktop-latest"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  }
+}

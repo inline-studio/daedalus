@@ -13,6 +13,188 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Desktop release workflow.** `.github/workflows/desktop.yml` builds and releases
+  the app **automatically on merge to `main`** (path-filtered to `apps/desktop/**`;
+  manual dispatch remains, optionally with an explicit version). Gate first — server
+  typecheck + CI smoke battery, desktop syntax checks, a headless Electron boot
+  smoke — then a three-platform matrix (dmg arm64+x64 / NSIS / AppImage) versioned
+  `0.1.<run>`, publishing an immutable `desktop-v<version>` release plus the rolling
+  **`desktop-latest`** release that serves as the auto-update feed — the updater uses
+  electron-updater's generic provider against it, because the plain GitHub provider
+  scans the repo's newest release, which is almost always a *server* release
+  (`v0.1.0-<run>`). macOS signing/notarisation activate automatically once the Apple
+  credential secrets exist; unsigned builds still release fine.
+
+### Added
+
+- **Executor placement + environment awareness.** A sub-agent can declare
+  `execution: executor` in its frontmatter to REQUIRE the user's machine — for
+  sub-agent stacks whose tooling lives on the host (host-only CLIs, local projects).
+  The orchestrator threads the parent turn's executor grant into exactly those spawns
+  (everything else stays server-side) and fails fast with clear guidance when no
+  executor is connected. Executors now advertise their machine
+  (hostname/platform/arch) on registration, and every remotely-executing turn gets an
+  ephemeral execution-environment context line ("bash runs on scotts-mba
+  (darwin/arm64), workspace …") so the model stops assuming the server container's
+  toolchain and probes with `command -v` instead.
+
+### Added
+
+- **Desktop app: local execution + wizard.** The Electron shell embeds an executor —
+  the desktop equivalent of `dae remote`: conversations started in the app run their
+  commands and file edits on your machine, in a chosen workspace, with a **native
+  approval dialog** per command (Allow / Always allow prefix / Deny; the dangerous-
+  pattern denylist always asks, even in free rein). The first successful connect offers
+  to enable it (one-time wizard step: workspace picker + approval mode); **Server →
+  Local Execution…** changes or disables it later, with live On/Reconnecting/Off state
+  in the menu. Executor auth is borrowed from the window itself (login cookie via the
+  cookies API, or the web UI's stored uid/token), so it is always the same user as the
+  chat; the allowlist and audit log are the same `~/.daedalus/` files the CLI uses, so
+  an "always allow" applies across both surfaces. The `--smoke-test` mode now proves
+  the executor registers and serves requests end to end.
+
+### Added
+
+- **`dae remote` is a real terminal interface.** Not a bare REPL any more: a
+  persistent, hand-rolled-ANSI terminal app (zero new dependencies) with streaming
+  replies, dim tool/sub-agent activity lines, a live status line (gateway · session ·
+  execution mode · context-window readout · session timer), persisted ↑/↓ history,
+  multi-line input via trailing `\`, **Esc to stop the in-flight turn**, Ctrl-C×2 to
+  quit, and the full slash-command set (`/stop /new /sessions /agents /crons /activity
+  /skills /status /local /yolo /help /quit` — server commands pass through). First run
+  with no arguments launches a setup wizard (server URL, auth, workspace, approval
+  mode) persisted to `~/.daedalus/remote.json`, so afterwards it's just `dae remote`
+  (alias `dae chat`). Executor confirmations render inline as single-key prompts.
+  `--plain` (or no TTY) keeps the old line mode; headless stays executor-only. The
+  transport, executor, and safety policy moved to a shared core used by both renderers.
+
+### Added
+
+- **Skills & Tools + Artifacts panels.** Two sidebar nav items (the reference layout's
+  top-nav) opening modal panels. **Skills**: the live library with badges
+  (agent-created / stale / pinned) and the lifecycle actions the self-learning system
+  defines — approve/reject the pending queue, pin/unpin (curator exemption), archive
+  (agent-created only, recoverable) — via `GET /skills` + `POST /skills/action`; all
+  actions gated on `brain.writable` and mirroring `dae skill`'s guard rails. Per-agent
+  granting stays in frontmatter by design (no enable/disable switch). **Artifacts**: a
+  searchable browser over the per-user attachment catalogue (uploads + agent-generated
+  files) with ownership-checked downloads (`GET /artifacts`, `GET /artifacts/file`).
+  The remote CLI gains `/skills`.
+
+### Added
+
+- **Live activity view.** The status bar's **agents** button pulses while anything is
+  in flight and shows the active count; clicking it opens an Agents · Activity popover —
+  in-flight turns across all your conversations AND scheduled fires, each with a live
+  label (thinking / replying / `tool: bash` / `cypher · tool: read`), channel, and
+  elapsed time, click-to-jump (where the Stop button awaits) — followed by the agent
+  roster. The CLI mirrors it as `/activity`. Implemented as a decorator around the
+  supervisor's dispatcher — the one choke point every top-level turn flows through —
+  feeding an in-memory registry exposed per-user via `GET /activity`. Buffered
+  channels' turns (Telegram) are tracked too.
+
+### Added
+
+- **Agents & Cron viewers + per-conversation execution toggle.** The status bar's
+  **agents** and **cron** items are now buttons: clicking opens anchored popovers with
+  the detail — the agent roster (name, model, docker image, delegation targets — from
+  new `GET /agents`) and schedules (static brain schedules + live agent-armed callbacks
+  with next fire — `GET /schedules`); the remote CLI gets `/agents` and `/crons`. The
+  sidebar shows a Hermes-style section per enabled messaging channel (e.g. TELEGRAM)
+  with the cross-channel Main thread, click-to-open; the header is slimmer with proper
+  icon buttons.
+  When your `dae remote` executor is connected, a `⌁ local / ☁ server` toggle appears in
+  the web composer (and `/local on|off` in the CLI) to choose per conversation whether
+  the turn's commands run on your machine or the server (`execution` field on
+  `POST /messages`); `GET /status` now reports your executor's connection state.
+
+### Added
+
+- **Stop button — abort an in-flight turn.** Premature enter, wrong direction, runaway
+  tool loop: the web/desktop Send button becomes **Stop** while a turn streams, and the
+  remote CLI takes `/stop`. `POST /abort` (ownership-checked) cancels through whichever
+  dispatch mode is running the turn — in-process via AbortSignal (with a new
+  between-tools abort check so multi-tool rounds stop promptly), the warm worker via a
+  forwarded abort to its per-turn controllers, per-turn containers via force-removal.
+  Partial streamed output stays visible; nothing further is persisted; the surface shows
+  a quiet "⏹ Stopped." instead of an error.
+
+### Added
+
+- **Remote execution — `dae remote`.** The agent runs on the server; its tools run on
+  your machine. The client is one process with two jobs: a chat REPL on the web
+  channel, and the executor for your user — the turn's `bash`/`read`/`write`/`edit`
+  arrive over an outbound SSE stream, run in your declared workspace, and stream back
+  (no open ports on the laptop). Server-side, a new `RemoteRuntime` slots into the
+  runtime seam and reaches the laptop via the supervisor's `/rpc/exec` bridge (per-boot
+  shared secret), across every dispatch mode. Only turns started from the remote CLI
+  execute remotely; subagents and other channels are untouched. Safety: per-command
+  confirmation with a persistable allowlist, a never-auto-approved denylist for
+  catastrophic patterns (even under `--yolo`), workspace-confined file ops, an audit
+  log, and executor-only headless mode that refuses rather than auto-approves. Enable
+  with `channels.web.remoteExec.enabled: true`.
+
+### Added
+
+- **Skill self-learning.** Daedalus can now grow its own skill library from experience.
+  A new `skill_manage` tool (explicit opt-in, excluded from `tools: ['*']`) lets an agent
+  create, patch, extend, and archive skills; a post-turn review pass replays substantial
+  turns with only that tool and captures reusable workflows, fixes, and user corrections —
+  patch-before-create, class-level skills only, never transient failures. Writes are
+  staged under `skills/.pending/` for human review by default (`dae skill
+  pending|approve|reject`); live writes are git-committed when the brain is a repo. A
+  deterministic weekly curator marks agent-created skills unused 30+ days as stale and
+  archives them (never deletes) after 90, driven by a `load_skill` usage tracker; pinned
+  and human-authored skills are untouched. Configure under `skills.learning` (off by
+  default; requires `brain.writable: true`).
+
+### Added
+
+- **Live sub-agent view.** Delegated work is no longer opaque: when an orchestrator
+  calls `spawn_subagent`, the subagent's turn events (tool calls, lifecycle) stream
+  back live, tagged with which agent they came from — through every dispatch mode,
+  including the per-turn agent containers (which now emit sentinel-framed event lines
+  on stdout). The web UI renders each spawn as a collapsible activity panel inside the
+  reply (prompt + tool rows resolving ✓/✗ in real time); the CLI prints dim
+  `[agent] tool: …` summary lines (`channels.cli.subagentEvents: summary | full | off`).
+  Nested spawns group under the top-level panel, labelled by their agent chain. Opt out
+  globally with `runtime.subagentEventStream: false`.
+
+### Added
+
+- **Desktop app (Electron shell).** `apps/desktop/` wraps the web UI in a native
+  window: native notifications (the UI's 🔔 opt-in), a dock badge counting unread
+  replies while the window is in the background, persistent login, external links
+  opening in the default browser, and a hidden macOS title bar with the traffic lights
+  floating over the sidebar. First launch asks for the server URL; **Server → Change
+  Server…** switches later. No daedalus code runs in the shell — it's a client on the
+  web channel. `npm start` to run, `npm run dist` for a dmg/AppImage (unsigned;
+  signing + auto-update land with the release pipeline). The web UI feature-detects
+  the shell via `window.daedalusDesktop`, so the served page is unchanged in browsers.
+
+### Added
+
+- **Web UI v2 — session workspace with a live status bar.** The chat UI is restyled
+  (near-black theme, teal accent, user messages as raised cards) and grows a real
+  session sidebar — pinned sessions (new `PATCH /conversations`), title search
+  (`GET /conversations?q=`), grouped PINNED/SESSIONS lists, and channel badges — plus a
+  full-width status bar: gateway (SSE) state, agent and cron counts from a new
+  `GET /status` endpoint, a context-window readout (`65.0k/200.0k · 32%`, driven by the
+  last completion's input tokens and the agent's `contextWindow` manifest field, with
+  conservative family inference for claude/gpt-4o), a session timer, and client/backend
+  versions (the client version is baked in at build time, so a stale cached UI is
+  visible at a glance).
+
+### Changed
+
+- **The web UI is now real source files.** `src/channels/web-ui.ts` is generated by
+  `scripts/build-web-ui.mjs` from `src/web/ui/` (index.html + styles.css + app.js +
+  login.html) — no more 1,500-line TS template string, no backtick escaping rules; edit
+  the plain files and run `npm run build:web-ui` (part of `npm run build`).
+
+
+### Added
+
 - **Agents can opt out of a prompt section entirely.** For `souls` / `personas` /
   `standards` / `operations`, an empty/omitted list still means "include all" and a
   named list still means "only those" — but `["none"]` now means "include nothing".

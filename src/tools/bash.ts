@@ -24,16 +24,20 @@ export const bashTool: ToolImpl = {
     const cmd = String(input.command ?? "");
     if (!cmd.trim()) return { content: "Error: empty command", isError: true };
     const timeoutMs = typeof input.timeout_ms === "number" ? input.timeout_ms : 120_000;
+    // Remote runtime: the command runs on the USER'S machine — server-side paths
+    // (shared workspace, skill-bin) don't exist there, and the cwd is the workspace the
+    // `dae remote` client declared. Send the command untouched.
+    const remote = ctx.runtime.id === "remote";
     // Expose the shared workspace path under one symbol regardless of runtime.
     const env: Record<string, string> = {};
-    if (ctx.shared) {
+    if (ctx.shared && !remote) {
       env.DAE_SHARED = ctx.runtime.id === "docker" ? ctx.shared.containerPath : ctx.shared.hostPath;
     }
     // Prepend the skill-bin dir to $PATH so binaries installed by skill
     // bootstrap.sh scripts (gh, doctl, agent-browser, …) are discoverable.
     // We don't replace PATH — we extend it — so system binaries still work.
     let prefixedCmd = cmd;
-    if (ctx.skillBinDir) {
+    if (ctx.skillBinDir && !remote) {
       const dir = ctx.runtime.id === "docker"
         ? `${ctx.skillBinDir.containerPath}/bin`
         : `${ctx.skillBinDir.hostPath}/bin`;
@@ -44,7 +48,7 @@ export const bashTool: ToolImpl = {
     }
     const result = await ctx.runtime.exec(prefixedCmd, {
       timeoutMs,
-      cwd: ctx.runtime.id === "docker" ? "/workspace" : ctx.workspacePath,
+      ...(remote ? {} : { cwd: ctx.runtime.id === "docker" ? "/workspace" : ctx.workspacePath }),
       env,
     });
     const body = [

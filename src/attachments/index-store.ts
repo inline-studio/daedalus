@@ -179,6 +179,16 @@ export class AttachmentIndexStore {
     return rows.map(rowToIndexed);
   }
 
+  // Ownership lookup for the artifacts download route: the row only comes back when this
+  // ref was recorded for THIS user, so one user can't fetch another's files by ref.
+  getByRef(userId: string, ref: string): IndexedAttachment | null {
+    this.ensureFreshConnection();
+    const row = this.db
+      .prepare(`SELECT * FROM attachment_index WHERE user_id = ? AND ref = ? LIMIT 1`)
+      .get(userId, ref) as Record<string, unknown> | undefined;
+    return row ? rowToIndexed(row) : null;
+  }
+
   close(): void {
     this.db.close();
   }

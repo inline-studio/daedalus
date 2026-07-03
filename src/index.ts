@@ -34,7 +34,7 @@ import { buildSecretsBackend } from "./secrets/store/factory.js";
 import { SecretsOpUnsupported } from "./secrets/store/base.js";
 import { initUserConfig } from "./init.js";
 import { runInstall, findComposeFile } from "./install.js";
-import { DISPATCH_RESULT_SENTINEL } from "./dispatch/base.js";
+import { DISPATCH_RESULT_SENTINEL, DISPATCH_EVENT_SENTINEL } from "./dispatch/base.js";
 import { exportMempalace } from "./cli/export-mempalace.js";
 import { runUpdate } from "./cli/update.js";
 import prompts from "prompts";
@@ -73,6 +73,10 @@ program
   .option("--subagent", "system-prompt voice: 'you are operating as a subagent'", false)
   .option("--origin-channel <channel>", "channel the originating user spoke on (for schedule_message routing)")
   .option("--origin-external-user <id>", "external id of the originating user (for schedule_message routing)")
+  .option(
+    "--remote-exec-user <userId>",
+    "run this turn's tools on the user's machine via the remote-exec bridge (needs DAE_RPC_URL + DAE_RPC_TOKEN in env)",
+  )
   .action(
     async (opts: {
       agent: string;
@@ -81,10 +85,36 @@ program
       subagent: boolean;
       originChannel?: string;
       originExternalUser?: string;
+      remoteExecUser?: string;
     }) => {
       const config = loadConfig(program.opts().config);
       await applyOneCli(config.onecli);
       const { runAgentTurn } = await import("./kernel/agent-turn.js");
+      // Remote execution: the dispatcher put the bridge URL + user on the argv/env; the
+      // token rides in env only (SEC-09). All three present → the turn's tools run on
+      // the user's machine.
+      let remoteExecEnv: Record<string, string> | undefined;
+      try {
+        if (process.env.DAE_RPC_ENV) {
+          remoteExecEnv = JSON.parse(process.env.DAE_RPC_ENV) as Record<string, string>;
+        }
+      } catch {
+        /* a garbled env description just means a generic context line */
+      }
+      const remoteExec =
+        opts.remoteExecUser && process.env.DAE_RPC_URL && process.env.DAE_RPC_TOKEN
+          ? {
+              userId: opts.remoteExecUser,
+              url: process.env.DAE_RPC_URL,
+              token: process.env.DAE_RPC_TOKEN,
+              ...(remoteExecEnv ? { env: remoteExecEnv } : {}),
+            }
+          : undefined;
+      // Live event streaming across the container hop: when the spawning dispatcher set
+      // DAE_EVENT_STREAM=ndjson, write each TurnEvent as a sentinel-framed JSON line as the
+      // turn unfolds. The leading newline guarantees the sentinel begins a fresh line even
+      // when interleaved with other stdout noise (same trick as the result line below).
+      const streamEvents = process.env.DAE_EVENT_STREAM === "ndjson";
       try {
         const result = await runAgentTurn({
           config,
@@ -95,6 +125,20 @@ program
           ...(opts.originChannel ? { originChannel: opts.originChannel } : {}),
           ...(opts.originExternalUser
             ? { originExternalUserId: opts.originExternalUser }
+            : {}),
+          ...(remoteExec ? { remoteExec } : {}),
+          ...(streamEvents
+            ? {
+                onEvent: (ev: import("./types.js").TurnEvent) => {
+                  try {
+                    process.stdout.write(
+                      "\n" + DISPATCH_EVENT_SENTINEL + JSON.stringify(ev) + "\n",
+                    );
+                  } catch {
+                    /* an unserialisable event must never break the turn */
+                  }
+                },
+              }
             : {}),
         });
         // The container dispatcher parses the sentinel-framed result line (BUG-01). The leading
@@ -135,6 +179,51 @@ program
     const config = loadConfig(program.opts().config);
     const names = await listSkills(config.brain.path);
     for (const n of names) console.log(n);
+  });
+
+// `skill` command group — review queue for agent-created skills. When
+// skills.learning.writeApproval is on, every create/patch the review pass makes lands in
+// <brain>/skills/.pending/ instead of going live; these commands are how the operator
+// promotes or discards them.
+const skillCmd = program
+  .command("skill")
+  .description("review agent-created skills awaiting approval (skills/.pending)");
+
+skillCmd
+  .command("pending")
+  .description("list staged skills awaiting approval")
+  .action(async () => {
+    const config = loadConfig(program.opts().config);
+    const { listPendingSkills } = await import("./tools/skill-manage.js");
+    const pending = await listPendingSkills(config.brain.path);
+    if (!pending.length) {
+      console.log("(no pending skills)");
+      return;
+    }
+    for (const p of pending) {
+      console.log(`${p.name}  ${p.patchesExisting ? "[patch]" : "[new]"}  ${p.description}`);
+    }
+    console.log(`\nApprove with \`dae skill approve <name>\`, discard with \`dae skill reject <name>\`.`);
+  });
+
+skillCmd
+  .command("approve <name>")
+  .description("promote a staged skill to the live brain")
+  .action(async (name: string) => {
+    const config = loadConfig(program.opts().config);
+    const { approvePendingSkill } = await import("./tools/skill-manage.js");
+    await approvePendingSkill(config.brain.path, name);
+    console.log(`✓ skill '${name}' is live`);
+  });
+
+skillCmd
+  .command("reject <name>")
+  .description("discard a staged skill")
+  .action(async (name: string) => {
+    const config = loadConfig(program.opts().config);
+    const { rejectPendingSkill } = await import("./tools/skill-manage.js");
+    await rejectPendingSkill(config.brain.path, name);
+    console.log(`✗ skill '${name}' discarded`);
   });
 
 program
@@ -222,6 +311,144 @@ program
     if (opts.yes) disableOpts.yes = true;
     await runDisable(thing, program.opts().config, disableOpts);
   });
+
+program
+  .command("remote")
+  .alias("chat")
+  .description(
+    "the daedalus terminal interface: chat with the server-side agent while its bash/read/write run HERE. " +
+      "First run with no arguments launches a setup wizard (profile: ~/.daedalus/remote.json).",
+  )
+  .argument("[url]", "the server's web channel URL (defaults to the saved profile)")
+  .option("--token <token>", "bearer token (token-auth servers)")
+  .option("--user <username>", "login username (login-auth servers; prompts for the password)")
+  .option("--workspace <dir>", "directory commands and file ops are rooted in")
+  .option("--yolo", "skip per-command confirmation (dangerous commands still prompt)")
+  .option("--id <externalUserId>", "override the client identity (default: remote-<hostname>)")
+  .option("--plain", "line-mode output instead of the full terminal interface", false)
+  .action(
+    async (
+      url: string | undefined,
+      opts: {
+        token?: string;
+        user?: string;
+        workspace?: string;
+        yolo?: boolean;
+        id?: string;
+        plain: boolean;
+      },
+    ) => {
+      const shared = await import("./cli/remote-shared.js");
+      const saved = shared.loadProfile() ?? {};
+
+      // Resolution order: explicit flags → saved profile → first-run wizard.
+      let profile = {
+        url: url ?? saved.url ?? "",
+        token: opts.token ?? saved.token,
+        username: opts.user ?? saved.username,
+        workspace: opts.workspace ?? saved.workspace ?? process.cwd(),
+        execution: saved.execution ?? ("local" as const),
+        approval: opts.yolo ? ("yolo" as const) : (saved.approval ?? ("ask" as const)),
+        externalUserId: opts.id ?? saved.externalUserId,
+      };
+
+      if (!profile.url) {
+        if (!process.stdin.isTTY) {
+          console.error("No server URL: pass one (`dae remote <url>`) or run the wizard in a terminal first.");
+          process.exit(2);
+        }
+        console.log("First run — let's connect this machine to your daedalus.\n");
+        const answers = await prompts([
+          {
+            type: "text",
+            name: "url",
+            message: "Server URL (the address the web UI uses):",
+            validate: (v: string) => (/^https?:\/\//.test(v.trim()) ? true : "http(s):// URL required"),
+          },
+          {
+            type: "select",
+            name: "auth",
+            message: "How does the server authenticate?",
+            choices: [
+              { title: "Username + password (login mode)", value: "login" },
+              { title: "Bearer token", value: "token" },
+              { title: "None / handled by my proxy", value: "open" },
+            ],
+          },
+          { type: (prev: string) => (prev === "login" ? "text" : null), name: "username", message: "Username:" },
+          { type: (_p: string, v: { auth?: string }) => (v.auth === "token" ? "password" : null), name: "token", message: "Token:" },
+          {
+            type: "text",
+            name: "workspace",
+            message: "Workspace (commands + file ops run here):",
+            initial: path.join(process.env.HOME ?? process.cwd(), "dae-workspace"),
+          },
+          {
+            type: "select",
+            name: "approval",
+            message: "Command approval:",
+            choices: [
+              { title: "Ask for each command (recommended)", value: "ask" },
+              { title: "Free rein (dangerous commands still ask)", value: "yolo" },
+            ],
+          },
+        ]);
+        if (!answers.url) {
+          console.log("Cancelled.");
+          process.exit(2);
+        }
+        profile = {
+          url: String(answers.url).trim().replace(/\/$/, ""),
+          token: answers.token ? String(answers.token) : undefined,
+          username: answers.username ? String(answers.username) : undefined,
+          workspace: String(answers.workspace),
+          execution: "local",
+          approval: answers.approval === "yolo" ? "yolo" : "ask",
+          externalUserId: undefined,
+        };
+        shared.saveProfile({
+          url: profile.url,
+          ...(profile.token ? { token: profile.token } : {}),
+          ...(profile.username ? { username: profile.username } : {}),
+          workspace: profile.workspace,
+          execution: profile.execution,
+          approval: profile.approval,
+        });
+        console.log(`Saved to ${shared.profilePath()} — next time just run \`dae remote\`.\n`);
+      }
+
+      let password: string | undefined;
+      if (profile.username) {
+        const { secretPrompt } = await import("./setup/secret-prompt.js");
+        password = (await secretPrompt({ message: `Password for ${profile.username}:` })) ?? "";
+      }
+
+      if (opts.plain || !process.stdin.isTTY || !process.stdout.isTTY) {
+        const { runRemoteClient } = await import("./cli/remote-client.js");
+        await runRemoteClient({
+          url: profile.url,
+          workspace: profile.workspace,
+          yolo: profile.approval === "yolo",
+          ...(profile.token ? { token: profile.token } : {}),
+          ...(profile.username ? { username: profile.username } : {}),
+          ...(password !== undefined ? { password } : {}),
+          ...(profile.externalUserId ? { externalUserId: profile.externalUserId } : {}),
+        });
+      } else {
+        const { runRemoteTui } = await import("./cli/remote-tui.js");
+        await runRemoteTui({
+          url: profile.url,
+          ...(profile.token ? { token: profile.token } : {}),
+          ...(profile.username ? { username: profile.username } : {}),
+          ...(password !== undefined ? { password } : {}),
+          workspace: profile.workspace,
+          execution: profile.execution,
+          approval: profile.approval,
+          ...(profile.externalUserId ? { externalUserId: profile.externalUserId } : {}),
+        });
+      }
+    },
+  );
 
 program
   .command("serve")

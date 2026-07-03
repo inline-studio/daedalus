@@ -62,6 +62,39 @@ the directory, so any value set in frontmatter is ignored.)
 | `triggers` | No | string[] — `[]` | Plain phrases (e.g. `"good night"`) that deterministically surface the skill. When a message contains one — whole-word, case/punctuation-insensitive — ingest prepends a preamble telling the agent to load the skill and act on the message. Triggers route; the model still runs the turn, so mixed messages ("good night, also is the door locked?") keep working. Keep naming the phrases in `description` too — that covers the fuzzy variants exact matching can't. |
 | `requires.secrets` | No | string[] — `[]` | Secret names that must resolve (env or the secrets backend) when the skill loads. Missing ones surface a clear warning at agent start. |
 
+## Self-learning (agent-created skills)
+
+With `skills.learning.enabled: true` (plus `brain.writable: true`), daedalus learns skills
+from its own work — the Hermes-agent pattern:
+
+- **`skill_manage` tool** — create / patch / `append_reference` / archive / list. Give it to
+  the orchestrator by naming it in `tools:` (it is deliberately excluded from `['*']`, so a
+  wildcard subagent can't rewrite the brain). Agents holding it also get a built-in "Skill
+  upkeep" prompt section: save the approach after a complex task; patch a skill that proved
+  wrong immediately.
+- **Post-turn review pass** — after a substantial top-level turn (≥ `minToolCalls` tool
+  calls, a skill loaded this turn, or the cross-turn `nudgeInterval` backstop), a small fork
+  replays the turn's transcript with ONLY `skill_manage` and decides what to keep. Its
+  rules: patch before create; class-level skills, never one-session diaries; user
+  corrections about *how* to work are first-class signals; never persist transient failures
+  or negative tool claims. Same model as the agent by default (warm prompt cache); override
+  with `skills.learning.model`.
+- **Write approval** (`writeApproval: true`, the default) — every create/patch lands in
+  `skills/.pending/<name>/` instead of going live. Review with `dae skill pending`, then
+  `dae skill approve <name>` / `dae skill reject <name>`. Turn it off once the generated
+  skills have earned trust.
+- **Staleness curator** — a deterministic cron sweep (`skills.learning.curator`, default
+  Sunday 04:00): agent-created skills unused for `staleAfterDays` (30) get frontmatter
+  `status: stale` (demoted + flagged in the menu); past `archiveAfterDays` (90) the
+  directory moves to `skills/.archive/` — never deleted. Human-authored skills
+  (no `origin: agent`) and `pinned: true` skills are never touched; using or patching a
+  stale skill revives it. Usage comes from a `load_skill` tracker in the sessions sqlite.
+- **Git audit trail** — when the brain is a git repo, every live skill write and curator
+  sweep is committed (`skill(<name>): …`), so learned changes are diffable and revertible.
+
+Related frontmatter fields on SKILL.md: `origin` (`human` default / `agent`), `status`
+(`active` / `stale`), `pinned` (exempt from the curator).
+
 ## bootstrap.sh — the install script
 
 If a skill ships a `bootstrap.sh` next to `SKILL.md`, daedalus runs it **once per

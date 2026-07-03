@@ -319,6 +319,27 @@ export class ScheduleStore {
   // as a pre-existing schedule and ask "reschedule or leave?" instead of just
   // delivering it. Pending-only gives the agent the set of genuinely upcoming
   // schedules without the self-collision.
+  // All armed (pending/firing) runtime schedules — the web UI's cron viewer. Read-only,
+  // any creator (unlike listForAgent, which is scoped for the cancel tool's authz).
+  listActive(): ScheduledMessage[] {
+    this.ensureFreshConnection();
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM scheduled_messages WHERE status IN ('pending','firing') ORDER BY due_at ASC`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    return rows.map(rowToScheduledMessage);
+  }
+
+  // Number of armed (pending/firing) runtime schedules — the web status bar's "cron" count.
+  countActive(): number {
+    this.ensureFreshConnection();
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM scheduled_messages WHERE status IN ('pending','firing')`)
+      .get() as { n: number } | undefined;
+    return row ? Number(row.n) : 0;
+  }
+
   listForAgent(byAgent: string): ScheduledMessage[] {
     this.ensureFreshConnection();
     const rows = this.db

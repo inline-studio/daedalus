@@ -38,6 +38,9 @@ export interface PersistedSession {
   // default/"Main" session and until a freshly-created conversation gets its first message
   // (we auto-title from that). Non-web channels never set or read it.
   title: string | null;
+  // Pinned conversations surface in the web UI sidebar's PINNED section. Web-only concept;
+  // other channels ignore it.
+  pinned: boolean;
   createdAt: string;
   lastActiveAt: string;
 }
@@ -241,6 +244,13 @@ export class SessionStore {
           ON sessions(user_id, agent_name, last_active_at);
       `);
     }
+
+    // 4. Pinned conversations (web sidebar). Additive column; runs after the title rebuild
+    //    so a legacy DB picks it up in the same open.
+    const colsAfter = this.db.prepare(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;
+    if (!colsAfter.some((c) => c.name === "pinned")) {
+      this.db.exec(`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
+    }
   }
 
   private rowToSession(row: {
@@ -248,6 +258,7 @@ export class SessionStore {
     user_id: string;
     agent_name: string;
     title: string | null;
+    pinned?: number;
     created_at: string;
     last_active_at: string;
   }): PersistedSession {
@@ -256,6 +267,7 @@ export class SessionStore {
       userId: row.user_id,
       agentName: row.agent_name,
       title: row.title,
+      pinned: Boolean(row.pinned),
       createdAt: row.created_at,
       lastActiveAt: row.last_active_at,
     };
@@ -318,7 +330,7 @@ export class SessionStore {
          VALUES (?, ?, ?, ?, ?, ?)`,
       )
       .run(id, userId, agentName, title ?? null, now, now);
-    return { id, userId, agentName, title: title ?? null, createdAt: now, lastActiveAt: now };
+    return { id, userId, agentName, title: title ?? null, pinned: false, createdAt: now, lastActiveAt: now };
   }
 
   // Look up a single session by id (returns null if it doesn't exist). Callers that act on
@@ -360,6 +372,12 @@ export class SessionStore {
   setSessionTitle(sessionId: string, title: string): void {
     this.ensureFreshConnection();
     this.db.prepare(`UPDATE sessions SET title = ? WHERE id = ?`).run(title, sessionId);
+  }
+
+  // Pin / unpin a conversation (web sidebar's PINNED section).
+  setSessionPinned(sessionId: string, pinned: boolean): void {
+    this.ensureFreshConnection();
+    this.db.prepare(`UPDATE sessions SET pinned = ? WHERE id = ?`).run(pinned ? 1 : 0, sessionId);
   }
 
   // Delete all of a conversation's messages but keep the session row. Used to "delete" the

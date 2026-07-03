@@ -82,13 +82,106 @@ Notes:
 - The CLI channel notes attachments (`[attachment: shot.png …]`) since a terminal can't
   render them; the Web channel streams them base64 over SSE.
 
+## Live sub-agent activity
+
+Streaming surfaces (Web, CLI) show delegated work as it happens. When the orchestrator
+calls `spawn_subagent`, the subagent's own turn events flow back tagged with an origin
+(`path` — the agent chain, e.g. `["cypher"]` or `["cypher", "reviewer"]` for a nested
+spawn — plus a `spawnId` grouping one delegation). This works across every dispatch
+mode: per-turn agent containers stream sentinel-framed event lines on stdout, which the
+container dispatcher forwards to the live sink.
+
+- **Web** renders each spawn as a collapsible panel inline in the reply — the delegated
+  prompt, then tool rows resolving ✓/✗ live, then a done / needs-input / failed state.
+- **CLI** prints dim prefixed lines (`[cypher] ⚙ started: …`, `[cypher] tool: bash`,
+  `[cypher] done`). Verbosity: `channels.cli.subagentEvents: summary` (default) /
+  `full` (adds each subagent's final reply text) / `off`.
+- Buffered channels (Telegram, WhatsApp) are unaffected — they still get only the
+  orchestrator's final reply.
+
+Subagent **text isn't** streamed to the user — the panel shows lifecycle + tool
+activity; the subagent's findings reach the user through the orchestrator's own reply,
+as before. Turn the streaming off globally with `runtime.subagentEventStream: false`.
+
+## Stopping a turn
+
+Streaming surfaces can abort an in-flight turn: the web/desktop **Send** button becomes
+**Stop** while a reply streams (the remote CLI takes `/stop`). `POST /abort
+{conversationId}` cancels the turn wherever it runs — AbortSignal in-process, a
+forwarded abort on the warm worker, `docker rm -f` for per-turn containers. Partial
+output stays visible, nothing further is persisted, and the conversation shows a quiet
+"⏹ Stopped." rather than an error. Buffered channels (Telegram) have no stop control.
+
+## Remote execution (`dae remote`)
+
+The inverse of the usual deployment: the agent keeps running on the server — brain,
+sessions, memory, LLM — but its **tools execute on your machine**.
+
+```bash
+dae remote        # first run: a setup wizard (URL, auth, workspace, approval mode);
+                  # thereafter it just connects. Profile: ~/.daedalus/remote.json
+```
+
+In a terminal this is a full **terminal interface** (alias `dae chat`): streaming
+replies with dim tool/sub-agent lines, a persistent status line (gateway · session ·
+execution mode · context readout · timer), ↑/↓ history (persisted), multi-line input
+with a trailing `\`, **Esc stops the in-flight turn**, Ctrl-C twice quits. Slash
+commands: `/stop /new /sessions [n] /agents /crons /activity /skills /status
+/local on|off /yolo on|off /help /quit` — anything else (including server commands like
+`/compact`) goes to the agent. `--plain` (or no TTY) falls back to line mode; without a
+TTY the client is executor-only and refuses anything that would have prompted.
+
+Under the hood: one process, two jobs — the chat stream, and the **executor** for your
+user: a second SSE stream delivers the turn's `bash` / `read` / `write` / `edit`
+requests, they run in your declared workspace, and results flow back. Everything is
+outbound HTTP from the laptop: no open ports, no tunnel, NAT-friendly. Enable
+server-side with `channels.web.remoteExec.enabled: true`.
+
+Scope and safety:
+
+- Only turns started by **your user with a connected executor** execute on your machine.
+  In login mode the executor is keyed to the logged-in user, so the web UI and desktop
+  app share it too — a `⌁ local / ☁ server` toggle in the composer (and `/local on|off`
+  in the CLI) opts individual conversations out per message. Schedules run server-side
+  as always. **Sub-agents** run server-side unless their manifest declares
+  `execution: executor` — those are for host-only tooling and run through your executor
+  too (failing fast, with guidance, when none is connected).
+- Turns that execute remotely get an ephemeral **execution-environment** context line —
+  "bash runs on scotts-mba (darwin/arm64), workspace …" — so the agent stops assuming
+  the server container's toolchain and probes with `command -v` instead. Executors
+  advertise hostname/platform/arch when they register.
+- Every command asks for confirmation (`y/N/a` — `a` persists a two-token prefix to
+  `~/.daedalus/remote-allow.json` so routine commands stop asking). `--yolo` skips the
+  prompt, but a denylist of catastrophic patterns (`rm -rf`, `sudo`, `mkfs`, …) ALWAYS
+  prompts. File reads/writes are confined to the workspace. Every execution is appended
+  to `~/.daedalus/remote-exec.log`.
+- Without a TTY the client runs executor-only, and anything that would have prompted is
+  refused rather than silently approved.
+- Internally, agent containers reach the laptop via the supervisor's `/rpc/exec` bridge,
+  guarded by a per-boot shared secret (`DAE_RPC_TOKEN` — set it in the compose `.env`
+  when running the warm-worker topology so both containers share it).
+
 ## The other channels
 
 - **CLI** — an interactive REPL (`dae serve` with the cli channel enabled): each stdin
   line is a message; replies and attachment notes print to stdout. Good for local dev.
 - **Web** — a minimal HTTP + SSE surface. `POST /messages` to send (optionally with
   base64 attachments), `GET /events?externalUserId=…` for the reply stream. A bearer
-  token (`web.token`) guards it when set.
+  token (`web.token`) guards it when set. The built-in chat UI (served at `GET /`) is a
+  full session workspace: a sidebar with **Skills & Tools** (the library with lifecycle
+  actions — approve/reject pending agent-created skills, pin/unpin, archive; gated on
+  `brain.writable`) and **Artifacts** (searchable per-user file catalogue with
+  ownership-checked downloads) panels, pinned sessions + title search, a section per
+  enabled messaging channel (the cross-channel Main thread, click-to-open), and a
+  status bar showing gateway state, agent/cron counts, a context-window readout
+  (`65.0k/200.0k · 32%` — the last turn's input tokens vs the agent's `contextWindow`),
+  a session timer, and client/backend versions (`GET /status` powers the supervisor
+  half). The bar's **agents** and **cron** items are buttons: agents opens the roster
+  merged with live activity (`GET /agents` + `GET /activity` — every in-flight turn for
+  your user, channel + scheduled, live doing-now labels, click-to-jump; the item pulses
+  while anything runs; pairs with the Stop button), cron opens the schedule detail
+  (`GET /schedules`). The UI's source lives under `src/web/ui/` (plain HTML/CSS/JS),
+  assembled into the served module by `npm run build:web-ui`.
 - **WhatsApp** — Cloud API channel (access token + phone-number id), off by default.
 
 Enable channels in `daedalus.config.yaml` under `channels:` (with `enabled: true` and a

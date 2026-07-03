@@ -37,6 +37,9 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
       isSubagent: args.isSubagent,
       ...originFields(args),
       ...(args.turnDirective ? { turnDirective: args.turnDirective } : {}),
+      // Internal hop on the trusted docker network — the rpc token rides along so the
+      // worker's turn can reach the supervisor's /rpc/exec bridge.
+      ...(args.remoteExec ? { remoteExec: args.remoteExec } : {}),
     });
 
     // A turn can take a while (LLM + tools), so don't impose a tight timeout —
@@ -86,6 +89,25 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
     throw new Error(
       `agent worker unreachable at ${this.url}: ${(lastErr as Error)?.message ?? "unknown error"}`,
     );
+  }
+
+  // Forward a user abort to the worker, which fires the matching turn's AbortSignal.
+  async abort(sessionId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.url}/abort`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+        signal: AbortSignal.timeout(5_000),
+        dispatcher: directDispatcher,
+      } as unknown as RequestInit);
+      if (!res.ok) return false;
+      const j = (await res.json()) as { aborted?: boolean };
+      return Boolean(j.aborted);
+    } catch (err) {
+      log.warn({ err: (err as Error).message }, "abort forward to worker failed");
+      return false;
+    }
   }
 
   // Parse the worker's NDJSON turn stream: forward each event line to `onEvent` (when present)

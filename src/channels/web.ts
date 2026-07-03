@@ -5,6 +5,7 @@ import { COMPACTION_CHANNEL, type SessionStore, type PersistedSession } from "..
 import { WEB_UI_HTML, WEB_LOGIN_HTML } from "./web-ui.js";
 import { MARKED_UMD_JS, DOMPURIFY_MIN_JS } from "./web-vendor.js";
 import { verifyPassword, signSession, verifySession, parseCookies } from "./web-auth.js";
+import { ExecutorRegistry, getRpcToken, type RemoteExecResult } from "./remote-exec.js";
 import { log } from "../log.js";
 
 // Minimal HTTP+SSE channel.
@@ -71,6 +72,28 @@ export class WebChannel implements Channel {
   private assistantName: string;
   private userName: string | undefined;
   private listCommands: (() => Promise<WebCommandInfo[]>) | undefined;
+  private status: (() => Promise<Record<string, unknown>>) | undefined;
+  // Remote execution bridge (the `dae remote` CLI). Present only when enabled in config.
+  private executors: ExecutorRegistry | undefined;
+  private remoteExecTimeoutMs = 180_000;
+  // Supervisor hook: abort the in-flight turn for a conversation (POST /abort).
+  private abortTurn: ((conversationId: string) => Promise<boolean>) | undefined;
+  // Viewer providers (GET /agents, GET /schedules, GET /activity) — injected like status.
+  private listAgentDetails: (() => Promise<Array<Record<string, unknown>>>) | undefined;
+  private listSchedules: (() => Promise<Record<string, unknown>>) | undefined;
+  private listActivity: ((userId: string) => Promise<Array<Record<string, unknown>>>) | undefined;
+  private skillsProvider:
+    | {
+        list: () => Promise<Record<string, unknown>>;
+        action: (name: string, action: string) => Promise<{ ok: boolean; error?: string }>;
+      }
+    | undefined;
+  private artifactsProvider:
+    | {
+        list: (userId: string, q: string) => Promise<Array<Record<string, unknown>>>;
+        read: (userId: string, ref: string) => Promise<{ data: Buffer; mediaType: string; filename?: string } | null>;
+      }
+    | undefined;
 
   constructor(opts: {
     defaultAgent: string;
@@ -90,6 +113,30 @@ export class WebChannel implements Channel {
     // Slash-commands available to the default agent, for GET /commands (powers the UI's
     // autocomplete). Injected by the registry so the channel stays brain-agnostic.
     listCommands?: () => Promise<WebCommandInfo[]>;
+    // Supervisor snapshot for GET /status (versions, agent/schedule counts, dispatcher,
+    // memory backend). Injected by serve so the channel stays supervisor-agnostic; absent
+    // (e.g. a bare smoke harness) the endpoint returns {}.
+    status?: () => Promise<Record<string, unknown>>;
+    // Remote execution bridge (`dae remote`): /rpc/stream, /rpc/result, /rpc/exec.
+    remoteExec?: { enabled: boolean; timeoutMs?: number };
+    // Abort the in-flight turn for a conversation (the Stop button). Injected by serve.
+    abortTurn?: (conversationId: string) => Promise<boolean>;
+    // Viewer providers: agent manifests (registry, from the brain), schedules (serve,
+    // static + agent-armed), and in-flight activity (serve's registry, per user).
+    // Absent → the endpoints return empty shapes.
+    listAgentDetails?: () => Promise<Array<Record<string, unknown>>>;
+    listSchedules?: () => Promise<Record<string, unknown>>;
+    listActivity?: (userId: string) => Promise<Array<Record<string, unknown>>>;
+    // Skills + artifacts panels (GET /skills, POST /skills/action, GET /artifacts,
+    // GET /artifacts/file) — injected by serve like the other viewer providers.
+    skillsProvider?: {
+      list: () => Promise<Record<string, unknown>>;
+      action: (name: string, action: string) => Promise<{ ok: boolean; error?: string }>;
+    };
+    artifactsProvider?: {
+      list: (userId: string, q: string) => Promise<Array<Record<string, unknown>>>;
+      read: (userId: string, ref: string) => Promise<{ data: Buffer; mediaType: string; filename?: string } | null>;
+    };
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -100,6 +147,31 @@ export class WebChannel implements Channel {
     this.assistantName = opts.assistantName ?? "Artemis";
     this.userName = opts.userName;
     this.listCommands = opts.listCommands;
+    this.status = opts.status;
+    if (opts.remoteExec?.enabled) {
+      this.executors = new ExecutorRegistry();
+      if (opts.remoteExec.timeoutMs) this.remoteExecTimeoutMs = opts.remoteExec.timeoutMs;
+    }
+    this.abortTurn = opts.abortTurn;
+    this.listAgentDetails = opts.listAgentDetails;
+    this.listSchedules = opts.listSchedules;
+    this.listActivity = opts.listActivity;
+    this.skillsProvider = opts.skillsProvider;
+    this.artifactsProvider = opts.artifactsProvider;
+  }
+
+  // Whether this user currently has a `dae remote` executor connected — serve uses it to
+  // decide whether a turn's tools should execute on the user's machine.
+  remoteConnected(userId: string): boolean {
+    return this.executors?.connected(userId) ?? false;
+  }
+
+  // The connected executor's machine description (workspace/hostname/platform/arch) —
+  // feeds the turn's execution-environment context line.
+  executorInfo(userId: string): Record<string, string> | null {
+    const info = this.executors?.info(userId);
+    if (!info) return null;
+    return { workspace: info.workspace, ...info.env };
   }
 
   async start(ctx: ChannelContext): Promise<void> {
@@ -157,6 +229,48 @@ export class WebChannel implements Channel {
           return;
         }
 
+        // Internal remote-exec bridge — agent containers, not users. Guarded by the
+        // per-boot shared secret (never by user auth: containers have no cookie/bearer),
+        // so it sits BEFORE the user gate. 404s when the feature is off so the route
+        // doesn't even exist to probe.
+        if (req.method === "POST" && pathname === "/rpc/exec") {
+          if (!this.executors) {
+            res.writeHead(404);
+            res.end("not found");
+            return;
+          }
+          if (req.headers["x-dae-rpc-token"] !== getRpcToken()) {
+            res.writeHead(401);
+            res.end("unauthorized");
+            return;
+          }
+          const body = await readJson(req);
+          const userId = String(body.userId ?? "");
+          const kind = String(body.kind ?? "exec") as "exec" | "read" | "write";
+          if (!userId || !["exec", "read", "write"].includes(kind)) {
+            res.writeHead(400);
+            res.end("userId and a valid kind are required");
+            return;
+          }
+          const result = await this.executors.submit(
+            userId,
+            {
+              kind,
+              ...(typeof body.cmd === "string" ? { cmd: body.cmd } : {}),
+              ...(typeof body.path === "string" ? { path: body.path } : {}),
+              ...(typeof body.content === "string" ? { content: body.content } : {}),
+              ...(typeof body.timeoutMs === "number" ? { timeoutMs: body.timeoutMs } : {}),
+            },
+            Math.min(
+              typeof body.timeoutMs === "number" ? body.timeoutMs + 10_000 : this.remoteExecTimeoutMs,
+              this.remoteExecTimeoutMs,
+            ),
+          );
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(result));
+          return;
+        }
+
         // --- Gate the API routes ---
         if (loginMode) {
           if (!loginUser) {
@@ -180,6 +294,35 @@ export class WebChannel implements Channel {
           await this.handlePost(req, res, ctx, loginUser);
           return;
         }
+        if (req.method === "POST" && pathname === "/abort") {
+          // Stop the in-flight turn for one of the caller's conversations. Ownership is
+          // enforced the same way as every other conversation-scoped route.
+          const body = await readJson(req);
+          // In login mode the authenticated username IS the user (like /messages).
+          const externalUserId =
+            loginUser ??
+            (typeof body.externalUserId === "string" && body.externalUserId
+              ? body.externalUserId
+              : url.searchParams.get("externalUserId"));
+          if (!externalUserId || !this.abortTurn) {
+            res.writeHead(externalUserId ? 404 : 400);
+            res.end(externalUserId ? "abort not available" : "externalUserId required");
+            return;
+          }
+          const session = this.resolveConversation(
+            externalUserId,
+            typeof body.conversationId === "string" ? body.conversationId : undefined,
+          );
+          if (!session) {
+            res.writeHead(404);
+            res.end("conversation not found");
+            return;
+          }
+          const stopped = await this.abortTurn(session.id).catch(() => false);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ stopped }));
+          return;
+        }
         if (req.method === "GET" && pathname === "/events") {
           this.handleSse(req, res, loginUser);
           return;
@@ -190,6 +333,130 @@ export class WebChannel implements Channel {
         }
         if (pathname === "/conversations") {
           await this.handleConversations(req, res, url, loginUser);
+          return;
+        }
+        // Executor registration + results (the `dae remote` client's two calls). Behind
+        // the normal user gate: the executor authenticates exactly like any web client.
+        if (req.method === "GET" && pathname === "/rpc/stream") {
+          this.handleRpcStream(req, res, url, loginUser);
+          return;
+        }
+        if (req.method === "POST" && pathname === "/rpc/result") {
+          await this.handleRpcResult(req, res, url, loginUser);
+          return;
+        }
+        if (req.method === "GET" && pathname === "/skills") {
+          const body = this.skillsProvider
+            ? await this.skillsProvider.list().catch(() => ({ skills: [], pending: [] }))
+            : { skills: [], pending: [] };
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(body));
+          return;
+        }
+        if (req.method === "POST" && pathname === "/skills/action") {
+          if (!this.skillsProvider) {
+            res.writeHead(404);
+            res.end("not available");
+            return;
+          }
+          const body = await readJson(req);
+          const name = typeof body.name === "string" ? body.name : "";
+          const action = typeof body.action === "string" ? body.action : "";
+          if (!name || !action) {
+            res.writeHead(400);
+            res.end("name and action required");
+            return;
+          }
+          const result = await this.skillsProvider.action(name, action).catch((err) => ({
+            ok: false,
+            error: (err as Error).message,
+          }));
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(result));
+          return;
+        }
+        if (req.method === "GET" && pathname === "/artifacts") {
+          const artUser = loginUser ?? url.searchParams.get("externalUserId");
+          let files: Array<Record<string, unknown>> = [];
+          if (artUser && this.artifactsProvider && this.sessions) {
+            const userId = this.sessions.resolveUser(this.id, artUser);
+            files = await this.artifactsProvider
+              .list(userId, url.searchParams.get("q") ?? "")
+              .catch(() => []);
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ files }));
+          return;
+        }
+        if (req.method === "GET" && pathname === "/artifacts/file") {
+          const artUser = loginUser ?? url.searchParams.get("externalUserId");
+          const ref = url.searchParams.get("ref") ?? "";
+          if (!artUser || !ref || !this.artifactsProvider || !this.sessions) {
+            res.writeHead(400);
+            res.end("externalUserId and ref required");
+            return;
+          }
+          const userId = this.sessions.resolveUser(this.id, artUser);
+          const file = await this.artifactsProvider.read(userId, ref).catch(() => null);
+          if (!file) {
+            res.writeHead(404);
+            res.end("not found");
+            return;
+          }
+          // Content-Disposition uses a sanitised ASCII fallback name; inline rendering is
+          // left to the browser for images/PDFs via the real media type.
+          const safeName = (file.filename ?? "artifact").replace(/[^\w.-]+/g, "_").slice(0, 80) || "artifact";
+          res.writeHead(200, {
+            "Content-Type": file.mediaType || "application/octet-stream",
+            "Content-Length": file.data.length,
+            "Content-Disposition": `attachment; filename="${safeName}"`,
+          });
+          res.end(file.data);
+          return;
+        }
+        if (req.method === "GET" && pathname === "/activity") {
+          // What the caller's agents are doing right now (in-flight turns, live labels).
+          const actUser = loginUser ?? url.searchParams.get("externalUserId");
+          let turns: Array<Record<string, unknown>> = [];
+          if (actUser && this.listActivity && this.sessions) {
+            const userId = this.sessions.resolveUser(this.id, actUser);
+            turns = await this.listActivity(userId).catch(() => []);
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ turns }));
+          return;
+        }
+        if (req.method === "GET" && pathname === "/agents") {
+          const agents = this.listAgentDetails ? await this.listAgentDetails().catch(() => []) : [];
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ agents }));
+          return;
+        }
+        if (req.method === "GET" && pathname === "/schedules") {
+          const body = this.listSchedules
+            ? await this.listSchedules().catch(() => ({ static: [], dynamic: [] }))
+            : { static: [], dynamic: [] };
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(body));
+          return;
+        }
+        if (req.method === "GET" && pathname === "/status") {
+          // Supervisor snapshot for the UI's status bar. Best-effort: a provider failure
+          // degrades to {} rather than erroring the bar.
+          const body = this.status ? await this.status().catch(() => ({})) : {};
+          // Per-caller executor state, so the UI can show the local-execution toggle only
+          // when it means something.
+          const statusUser = loginUser ?? url.searchParams.get("externalUserId");
+          if (this.executors && this.sessions && statusUser) {
+            const userId = this.sessions.resolveUser(this.id, statusUser);
+            (body as Record<string, unknown>).remoteExec = {
+              enabled: true,
+              connected: this.executors.connected(userId),
+              ...(this.executors.info(userId) ?? {}),
+            };
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(body));
           return;
         }
         if (req.method === "GET" && pathname === "/commands") {
@@ -217,8 +484,93 @@ export class WebChannel implements Channel {
   async stop(): Promise<void> {
     for (const set of this.streams.values()) for (const r of set) r.end();
     this.streams.clear();
+    this.executors?.closeAll();
     await new Promise<void>((resolve) => this.server?.close(() => resolve()));
     this.server = null;
+  }
+
+  // GET /rpc/stream — a `dae remote` client registers as its user's executor. The SSE
+  // stream carries `request` events (exec/read/write) that the client answers via
+  // POST /rpc/result. One executor per user; a reconnect replaces the previous stream.
+  private handleRpcStream(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    forcedUser: string | null,
+  ): void {
+    if (!this.executors || !this.sessions) {
+      res.writeHead(404);
+      res.end("remote execution is not enabled (channels.web.remoteExec.enabled)");
+      return;
+    }
+    const externalUserId = forcedUser ?? url.searchParams.get("externalUserId");
+    if (!externalUserId) {
+      res.writeHead(400);
+      res.end("externalUserId required");
+      return;
+    }
+    const userId = this.sessions.resolveUser(this.id, externalUserId);
+    const workspace = url.searchParams.get("workspace") ?? "";
+    // Optional machine description (hostname/platform/arch) for the turn's
+    // execution-environment context line. Length-capped defensively.
+    const env: Record<string, string> = {};
+    for (const key of ["hostname", "platform", "arch"]) {
+      const v = url.searchParams.get(key);
+      if (v) env[key] = v.slice(0, 80);
+    }
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+    res.write(`: executor registered\n\n`);
+    this.executors.register(userId, res, workspace, env);
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(`event: heartbeat\ndata: {}\n\n`);
+      } catch {
+        /* close handler cleans up */
+      }
+    }, this.heartbeatMs);
+    if (typeof heartbeat.unref === "function") heartbeat.unref();
+    const cleanup = () => {
+      clearInterval(heartbeat);
+      this.executors?.unregister(userId, res);
+    };
+    req.on("close", cleanup);
+    res.on("close", cleanup);
+  }
+
+  // POST /rpc/result — the executor answers one request it received on its stream.
+  private async handleRpcResult(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: URL,
+    forcedUser: string | null,
+  ): Promise<void> {
+    if (!this.executors || !this.sessions) {
+      res.writeHead(404);
+      res.end("not found");
+      return;
+    }
+    const externalUserId = forcedUser ?? url.searchParams.get("externalUserId");
+    if (!externalUserId) {
+      res.writeHead(400);
+      res.end("externalUserId required");
+      return;
+    }
+    const userId = this.sessions.resolveUser(this.id, externalUserId);
+    const body = await readJson(req);
+    const result = body as unknown as RemoteExecResult;
+    if (!result || typeof result.id !== "string") {
+      res.writeHead(400);
+      res.end("result with an id required");
+      return;
+    }
+    const delivered = this.executors.deliver(userId, result);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: delivered }));
   }
 
   async send(externalUserId: string, msg: OutgoingMessage): Promise<void> {
@@ -256,6 +608,47 @@ export class WebChannel implements Channel {
   // persisted to the session and reloaded from history on reconnect, so nothing is lost.
   streamSink(externalUserId: string, conversationId?: string): TurnEventSink {
     return (ev) => {
+      // Subagent activity (origin-tagged events forwarded by spawn_subagent). Handled BEFORE
+      // the switch: a subagent's text_delta must never stream into the top-level reply bubble.
+      // Only the structural events go over the wire — deltas at subagent depth are dropped to
+      // bound SSE volume; the panel shows lifecycle + tool activity, not streamed prose.
+      if (ev.origin) {
+        const base = { spawnId: ev.origin.spawnId, path: ev.origin.path };
+        switch (ev.type) {
+          case "subagent_start":
+            this.sseEvent(externalUserId, conversationId, "subagent", {
+              ...base,
+              kind: "start",
+              prompt: ev.prompt.length > 500 ? ev.prompt.slice(0, 500) + "…" : ev.prompt,
+            });
+            break;
+          case "tool_use":
+            this.sseEvent(externalUserId, conversationId, "subagent", {
+              ...base,
+              kind: "tool",
+              id: ev.id,
+              name: ev.name,
+              input: ev.input,
+            });
+            break;
+          case "tool_result":
+            this.sseEvent(externalUserId, conversationId, "subagent", {
+              ...base,
+              kind: "tool_done",
+              id: ev.id,
+              isError: ev.isError,
+            });
+            break;
+          case "subagent_end":
+            this.sseEvent(externalUserId, conversationId, "subagent", {
+              ...base,
+              kind: "end",
+              status: ev.status,
+            });
+            break;
+        }
+        return;
+      }
       switch (ev.type) {
         case "text_delta":
           this.sseEvent(externalUserId, conversationId, "delta", { text: ev.text });
@@ -285,6 +678,7 @@ export class WebChannel implements Channel {
           this.sseEvent(externalUserId, conversationId, "turn_done", {
             text: ev.finalText,
             ...(ev.usage ? { usage: ev.usage } : {}),
+            ...(ev.context ? { context: ev.context } : {}),
           });
           break;
         case "debug_log":
@@ -467,6 +861,9 @@ export class WebChannel implements Channel {
       ...(typeof body.text === "string" ? { text: body.text } : {}),
       ...(conversationId ? { conversationId } : {}),
       ...(typeof body.addressedTo === "string" ? { addressedTo: body.addressedTo } : {}),
+      ...(body.execution === "local" || body.execution === "server"
+        ? { execution: body.execution }
+        : {}),
       ...(typeof body.externalMessageId === "string" ? { externalMessageId: body.externalMessageId } : {}),
       ...(attachments.length ? { attachments } : {}),
       receivedAt: new Date().toISOString(),
@@ -696,6 +1093,7 @@ export class WebChannel implements Channel {
     const toEntry = (s: PersistedSession) => ({
       id: s.id,
       title: s.title,
+      pinned: s.pinned,
       createdAt: s.createdAt,
       lastActiveAt: s.lastActiveAt,
     });
@@ -704,8 +1102,32 @@ export class WebChannel implements Channel {
       // Ensure the default/"Main" session exists so the UI always has at least one conversation,
       // and so a brand-new browser gets a stable id to talk to.
       const def = sessions.getOrCreateSession(userId, this.defaultAgent);
-      const conversations = sessions.listSessions(userId, this.defaultAgent).map(toEntry);
-      json(200, { conversations, defaultId: def.id });
+      let list = sessions.listSessions(userId, this.defaultAgent);
+      // Sidebar search: `?q=` filters by title, case-insensitive substring. The default
+      // (title-less) session matches its fixed "Main" label.
+      const q = url.searchParams.get("q")?.trim().toLowerCase();
+      if (q) {
+        list = list.filter((s) => ((s.id === def.id ? s.title ?? "Main" : s.title) ?? "").toLowerCase().includes(q));
+      }
+      json(200, { conversations: list.map(toEntry), defaultId: def.id });
+      return;
+    }
+    if (req.method === "PATCH") {
+      // Pin / unpin (and future per-conversation mutations). Ownership enforced like DELETE.
+      const body = await readJson(req).catch(() => ({}) as Record<string, unknown>);
+      const id = typeof body.id === "string" ? body.id : url.searchParams.get("id");
+      if (!id) {
+        json(400, { error: "id required" });
+        return;
+      }
+      const s = sessions.getSessionById(id);
+      if (!s || s.userId !== userId || s.agentName !== this.defaultAgent) {
+        json(404, { error: "not found" });
+        return;
+      }
+      if (typeof body.pinned === "boolean") sessions.setSessionPinned(id, body.pinned);
+      const updated = sessions.getSessionById(id);
+      json(200, updated ? toEntry(updated) : { ok: true });
       return;
     }
     if (req.method === "POST") {
