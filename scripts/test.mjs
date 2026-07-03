@@ -22,6 +22,7 @@ const CI_SAFE = [
   "smoke-attachment-path",
   "smoke-audio-ingest",
   "smoke-auto-save-memory",
+  "smoke-build-prune",
   "smoke-commands",
   "smoke-compaction",
   "smoke-compose-materialize",

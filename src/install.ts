@@ -631,6 +631,13 @@ export async function runInstall(
     return;
   }
 
+  // 6. Post-build housekeeping — only after a SUCCESSFUL bring-up (a failed build may
+  //    still need its cache/layers for the retry). Every `up --build` re-tags the
+  //    daedalus/graphiti images and strands the previous build as a dangling <none>
+  //    image plus buildkit cache; months of `dae install`/`dae update` runs accumulated
+  //    200+ images and ~35GB of cache on casa and filled the disk (breaking sqlite).
+  await pruneBuildLeftovers();
+
   console.log("\n✓ Stack is up. Containers:");
   console.log("    daedalus   — supervisor + scheduler");
   console.log("    dae-worker — warm agent worker (handles top-level turns)");
@@ -808,6 +815,70 @@ export function computeComposeProfiles(opts: { whisper: boolean; graphiti: boole
   if (opts.graphiti) profiles.push("graphiti");
   if (opts.whisper) profiles.push("whisper");
   return profiles.join(",");
+}
+
+// Label docker-compose.yml stamps on every image the stack BUILDS (build.labels on the
+// daedalus + graphiti build sections). Image labels live in the image config, so a
+// superseded build KEEPS it after the rebuild takes its tag — which is what lets the
+// cleanup below target exactly "old daedalus builds" and nothing else on the host.
+export const DAEDALUS_IMAGE_LABEL = "studio.in-line.project=daedalus";
+
+// Build cache retained across cleanups: enough that the next `--build` stays warm,
+// bounded so repeat installs can't fill a disk.
+export const BUILDER_CACHE_KEEP = "5GB";
+
+// The docker prune commands post-build cleanup runs. Pure + exported so the smoke can
+// assert the safety invariants (dangling-only, label-scoped, no -a/--all, no volumes)
+// without a docker daemon.
+export function dockerCleanupCommands(): { imageArgs: string[]; builderArgs: string[] } {
+  return {
+    imageArgs: ["image", "prune", "-f", "--filter", `label=${DAEDALUS_IMAGE_LABEL}`],
+    builderArgs: ["builder", "prune", "-f", "--keep-storage", BUILDER_CACHE_KEEP],
+  };
+}
+
+// Remove what previous builds left behind, scoped so nothing outside daedalus is touched:
+//   • images — dangling only (`image prune` without -a never removes a tagged image) AND
+//     filtered to DAEDALUS_IMAGE_LABEL, so other compose projects' leftovers survive even
+//     when they too are dangling. Volumes are never involved in either command.
+//   • build cache — the buildkit store is daemon-global (docker has no per-project cache
+//     scoping), so a retention cap is the only lever; pruning cache is safe — worst case
+//     another project's next build runs colder. `--keep-storage` is the legacy-builder
+//     spelling (and a deprecated alias on older buildx); current buildx renamed it to
+//     `--reserved-space`, so retry with that before giving up.
+// Best-effort: cleanup problems warn; they never fail an install that already succeeded.
+async function pruneBuildLeftovers(): Promise<void> {
+  const { imageArgs, builderArgs } = dockerCleanupCommands();
+  const freed: string[] = [];
+  try {
+    const r = await execa("docker", imageArgs);
+    const v = reclaimedSpace(r.stdout);
+    if (v) freed.push(`${v} of superseded images`);
+  } catch (err) {
+    console.warn(`  (couldn't prune old daedalus images: ${(err as Error).message})`);
+  }
+  try {
+    let out: string;
+    try {
+      out = (await execa("docker", builderArgs)).stdout;
+    } catch {
+      out = (await execa("docker", ["builder", "prune", "-f", "--reserved-space", BUILDER_CACHE_KEEP])).stdout;
+    }
+    const v = reclaimedSpace(out);
+    if (v) freed.push(`${v} of build cache`);
+  } catch (err) {
+    console.warn(`  (couldn't prune docker build cache: ${(err as Error).message})`);
+  }
+  if (freed.length) console.log(`✓ cleaned up ${freed.join(" + ")} from previous builds`);
+}
+
+// Pull the "Total reclaimed space: 21.5MB" figure out of a docker prune's output.
+// Returns null when nothing was reclaimed (or the line is missing) so the caller
+// can stay quiet instead of announcing "0B".
+export function reclaimedSpace(output: string): string | null {
+  const m = output.match(/Total reclaimed space:\s*([\d.]+\s*\S+)/i);
+  const v = m?.[1]?.trim();
+  return v && !/^0\s*B$/i.test(v) ? v : null;
 }
 
 // Poll OneCLI's REST API until it answers — it runs prisma migrations at boot, so it
