@@ -13,6 +13,18 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Desktop app (Electron shell).** `apps/desktop/` wraps the web UI in a native
+  window: native notifications (the UI's 🔔 opt-in), a dock badge counting unread
+  replies while the window is in the background, persistent login, external links
+  opening in the default browser, and a hidden macOS title bar with the traffic lights
+  floating over the sidebar. First launch asks for the server URL; **Server → Change
+  Server…** switches later. No daedalus code runs in the shell — it's a client on the
+  web channel. `npm start` to run, `npm run dist` for a dmg/AppImage (unsigned;
+  signing + auto-update land with the release pipeline). The web UI feature-detects
+  the shell via `window.daedalusDesktop`, so the served page is unchanged in browsers.
+
+### Added
+
 - **Web UI v2 — session workspace with a live status bar.** The chat UI is restyled
   (near-black theme, teal accent, user messages as raised cards) and grows a real
   session sidebar — pinned sessions (new `PATCH /conversations`), title search

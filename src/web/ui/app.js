@@ -47,8 +47,32 @@
   // If the session lapses mid-use, a protected call 401s — bounce to the login page.
   function on401(r) { if (MODE === "login" && r && r.status === 401) { gotoLogin(); return true; } return false; }
 
+  // --- Desktop shell (Electron) integration -----------------------------------------------
+  // The desktop app's preload exposes window.daedalusDesktop {platform, setBadge}. When
+  // present: count unread replies onto the dock badge while the window is hidden (cleared
+  // on refocus, both here and by the shell), and pad the sidebar brand clear of the macOS
+  // traffic lights (the shell uses a hidden title bar).
+  var DESKTOP = typeof window.daedalusDesktop === "object" && window.daedalusDesktop !== null;
+  var unread = 0;
+  if (DESKTOP && window.daedalusDesktop.platform === "darwin") {
+    document.body.classList.add("desktop-mac");
+  }
+  function noteUnread() {
+    if (!DESKTOP) return;
+    unread++;
+    try { window.daedalusDesktop.setBadge(unread); } catch (e) {}
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && DESKTOP && unread) {
+      unread = 0;
+      try { window.daedalusDesktop.setBadge(0); } catch (e) {}
+    }
+  });
+
   // Browser notification when a reply lands and the tab isn't focused (opt-in; see the 🔔 button).
   function maybeNotify(text) {
+    // Dock badge is independent of the notification opt-in — it's unobtrusive.
+    if (document.hidden) noteUnread();
     if (!notifyOn || !("Notification" in window) || Notification.permission !== "granted") return;
     if (!document.hidden) return; // tab is focused — no need to nag
     try {
