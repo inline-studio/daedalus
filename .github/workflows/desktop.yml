@@ -1,34 +1,102 @@
-name: Desktop release
+name: Desktop
 
-# Builds and releases the desktop app (apps/desktop) — deliberately SEPARATE from ci.yml:
-# the server releases on every main push (v0.1.0-<run>), while desktop releases are
-# manual (workflow_dispatch with a version) because three-OS Electron builds are slow
-# and the app's cadence is independent of the server's.
+# Builds + releases the desktop app AUTOMATICALLY on merge to main — but only when the
+# app (or this workflow) actually changed; server-only commits don't trigger three-OS
+# Electron builds. workflow_dispatch remains as the manual escape hatch (optionally
+# with an explicit version).
 #
-# Publishing model: every run creates an immutable `desktop-v<version>` release AND
-# updates the rolling `desktop-latest` release with the same assets (installers +
-# electron-updater's latest*.yml feeds). The app's auto-updater uses the GENERIC
-# provider pointed at desktop-latest's download URL — NOT the GitHub provider, which
-# scans the repo's newest release and would find a server release instead.
+# House pattern: gate first (lint/typecheck + tests), build only after it passes.
+# The gate runs the server typecheck + CI smoke battery (the desktop's providers live
+# in the server code) plus desktop syntax checks and a headless Electron boot smoke.
 #
-# macOS signing/notarisation activate automatically when the secrets exist
-# (CSC_LINK + CSC_KEY_PASSWORD for the Developer ID cert; APPLE_ID +
-# APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID for notarisation). Without them the
-# build is unsigned: fine for personal use; in-place mac auto-update stays disabled
-# (Squirrel.Mac requires a signature) and the app falls back to open-the-release-page.
+# Versioning: 0.1.<run_number> (pure semver, monotonic — electron-updater compares
+# semver, so no prerelease suffixes) unless dispatch supplies one. Each run publishes:
+#   - desktop-v<version>  — immutable release for that build
+#   - desktop-latest      — rolling release the auto-updater feeds from (the app uses
+#                           electron-updater's GENERIC provider against its download
+#                           URL; the GitHub provider would scan the repo's newest
+#                           release, which is almost always a server v0.1.0-<run>).
+#
+# macOS signing/notarisation activate automatically when the secrets exist:
+#   CSC_LINK                     (secret) base64 .p12 of the Developer ID Application cert
+#   CSC_KEY_PASSWORD             (secret) that .p12's password
+#   APPLE_ID                     (secret) Apple ID email for notarisation
+#   APPLE_APP_SPECIFIC_PASSWORD  (secret) app-specific password for that Apple ID
+#   APPLE_TEAM_ID                (secret) the developer team id
+# Without them builds are unsigned (fine for personal use; mac in-place auto-update
+# stays off — Squirrel.Mac requires a signature — and the app falls back to
+# open-the-release-page). No repository VARIABLES are needed.
 
 on:
+  push:
+    branches: ["main"]
+    paths:
+      - "apps/desktop/**"
+      - ".github/workflows/desktop.yml"
   workflow_dispatch:
     inputs:
       version:
-        description: "Desktop app version (e.g. 0.2.0) — tags desktop-v<version>"
-        required: true
+        description: "Explicit version (e.g. 0.2.0); default 0.1.<run_number>"
+        required: false
 
 permissions:
   contents: write
 
 jobs:
+  gate:
+    name: Lint & tests
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install server dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Smoke tests (CI scope)
+        env:
+          DAE_TEST_SCOPE: ci
+        run: npm test
+
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Desktop syntax checks
+        working-directory: apps/desktop
+        run: |
+          set -euo pipefail
+          node --check main.js
+          node --check preload.js
+          node --check updater.js
+          node --check executor.js
+
+      - name: Desktop boot smoke (headless)
+        working-directory: apps/desktop
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq xvfb
+          xvfb-run --auto-servernum npx electron . --smoke-test --no-sandbox
+
+      - name: Resolve version
+        id: version
+        run: |
+          V="${{ github.event.inputs.version }}"
+          if [ -z "$V" ]; then V="0.1.${{ github.run_number }}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Desktop version: $V"
+
   build:
+    needs: [gate]
     strategy:
       fail-fast: false
       matrix:
@@ -54,12 +122,12 @@ jobs:
         run: npm ci
 
       - name: Stamp version
-        run: npm version ${{ github.event.inputs.version }} --no-git-tag-version
+        run: npm version ${{ needs.gate.outputs.version }} --no-git-tag-version
 
       - name: Build installers
         env:
           # Signing (mac): only when the secrets are configured. Auto-discovery is
-          # disabled so an unsigned CI keychain never fails the build.
+          # disabled otherwise so an unsigned CI keychain never fails the build.
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
@@ -85,7 +153,7 @@ jobs:
           path: apps/desktop/out/*
 
   release:
-    needs: build
+    needs: [gate, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -99,7 +167,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          V="${{ github.event.inputs.version }}"
+          V="${{ needs.gate.outputs.version }}"
           gh release create "desktop-v${V}" assets/* \
             --title "Daedalus Desktop v${V}" \
             --notes "Desktop app v${V} (dmg / NSIS / AppImage). Auto-update feed: the desktop-latest release." \
@@ -109,7 +177,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          V="${{ github.event.inputs.version }}"
+          V="${{ needs.gate.outputs.version }}"
           if gh release view desktop-latest >/dev/null 2>&1; then
             # Replace assets in place; the tag itself stays.
             for f in assets/*; do gh release upload desktop-latest "$f" --clobber; done

@@ -13,14 +13,17 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
-- **Desktop release workflow.** `.github/workflows/desktop.yml` (manual dispatch with a
-  version) builds the app on all three platforms and publishes an immutable
-  `desktop-v<version>` release plus the rolling **`desktop-latest`** release that
-  serves as the auto-update feed — the updater now uses electron-updater's generic
-  provider against it, because the plain GitHub provider scans the repo's newest
-  release, which is almost always a *server* release (`v0.1.0-<run>`). macOS
-  signing/notarisation activate automatically once the Apple credential secrets exist;
-  unsigned builds still release fine.
+- **Desktop release workflow.** `.github/workflows/desktop.yml` builds and releases
+  the app **automatically on merge to `main`** (path-filtered to `apps/desktop/**`;
+  manual dispatch remains, optionally with an explicit version). Gate first — server
+  typecheck + CI smoke battery, desktop syntax checks, a headless Electron boot
+  smoke — then a three-platform matrix (dmg arm64+x64 / NSIS / AppImage) versioned
+  `0.1.<run>`, publishing an immutable `desktop-v<version>` release plus the rolling
+  **`desktop-latest`** release that serves as the auto-update feed — the updater uses
+  electron-updater's generic provider against it, because the plain GitHub provider
+  scans the repo's newest release, which is almost always a *server* release
+  (`v0.1.0-<run>`). macOS signing/notarisation activate automatically once the Apple
+  credential secrets exist; unsigned builds still release fine.
 
 ### Added
 

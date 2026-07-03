@@ -50,15 +50,17 @@ Privacy & Security override on first launch of a downloaded copy).
 
 ## Release & updates
 
-Releases are built by the **Desktop release** workflow
-(`.github/workflows/desktop.yml`): run it from the Actions tab with a version number
-and it builds all three platforms and publishes two releases — an immutable
-`desktop-v<version>` and the rolling **`desktop-latest`**, which is the auto-update
-feed (the app uses electron-updater's *generic* provider against it; the plain GitHub
-provider would scan the repo's newest release, which is almost always a *server*
-release here). macOS signing + notarisation activate automatically once the
-`CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` /
-`APPLE_TEAM_ID` repo secrets exist.
+Releases are built by the **Desktop** workflow (`.github/workflows/desktop.yml`)
+**automatically on merge to `main`** when `apps/desktop/**` (or the workflow itself)
+changed — gate first (server typecheck + CI smoke battery, desktop syntax checks, a
+headless Electron boot smoke), then a three-platform build, then two releases: an
+immutable `desktop-v<version>` (version `0.1.<run>` unless a manual dispatch supplies
+one) and the rolling **`desktop-latest`**, which is the auto-update feed (the app uses
+electron-updater's *generic* provider against it; the plain GitHub provider would scan
+the repo's newest release, which is almost always a *server* release here). macOS
+signing + notarisation activate automatically once the `CSC_LINK` /
+`CSC_KEY_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` repo
+secrets exist.
 
 How updates behave per platform:
 
