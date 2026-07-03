@@ -305,35 +305,139 @@ program
 
 program
   .command("remote")
+  .alias("chat")
   .description(
-    "connect to a remote daedalus as chat REPL + local EXECUTOR: the agent runs on the server, its bash/read/write run HERE",
+    "the daedalus terminal interface: chat with the server-side agent while its bash/read/write run HERE. " +
+      "First run with no arguments launches a setup wizard (profile: ~/.daedalus/remote.json).",
   )
-  .argument("<url>", "the server's web channel URL (same address the web UI uses)")
+  .argument("[url]", "the server's web channel URL (defaults to the saved profile)")
   .option("--token <token>", "bearer token (token-auth servers)")
   .option("--user <username>", "login username (login-auth servers; prompts for the password)")
-  .option("--workspace <dir>", "directory commands and file ops are rooted in", process.cwd())
-  .option("--yolo", "skip per-command confirmation (dangerous commands still prompt)", false)
+  .option("--workspace <dir>", "directory commands and file ops are rooted in")
+  .option("--yolo", "skip per-command confirmation (dangerous commands still prompt)")
   .option("--id <externalUserId>", "override the client identity (default: remote-<hostname>)")
+  .option("--plain", "line-mode output instead of the full terminal interface", false)
   .action(
     async (
-      url: string,
-      opts: { token?: string; user?: string; workspace: string; yolo: boolean; id?: string },
+      url: string | undefined,
+      opts: {
+        token?: string;
+        user?: string;
+        workspace?: string;
+        yolo?: boolean;
+        id?: string;
+        plain: boolean;
+      },
     ) => {
-      const { runRemoteClient } = await import("./cli/remote-client.js");
-      let password: string | undefined;
-      if (opts.user) {
-        const { secretPrompt } = await import("./setup/secret-prompt.js");
-        password = (await secretPrompt({ message: `Password for ${opts.user}:` })) ?? "";
+      const shared = await import("./cli/remote-shared.js");
+      const saved = shared.loadProfile() ?? {};
+
+      // Resolution order: explicit flags → saved profile → first-run wizard.
+      let profile = {
+        url: url ?? saved.url ?? "",
+        token: opts.token ?? saved.token,
+        username: opts.user ?? saved.username,
+        workspace: opts.workspace ?? saved.workspace ?? process.cwd(),
+        execution: saved.execution ?? ("local" as const),
+        approval: opts.yolo ? ("yolo" as const) : (saved.approval ?? ("ask" as const)),
+        externalUserId: opts.id ?? saved.externalUserId,
+      };
+
+      if (!profile.url) {
+        if (!process.stdin.isTTY) {
+          console.error("No server URL: pass one (`dae remote <url>`) or run the wizard in a terminal first.");
+          process.exit(2);
+        }
+        console.log("First run — let's connect this machine to your daedalus.\n");
+        const answers = await prompts([
+          {
+            type: "text",
+            name: "url",
+            message: "Server URL (the address the web UI uses):",
+            validate: (v: string) => (/^https?:\/\//.test(v.trim()) ? true : "http(s):// URL required"),
+          },
+          {
+            type: "select",
+            name: "auth",
+            message: "How does the server authenticate?",
+            choices: [
+              { title: "Username + password (login mode)", value: "login" },
+              { title: "Bearer token", value: "token" },
+              { title: "None / handled by my proxy", value: "open" },
+            ],
+          },
+          { type: (prev: string) => (prev === "login" ? "text" : null), name: "username", message: "Username:" },
+          { type: (_p: string, v: { auth?: string }) => (v.auth === "token" ? "password" : null), name: "token", message: "Token:" },
+          {
+            type: "text",
+            name: "workspace",
+            message: "Workspace (commands + file ops run here):",
+            initial: path.join(process.env.HOME ?? process.cwd(), "dae-workspace"),
+          },
+          {
+            type: "select",
+            name: "approval",
+            message: "Command approval:",
+            choices: [
+              { title: "Ask for each command (recommended)", value: "ask" },
+              { title: "Free rein (dangerous commands still ask)", value: "yolo" },
+            ],
+          },
+        ]);
+        if (!answers.url) {
+          console.log("Cancelled.");
+          process.exit(2);
+        }
+        profile = {
+          url: String(answers.url).trim().replace(/\/$/, ""),
+          token: answers.token ? String(answers.token) : undefined,
+          username: answers.username ? String(answers.username) : undefined,
+          workspace: String(answers.workspace),
+          execution: "local",
+          approval: answers.approval === "yolo" ? "yolo" : "ask",
+          externalUserId: undefined,
+        };
+        shared.saveProfile({
+          url: profile.url,
+          ...(profile.token ? { token: profile.token } : {}),
+          ...(profile.username ? { username: profile.username } : {}),
+          workspace: profile.workspace,
+          execution: profile.execution,
+          approval: profile.approval,
+        });
+        console.log(`Saved to ${shared.profilePath()} — next time just run \`dae remote\`.\n`);
       }
-      await runRemoteClient({
-        url,
-        workspace: opts.workspace,
-        yolo: Boolean(opts.yolo),
-        ...(opts.token ? { token: opts.token } : {}),
-        ...(opts.user ? { username: opts.user } : {}),
-        ...(password !== undefined ? { password } : {}),
-        ...(opts.id ? { externalUserId: opts.id } : {}),
-      });
+
+      let password: string | undefined;
+      if (profile.username) {
+        const { secretPrompt } = await import("./setup/secret-prompt.js");
+        password = (await secretPrompt({ message: `Password for ${profile.username}:` })) ?? "";
+      }
+
+      if (opts.plain || !process.stdin.isTTY || !process.stdout.isTTY) {
+        const { runRemoteClient } = await import("./cli/remote-client.js");
+        await runRemoteClient({
+          url: profile.url,
+          workspace: profile.workspace,
+          yolo: profile.approval === "yolo",
+          ...(profile.token ? { token: profile.token } : {}),
+          ...(profile.username ? { username: profile.username } : {}),
+          ...(password !== undefined ? { password } : {}),
+          ...(profile.externalUserId ? { externalUserId: profile.externalUserId } : {}),
+        });
+      } else {
+        const { runRemoteTui } = await import("./cli/remote-tui.js");
+        await runRemoteTui({
+          url: profile.url,
+          ...(profile.token ? { token: profile.token } : {}),
+          ...(profile.username ? { username: profile.username } : {}),
+          ...(password !== undefined ? { password } : {}),
+          workspace: profile.workspace,
+          execution: profile.execution,
+          approval: profile.approval,
+          ...(profile.externalUserId ? { externalUserId: profile.externalUserId } : {}),
+        });
+      }
     },
   );
 

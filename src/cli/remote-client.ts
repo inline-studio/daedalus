@@ -1,30 +1,21 @@
 import readline from "node:readline";
-import os from "node:os";
-import path from "node:path";
-import fs from "node:fs";
-import { exec as childExec } from "node:child_process";
-import { log } from "../log.js";
+import {
+  type RemoteProfile,
+  createSession,
+  consumeSse,
+  startExecutor,
+  fetchers,
+  sendMessage,
+  abortTurn,
+} from "./remote-shared.js";
 
-// `dae remote` — the laptop half of remote execution. One process, two jobs:
-//
-//   1. A chat REPL on the server's web channel: stdin lines POST to /messages, replies
-//      and live turn events render from the /events SSE stream (same rendering idea as
-//      the local CLI channel: streamed text, dim tool lines, subagent prefixes).
-//
-//   2. The EXECUTOR for this user: a second SSE stream (/rpc/stream) delivers
-//      exec/read/write requests from the user's own turns; they run HERE — in the
-//      declared workspace — and results POST back to /rpc/result.
-//
-// Everything is outbound HTTP from the laptop: no listening port, no tunnel, works
-// behind NAT. Auth is the web channel's own (bearer token, or username/password login
-// exchanged for the session cookie).
-//
-// Safety model (the agent gets arbitrary shell on this machine, so):
-//   - every exec prompts for confirmation by default; `a` answers persist a prefix
-//     allowlist (~/.daedalus/remote-allow.json) so routine commands stop asking
-//   - a denylist of catastrophic patterns ALWAYS prompts — even under --yolo
-//   - file reads/writes are confined to the workspace directory
-//   - every executed command is appended to ~/.daedalus/remote-exec.log
+// Plain line-mode `dae remote` client — the --plain / piped / no-TTY renderer. The full
+// terminal interface lives in remote-tui.ts; both share the transport, executor, and
+// policy in remote-shared.ts. Without a TTY this runs executor-only: chat from another
+// surface, and anything that would have prompted for confirmation is refused.
+
+// Re-exported so existing tests (and any callers) keep importing from this module.
+export { evaluateCommand, allowPrefixFor, confineToWorkspace } from "./remote-shared.js";
 
 export interface RemoteClientOptions {
   url: string;
@@ -36,131 +27,23 @@ export interface RemoteClientOptions {
   externalUserId?: string;
 }
 
-interface RpcRequest {
-  id: string;
-  kind: "exec" | "read" | "write";
-  cmd?: string;
-  timeoutMs?: number;
-  path?: string;
-  content?: string;
-}
-
-// --- Command policy (pure; exported for tests) --------------------------------------
-
-// Patterns that are never auto-approved, no matter what — a wrong `y` here is a wiped
-// disk or an escalated shell, so the human always sees them.
-const DENYLIST: RegExp[] = [
-  /\brm\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)[a-z]*\b/i, // rm -rf and friends
-  /\bsudo\b/i,
-  /\bmkfs\b/i,
-  /\bdd\b[^|;&]*\bof=\/dev\//i,
-  /\b(shutdown|reboot|halt)\b/i,
-  /\bchmod\s+[0-7]*\s+\/(\s|$)/, // chmod on filesystem root
-  />\s*\/dev\/sd[a-z]\b/i,
-];
-
-export type CommandVerdict = "auto" | "prompt" | "danger-prompt";
-
-export function evaluateCommand(cmd: string, allowlist: string[], yolo: boolean): CommandVerdict {
-  const trimmed = cmd.trim();
-  if (DENYLIST.some((re) => re.test(trimmed))) return "danger-prompt";
-  if (yolo) return "auto";
-  if (allowlist.some((prefix) => prefix && trimmed.startsWith(prefix))) return "auto";
-  return "prompt";
-}
-
-// The allowlist prefix an "always" answer records: the command's first two tokens
-// ("git status", "npm test") — specific enough not to blanket-approve a whole binary
-// with dangerous flags, general enough to stop re-asking for the routine stuff.
-export function allowPrefixFor(cmd: string): string {
-  return cmd.trim().split(/\s+/).slice(0, 2).join(" ");
-}
-
-// Confine a requested file path to the workspace: relative paths resolve inside it,
-// absolute paths must already be inside it. Throws otherwise (exported for tests).
-export function confineToWorkspace(workspace: string, requested: string): string {
-  const root = path.resolve(workspace);
-  const resolved = path.resolve(root, requested);
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    throw new Error(`path '${requested}' is outside the workspace (${root})`);
-  }
-  return resolved;
-}
-
-// --- The client ----------------------------------------------------------------------
-
-const ALLOW_FILE = path.join(os.homedir(), ".daedalus", "remote-allow.json");
-const AUDIT_FILE = path.join(os.homedir(), ".daedalus", "remote-exec.log");
-const OUTPUT_CAP = 200_000; // chars per stream sent back to the server
-
-function loadAllowlist(): string[] {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(ALLOW_FILE, "utf8")) as unknown;
-    return Array.isArray(parsed) ? parsed.map(String) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveAllowlist(list: string[]): void {
-  try {
-    fs.mkdirSync(path.dirname(ALLOW_FILE), { recursive: true });
-    fs.writeFileSync(ALLOW_FILE, JSON.stringify([...new Set(list)].sort(), null, 2));
-  } catch (err) {
-    log.warn({ err: (err as Error).message }, "remote: could not persist allowlist");
-  }
-}
-
-function audit(entry: Record<string, unknown>): void {
-  try {
-    fs.mkdirSync(path.dirname(AUDIT_FILE), { recursive: true });
-    fs.appendFileSync(AUDIT_FILE, JSON.stringify({ ts: new Date().toISOString(), ...entry }) + "\n");
-  } catch {
-    /* auditing must never block execution */
-  }
-}
-
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
 
 export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> {
-  const base = opts.url.replace(/\/$/, "");
-  const externalUserId = opts.externalUserId ?? `remote-${os.hostname().split(".")[0]}`;
-  const workspace = path.resolve(opts.workspace);
-  fs.mkdirSync(workspace, { recursive: true });
-  let allowlist = loadAllowlist();
-
-  // --- Auth: bearer token, or login → session cookie ---
-  let cookie: string | undefined;
-  const authHeaders = (): Record<string, string> => ({
-    "content-type": "application/json",
-    ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
-    ...(cookie ? { cookie } : {}),
-  });
-  const authQuery = opts.token ? `&token=${encodeURIComponent(opts.token)}` : "";
-
-  if (opts.username) {
-    const res = await fetch(`${base}/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: opts.username, password: opts.password ?? "" }),
-    });
-    if (!res.ok) throw new Error(`login failed (HTTP ${res.status})`);
-    const setCookie = res.headers.get("set-cookie");
-    const m = setCookie?.match(/dae_session=[^;]+/);
-    if (!m) throw new Error("login succeeded but no session cookie was returned");
-    cookie = m[0];
-  }
+  const session = await createSession(opts);
+  const profileish: Pick<RemoteProfile, "workspace" | "approval"> = {
+    workspace: opts.workspace,
+    approval: opts.yolo ? "yolo" : "ask",
+  };
 
   process.stdout.write(
-    `[dae remote] server: ${base}\n` +
-      `[dae remote] user: ${externalUserId} · workspace: ${workspace}` +
+    `[dae remote] server: ${session.base}\n` +
+      `[dae remote] user: ${session.externalUserId} · workspace: ${profileish.workspace}` +
       `${opts.yolo ? " · YOLO (exec auto-approved)" : ""}\n`,
   );
 
-  // --- Confirmation prompting (shares the terminal with the REPL) ---
-  // Without a TTY (backgrounded / systemd / CI) there is no REPL and no way to confirm:
-  // the client runs as an executor only, and anything that would have prompted is
-  // refused — never silently approved.
+  // Interactive terminals get the REPL + confirmation prompts; headless runs are
+  // executor-only and refuse anything that would have prompted.
   const interactive = Boolean(process.stdin.isTTY);
   const rl = interactive
     ? readline.createInterface({ input: process.stdin, output: process.stdout })
@@ -180,131 +63,36 @@ export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> 
     if (interactive && !asking) process.stdout.write("> ");
   };
 
-  // --- Request execution ---
-  async function handleRequest(reqObj: RpcRequest): Promise<Record<string, unknown>> {
-    if (reqObj.kind === "read") {
-      try {
-        const p = confineToWorkspace(workspace, String(reqObj.path ?? ""));
-        process.stdout.write(dim(`\n[read] ${p}\n`));
-        return { id: reqObj.id, ok: true, content: fs.readFileSync(p, "utf8") };
-      } catch (err) {
-        return { id: reqObj.id, ok: false, error: (err as Error).message };
-      }
-    }
-    if (reqObj.kind === "write") {
-      try {
-        const p = confineToWorkspace(workspace, String(reqObj.path ?? ""));
-        process.stdout.write(dim(`\n[write] ${p} (${String(reqObj.content ?? "").length} chars)\n`));
-        fs.mkdirSync(path.dirname(p), { recursive: true });
-        fs.writeFileSync(p, String(reqObj.content ?? ""), "utf8");
-        audit({ kind: "write", path: p });
-        return { id: reqObj.id, ok: true };
-      } catch (err) {
-        return { id: reqObj.id, ok: false, error: (err as Error).message };
-      }
-    }
-    // exec
-    const cmd = String(reqObj.cmd ?? "");
-    const verdict = evaluateCommand(cmd, allowlist, opts.yolo);
-    if (verdict !== "auto") {
-      const danger = verdict === "danger-prompt" ? " \x1b[31m[DANGEROUS]\x1b[0m" : "";
-      const answer = await ask(`\n[exec]${danger} ${cmd}\n  run this? [y/N${verdict === "prompt" ? "/a=always" : ""}] `);
-      if (verdict === "prompt" && answer === "a") {
-        allowlist = [...allowlist, allowPrefixFor(cmd)];
-        saveAllowlist(allowlist);
-      } else if (answer !== "y" && answer !== "yes") {
-        audit({ kind: "exec", cmd, refused: true });
+  let execMode: "local" | "server" = "local";
+
+  // --- Executor ---
+  startExecutor({
+    session,
+    workspace: opts.workspace,
+    yolo: opts.yolo,
+    callbacks: {
+      output: (line) => process.stdout.write(dim(`\n${line}\n`)),
+      confirm: async (cmd, danger, allowAlways) => {
+        const dangerTag = danger ? " \x1b[31m[DANGEROUS]\x1b[0m" : "";
+        const answer = await ask(`\n[exec]${dangerTag} ${cmd}\n  run this? [y/N${allowAlways ? "/a=always" : ""}] `);
         prompt();
-        return { id: reqObj.id, ok: false, error: "the user declined to run this command" };
-      }
-      prompt();
-    } else {
-      process.stdout.write(dim(`\n[exec] ${cmd}\n`));
-    }
-    const timeoutMs = Math.min(reqObj.timeoutMs ?? 120_000, 10 * 60_000);
-    const started = Date.now();
-    return new Promise((resolve) => {
-      childExec(cmd, { cwd: workspace, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-        const timedOut = Boolean(err && (err as { killed?: boolean }).killed);
-        const exitCode = err ? ((err as { code?: number }).code ?? 1) : 0;
-        audit({ kind: "exec", cmd, exitCode, timedOut, durationMs: Date.now() - started });
-        resolve({
-          id: reqObj.id,
-          ok: exitCode === 0,
-          stdout: String(stdout).slice(0, OUTPUT_CAP),
-          stderr: String(stderr).slice(0, OUTPUT_CAP),
-          exitCode: typeof exitCode === "number" ? exitCode : 1,
-          timedOut,
-        });
-      });
-    });
-  }
-
-  // --- SSE consumption (plain fetch; reconnect with backoff) ---
-  async function consumeSse(
-    pathAndQuery: string,
-    onEvent: (event: string, data: string) => void,
-    label: string,
-  ): Promise<never> {
-    for (;;) {
-      try {
-        const res = await fetch(`${base}${pathAndQuery}`, { headers: authHeaders() });
-        if (res.status === 401) throw new Error("unauthorized — check the token / login");
-        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          let sep: number;
-          while ((sep = buf.indexOf("\n\n")) !== -1) {
-            const block = buf.slice(0, sep);
-            buf = buf.slice(sep + 2);
-            let event = "message";
-            const dataLines: string[] = [];
-            for (const line of block.split("\n")) {
-              if (line.startsWith("event:")) event = line.slice(6).trim();
-              else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
-            }
-            if (dataLines.length) onEvent(event, dataLines.join("\n"));
-          }
-        }
-        throw new Error("stream ended");
-      } catch (err) {
-        process.stdout.write(dim(`\n[${label}] disconnected (${(err as Error).message}) — retrying…\n`));
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-    }
-  }
-
-  // Executor stream: run requests, POST results back.
-  void consumeSse(
-    `/rpc/stream?externalUserId=${encodeURIComponent(externalUserId)}&workspace=${encodeURIComponent(workspace)}${authQuery}`,
-    (event, data) => {
-      if (event !== "request") return;
-      let reqObj: RpcRequest;
-      try {
-        reqObj = JSON.parse(data) as RpcRequest;
-      } catch {
-        return;
-      }
-      void handleRequest(reqObj).then((result) =>
-        fetch(`${base}/rpc/result?externalUserId=${encodeURIComponent(externalUserId)}`, {
-          method: "POST",
-          headers: authHeaders(),
-          body: JSON.stringify(result),
-        }).catch((err) => log.warn({ err: (err as Error).message }, "remote: result POST failed")),
-      );
+        if (answer === "y" || answer === "yes") return "yes";
+        if (answer === "a" && allowAlways) return "always";
+        return "no";
+      },
     },
-    "executor",
-  );
+    onState: (state, detail) => {
+      if (state === "reconnecting") {
+        process.stdout.write(dim(`\n[executor] disconnected (${detail ?? "?"}) — retrying…\n`));
+      }
+    },
+  });
 
-  // Chat stream: render replies + live turn events.
+  // --- Chat stream ---
   let streamedThisTurn = false;
   void consumeSse(
-    `/events?externalUserId=${encodeURIComponent(externalUserId)}${authQuery}`,
+    session,
+    `/events?externalUserId=${encodeURIComponent(session.externalUserId)}${session.authQuery}`,
     (event, data) => {
       let d: Record<string, unknown>;
       try {
@@ -318,7 +106,7 @@ export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> 
           process.stdout.write(String(d.text ?? ""));
           break;
         case "thinking":
-          break; // reasoning stays quiet on the remote CLI
+          break; // reasoning stays quiet in plain mode
         case "tool":
           process.stdout.write(dim(`\n[tool: ${String(d.name ?? "")}]\n`));
           break;
@@ -337,133 +125,98 @@ export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> 
           prompt();
           break;
         case "message":
-          // Buffered replies (non-streaming dispatch) and replay.
           if (d.text) process.stdout.write(`\n${String(d.text)}\n`);
           prompt();
           break;
       }
     },
-    "chat",
+    (state, detail) => {
+      if (state === "reconnecting") {
+        process.stdout.write(dim(`\n[chat] disconnected (${detail ?? "?"}) — retrying…\n`));
+      }
+    },
   );
 
-  // Execution placement for messages sent from THIS repl: local (the whole point of the
-  // CLI) unless the user flips it per conversation with /local off.
-  let execMode: "local" | "server" = "local";
-
-  // --- REPL (interactive terminals only; headless runs are executor-only) ---
+  // --- REPL ---
   if (rl) {
-    process.stdout.write(`[dae remote] connected — type a message; Ctrl-C to exit\n> `);
+    process.stdout.write(`[dae remote] connected — type a message; /help for commands; Ctrl-C to exit\n> `);
     rl.on("line", (line) => {
-      const text = line.trim();
-      if (!text) {
-        prompt();
-        return;
-      }
-      // Client-side commands (everything else — including server slash-commands like
-      // /compact — passes through as a normal message).
-      if (text === "/local on" || text === "/local off") {
-        execMode = text.endsWith("on") ? "local" : "server";
-        process.stdout.write(
-          dim(`[execution: ${execMode === "local" ? "your machine" : "the server"}]\n`),
-        );
-        prompt();
-        return;
-      }
-      if (text === "/skills") {
-        void fetch(`${base}/skills?externalUserId=${encodeURIComponent(externalUserId)}`, { headers: authHeaders() })
-          .then((r) => (r.ok ? (r.json() as Promise<{ skills?: Array<Record<string, unknown>>; pending?: Array<Record<string, unknown>> }>) : null))
-          .then((j) => {
-            for (const p of j?.pending ?? []) {
-              process.stdout.write(`${String(p.name).padEnd(24)} ${dim(`PENDING (${p.patchesExisting ? "patch" : "new"}) — dae skill approve|reject ${p.name}`)}\n`);
-            }
-            for (const s of j?.skills ?? []) {
-              const marks = [s.origin === "agent" ? "agent" : null, s.status === "stale" ? "stale" : null, s.pinned ? "pinned" : null]
-                .filter(Boolean)
-                .join(", ");
-              process.stdout.write(`${String(s.name).padEnd(24)} ${dim(`${marks ? "[" + marks + "] " : ""}${s.description ?? ""}`)}\n`);
-            }
-            if (!j?.skills?.length && !j?.pending?.length) process.stdout.write(dim("(no skills)\n"));
-            prompt();
-          })
-          .catch(() => { process.stdout.write(dim("[skills fetch failed]\n")); prompt(); });
-        return;
-      }
-      if (text === "/activity") {
-        void fetch(`${base}/activity?externalUserId=${encodeURIComponent(externalUserId)}`, { headers: authHeaders() })
-          .then((r) => (r.ok ? (r.json() as Promise<{ turns?: Array<Record<string, unknown>> }>) : null))
-          .then((j) => {
-            for (const t of j?.turns ?? []) {
-              const secs = Math.max(0, Math.floor((Date.now() - Date.parse(String(t.startedAt))) / 1000));
-              process.stdout.write(
-                `${String(t.agent).padEnd(14)} ${dim(`${t.activity ?? "working"} · ${t.channel} · ${secs}s`)}\n`,
-              );
-            }
-            if (!j?.turns?.length) process.stdout.write(dim("(idle)\n"));
-            prompt();
-          })
-          .catch(() => { process.stdout.write(dim("[activity fetch failed]\n")); prompt(); });
-        return;
-      }
-      if (text === "/agents") {
-        void fetch(`${base}/agents?externalUserId=${encodeURIComponent(externalUserId)}`, { headers: authHeaders() })
-          .then((r) => (r.ok ? (r.json() as Promise<{ agents?: Array<Record<string, unknown>> }>) : null))
-          .then((j) => {
-            for (const a of j?.agents ?? []) {
-              const bits = [a.model, a.image ? "docker" : null, Array.isArray(a.subagents) && a.subagents.length ? `→ ${(a.subagents as string[]).join(", ")}` : null]
-                .filter(Boolean)
-                .join(" · ");
-              process.stdout.write(`${String(a.name).padEnd(16)} ${dim(String(bits))}\n`);
-            }
-            if (!j?.agents?.length) process.stdout.write(dim("(no agents)\n"));
-            prompt();
-          })
-          .catch(() => { process.stdout.write(dim("[agents fetch failed]\n")); prompt(); });
-        return;
-      }
-      if (text === "/crons") {
-        void fetch(`${base}/schedules?externalUserId=${encodeURIComponent(externalUserId)}`, { headers: authHeaders() })
-          .then((r) => (r.ok ? (r.json() as Promise<{ static?: Array<Record<string, unknown>>; dynamic?: Array<Record<string, unknown>> }>) : null))
-          .then((j) => {
-            for (const s of j?.static ?? []) {
-              process.stdout.write(`${String(s.name).padEnd(24)} ${dim(`${s.schedule} · ${s.agent}${s.enabled ? "" : " · disabled"}`)}\n`);
-            }
-            for (const d of j?.dynamic ?? []) {
-              const when = d.recurring ? String(d.recurring) : `next ${String(d.nextFire ?? "")}`;
-              process.stdout.write(`${String(d.prompt ?? d.id).slice(0, 40).padEnd(42)} ${dim(`${when} · ${d.agent}`)}\n`);
-            }
-            if (!j?.static?.length && !j?.dynamic?.length) process.stdout.write(dim("(nothing scheduled)\n"));
-            prompt();
-          })
-          .catch(() => { process.stdout.write(dim("[schedules fetch failed]\n")); prompt(); });
-        return;
-      }
-      if (text === "/stop") {
-        void fetch(`${base}/abort`, {
-          method: "POST",
-          headers: authHeaders(),
-          body: JSON.stringify({ externalUserId }),
-        })
-          .then((r) => (r.ok ? (r.json() as Promise<{ stopped?: boolean }>) : null))
-          .then((j) => {
-            process.stdout.write(j?.stopped ? dim("[stopping…]\n") : dim("[nothing to stop]\n"));
-            prompt();
-          })
-          .catch(() => {
-            process.stdout.write(dim("[stop failed]\n"));
-            prompt();
-          });
-        return;
-      }
-      void fetch(`${base}/messages`, {
-        method: "POST",
-        headers: authHeaders(),
-        body: JSON.stringify({ externalUserId, text, execution: execMode }),
-      })
-        .then((r) => {
-          if (r.status === 401) process.stdout.write("unauthorized — check the token / login\n");
-          else if (!r.ok) process.stdout.write(`send failed (HTTP ${r.status})\n`);
-        })
-        .catch((err) => process.stdout.write(`send failed: ${(err as Error).message}\n`));
+      void (async () => {
+        const text = line.trim();
+        if (!text) {
+          prompt();
+          return;
+        }
+        if (text === "/help") {
+          process.stdout.write(dim("/stop /agents /crons /activity /skills /local on|off — else the message goes to the agent\n"));
+          prompt();
+          return;
+        }
+        if (text === "/local on" || text === "/local off") {
+          execMode = text.endsWith("on") ? "local" : "server";
+          process.stdout.write(dim(`[execution: ${execMode === "local" ? "your machine" : "the server"}]\n`));
+          prompt();
+          return;
+        }
+        if (text === "/stop") {
+          const stopped = await abortTurn(session);
+          process.stdout.write(dim(stopped ? "[stopping…]\n" : "[nothing to stop]\n"));
+          prompt();
+          return;
+        }
+        if (text === "/agents") {
+          const j = await fetchers.agents(session);
+          for (const a of j?.agents ?? []) {
+            const bits = [a.model, a.image ? "docker" : null, Array.isArray(a.subagents) && a.subagents.length ? `→ ${(a.subagents as string[]).join(", ")}` : null]
+              .filter(Boolean)
+              .join(" · ");
+            process.stdout.write(`${String(a.name).padEnd(16)} ${dim(String(bits))}\n`);
+          }
+          if (!j?.agents?.length) process.stdout.write(dim("(no agents)\n"));
+          prompt();
+          return;
+        }
+        if (text === "/crons") {
+          const j = await fetchers.schedules(session);
+          for (const s of j?.static ?? []) {
+            process.stdout.write(`${String(s.name).padEnd(24)} ${dim(`${s.schedule} · ${s.agent}${s.enabled ? "" : " · disabled"}`)}\n`);
+          }
+          for (const d2 of j?.dynamic ?? []) {
+            process.stdout.write(`${String(d2.prompt ?? d2.id).slice(0, 40).padEnd(42)} ${dim(`${d2.recurring ?? `next ${d2.nextFire}`} · ${d2.agent}`)}\n`);
+          }
+          if (!j?.static?.length && !j?.dynamic?.length) process.stdout.write(dim("(nothing scheduled)\n"));
+          prompt();
+          return;
+        }
+        if (text === "/activity") {
+          const j = await fetchers.activity(session);
+          for (const t of j?.turns ?? []) {
+            const secs = Math.max(0, Math.floor((Date.now() - Date.parse(String(t.startedAt))) / 1000));
+            process.stdout.write(`${String(t.agent).padEnd(14)} ${dim(`${t.activity ?? "working"} · ${t.channel} · ${secs}s`)}\n`);
+          }
+          if (!j?.turns?.length) process.stdout.write(dim("(idle)\n"));
+          prompt();
+          return;
+        }
+        if (text === "/skills") {
+          const j = await fetchers.skills(session);
+          for (const p of j?.pending ?? []) {
+            process.stdout.write(`${String(p.name).padEnd(24)} ${dim(`PENDING (${p.patchesExisting ? "patch" : "new"}) — dae skill approve|reject ${p.name}`)}\n`);
+          }
+          for (const s of j?.skills ?? []) {
+            const marks = [s.origin === "agent" ? "agent" : null, s.status === "stale" ? "stale" : null, s.pinned ? "pinned" : null]
+              .filter(Boolean)
+              .join(", ");
+            process.stdout.write(`${String(s.name).padEnd(24)} ${dim(`${marks ? "[" + marks + "] " : ""}${s.description ?? ""}`)}\n`);
+          }
+          if (!j?.skills?.length && !j?.pending?.length) process.stdout.write(dim("(no skills)\n"));
+          prompt();
+          return;
+        }
+        const res = await sendMessage(session, text, execMode).catch(() => ({ ok: false, status: 0 }));
+        if (res.status === 401) process.stdout.write("unauthorized — check the token / login\n");
+        else if (!res.ok) process.stdout.write(`send failed (HTTP ${res.status})\n`);
+      })();
     });
     rl.on("close", () => {
       process.stdout.write("\n[dae remote] bye\n");
@@ -476,6 +229,5 @@ export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> 
     );
   }
 
-  // Keep the process alive on the streams + REPL.
   await new Promise(() => {});
 }

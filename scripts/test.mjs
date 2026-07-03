@@ -82,6 +82,7 @@ const CI_SAFE = [
   "smoke-time-awareness",
   "smoke-thinking",
   "smoke-transient-error",
+  "smoke-tui",
   "smoke-tool-output-limits",
   "smoke-vision",
   "smoke-web-auth",

@@ -13,6 +13,21 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **`dae remote` is a real terminal interface.** Not a bare REPL any more: a
+  persistent, hand-rolled-ANSI terminal app (zero new dependencies) with streaming
+  replies, dim tool/sub-agent activity lines, a live status line (gateway · session ·
+  execution mode · context-window readout · session timer), persisted ↑/↓ history,
+  multi-line input via trailing `\`, **Esc to stop the in-flight turn**, Ctrl-C×2 to
+  quit, and the full slash-command set (`/stop /new /sessions /agents /crons /activity
+  /skills /status /local /yolo /help /quit` — server commands pass through). First run
+  with no arguments launches a setup wizard (server URL, auth, workspace, approval
+  mode) persisted to `~/.daedalus/remote.json`, so afterwards it's just `dae remote`
+  (alias `dae chat`). Executor confirmations render inline as single-key prompts.
+  `--plain` (or no TTY) keeps the old line mode; headless stays executor-only. The
+  transport, executor, and safety policy moved to a shared core used by both renderers.
+
+### Added
+
 - **Skills & Tools + Artifacts panels.** Two sidebar nav items (the reference layout's
   top-nav) opening modal panels. **Skills**: the live library with badges
   (agent-created / stale / pinned) and the lifecycle actions the self-learning system

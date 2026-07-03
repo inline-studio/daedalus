@@ -115,16 +115,24 @@ output stays visible, nothing further is persisted, and the conversation shows a
 ## Remote execution (`dae remote`)
 
 The inverse of the usual deployment: the agent keeps running on the server — brain,
-sessions, memory, LLM — but its **tools execute on your machine**. On the laptop:
+sessions, memory, LLM — but its **tools execute on your machine**.
 
 ```bash
-dae remote https://chat.example.com --token <web token> --workspace ~/code/my-project
-# login-auth servers:  dae remote https://chat.example.com --user scott
+dae remote        # first run: a setup wizard (URL, auth, workspace, approval mode);
+                  # thereafter it just connects. Profile: ~/.daedalus/remote.json
 ```
 
-One process, two jobs: a chat REPL (stdin → the server's `/messages`; replies + live
-turn events render from `/events`, sub-agent lines included), and the **executor** for
-your user — a second SSE stream delivers the turn's `bash` / `read` / `write` / `edit`
+In a terminal this is a full **terminal interface** (alias `dae chat`): streaming
+replies with dim tool/sub-agent lines, a persistent status line (gateway · session ·
+execution mode · context readout · timer), ↑/↓ history (persisted), multi-line input
+with a trailing `\`, **Esc stops the in-flight turn**, Ctrl-C twice quits. Slash
+commands: `/stop /new /sessions [n] /agents /crons /activity /skills /status
+/local on|off /yolo on|off /help /quit` — anything else (including server commands like
+`/compact`) goes to the agent. `--plain` (or no TTY) falls back to line mode; without a
+TTY the client is executor-only and refuses anything that would have prompted.
+
+Under the hood: one process, two jobs — the chat stream, and the **executor** for your
+user: a second SSE stream delivers the turn's `bash` / `read` / `write` / `edit`
 requests, they run in your declared workspace, and results flow back. Everything is
 outbound HTTP from the laptop: no open ports, no tunnel, NAT-friendly. Enable
 server-side with `channels.web.remoteExec.enabled: true`.
