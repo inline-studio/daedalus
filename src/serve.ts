@@ -23,6 +23,7 @@ import { SkillLearningStore } from "./sessions/skill-learning-store.js";
 import { runSkillCurator } from "./brain/skill-curator.js";
 import { getRpcToken } from "./channels/remote-exec.js";
 import { WebChannel } from "./channels/web.js";
+import { ActivityRegistry, withActivityTracking } from "./kernel/activity.js";
 import { log } from "./log.js";
 
 const PKG_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
@@ -56,10 +57,16 @@ export async function serve(config: ArtemisConfig): Promise<void> {
 
   // With persistentAgent, top-level turns go to the long-lived warm worker over HTTP
   // (subagents inside it still spawn ephemeral containers). Otherwise the supervisor
-  // dispatches each turn itself per the configured dispatcher.
-  const dispatcher: AgentDispatcher = config.runtime.persistentAgent
-    ? new PersistentContainerDispatcher(config)
-    : buildDispatcher(config);
+  // dispatches each turn itself per the configured dispatcher. Wrapped with activity
+  // tracking — the single choke point every top-level turn (channel + scheduled) flows
+  // through — so GET /activity can show what every agent is doing right now.
+  const activity = new ActivityRegistry();
+  const dispatcher: AgentDispatcher = withActivityTracking(
+    config.runtime.persistentAgent
+      ? new PersistentContainerDispatcher(config)
+      : buildDispatcher(config),
+    activity,
+  );
   log.info({ dispatcher: dispatcher.id }, "supervisor dispatcher selected");
 
   // GET /status snapshot for the web UI's status bar. Everything is resolved lazily at
@@ -134,6 +141,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     status,
     abort: abortTurn,
     schedules: listSchedulesForUi,
+    activity: async (userId) => activity.listForUser(userId) as unknown as Array<Record<string, unknown>>,
   });
   if (channels.length === 0) {
     log.error(

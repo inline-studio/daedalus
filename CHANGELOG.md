@@ -13,6 +13,18 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Live activity view.** A pulsing ACTIVITY section in the web sidebar (and
+  `/activity` in the remote CLI) shows what every agent is doing right now — in-flight
+  turns across all your conversations AND scheduled fires, each with a live label
+  (thinking / replying / `tool: bash` / `cypher · tool: read`), the channel, and
+  elapsed time; click a row to jump to that conversation (where the Stop button
+  awaits). Implemented as a decorator around the supervisor's dispatcher — the one
+  choke point every top-level turn flows through — feeding an in-memory registry
+  exposed per-user via `GET /activity`. Buffered channels' turns (Telegram) are
+  tracked too.
+
+### Added
+
 - **Agents & Cron viewers + per-conversation execution toggle.** The web sidebar gains
   collapsible **Agents** (name, model, docker image, delegation targets — from new
   `GET /agents`) and **Cron** (static brain schedules + live agent-armed callbacks with

@@ -369,6 +369,22 @@ export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> 
         prompt();
         return;
       }
+      if (text === "/activity") {
+        void fetch(`${base}/activity?externalUserId=${encodeURIComponent(externalUserId)}`, { headers: authHeaders() })
+          .then((r) => (r.ok ? (r.json() as Promise<{ turns?: Array<Record<string, unknown>> }>) : null))
+          .then((j) => {
+            for (const t of j?.turns ?? []) {
+              const secs = Math.max(0, Math.floor((Date.now() - Date.parse(String(t.startedAt))) / 1000));
+              process.stdout.write(
+                `${String(t.agent).padEnd(14)} ${dim(`${t.activity ?? "working"} · ${t.channel} · ${secs}s`)}\n`,
+              );
+            }
+            if (!j?.turns?.length) process.stdout.write(dim("(idle)\n"));
+            prompt();
+          })
+          .catch(() => { process.stdout.write(dim("[activity fetch failed]\n")); prompt(); });
+        return;
+      }
       if (text === "/agents") {
         void fetch(`${base}/agents?externalUserId=${encodeURIComponent(externalUserId)}`, { headers: authHeaders() })
           .then((r) => (r.ok ? (r.json() as Promise<{ agents?: Array<Record<string, unknown>> }>) : null))

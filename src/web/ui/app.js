@@ -1468,6 +1468,40 @@
   wireSect("sect-agents", loadAgentsList);
   wireSect("sect-crons", loadCronsList);
 
+  // Activity: what every agent is doing right now, across this user's conversations and
+  // scheduled turns. Polled continuously (a cheap in-memory lookup server-side) so the
+  // header dot pulses whenever anything is in flight; rows jump to the conversation.
+  function fmtSince(iso) {
+    var s = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+    var m = Math.floor(s / 60);
+    return m ? m + "m" + (s % 60) + "s" : s + "s";
+  }
+  function loadActivity() {
+    fetch("/activity?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
+      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j) return;
+        var turns = j.turns || [];
+        $("activity-n").textContent = String(turns.length);
+        $("activity-dot").classList.toggle("on", turns.length > 0);
+        var list = $("activity-list");
+        list.innerHTML = "";
+        turns.forEach(function (t) {
+          var el = row(t.agent + " · " + fmtSince(t.startedAt), (t.activity || "working") + " · " + t.channel);
+          el.title = "Jump to this conversation";
+          el.addEventListener("click", function () {
+            if (t.conversationId && t.conversationId !== convId) selectConversation(t.conversationId);
+          });
+          list.appendChild(el);
+        });
+        if (!turns.length) list.appendChild(row("(idle)", ""));
+      })
+      .catch(function () { /* the section degrades quietly */ });
+  }
+  wireSect("sect-activity", loadActivity);
+  loadActivity();
+  setInterval(loadActivity, 8000);
+
   // Session timer: time since this page opened (mm:ss, then h:mm:ss).
   var sessionStart = Date.now();
   setInterval(function () {

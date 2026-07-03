@@ -156,7 +156,10 @@ Scope and safety:
   token (`web.token`) guards it when set. The built-in chat UI (served at `GET /`) is a
   full session workspace: a sidebar with pinned sessions + title search, collapsible
   **Agents** and **Cron** viewers (`GET /agents`, `GET /schedules` — manifest summaries
-  and static + agent-armed schedules, read fresh per request), and a status bar
+  and static + agent-armed schedules, read fresh per request), a live **Activity**
+  section (`GET /activity` — every in-flight turn for your user, channel + scheduled,
+  with a live doing-now label and click-to-jump; pairs with the Stop button), and a
+  status bar
   showing gateway state, agent/cron counts, a context-window readout
   (`65.0k/200.0k · 32%` — the last turn's input tokens vs the agent's `contextWindow`),
   a session timer, and client/backend versions (`GET /status` powers the supervisor

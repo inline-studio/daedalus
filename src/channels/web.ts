@@ -78,9 +78,10 @@ export class WebChannel implements Channel {
   private remoteExecTimeoutMs = 180_000;
   // Supervisor hook: abort the in-flight turn for a conversation (POST /abort).
   private abortTurn: ((conversationId: string) => Promise<boolean>) | undefined;
-  // Viewer providers (GET /agents, GET /schedules) — injected like status/commands.
+  // Viewer providers (GET /agents, GET /schedules, GET /activity) — injected like status.
   private listAgentDetails: (() => Promise<Array<Record<string, unknown>>>) | undefined;
   private listSchedules: (() => Promise<Record<string, unknown>>) | undefined;
+  private listActivity: ((userId: string) => Promise<Array<Record<string, unknown>>>) | undefined;
 
   constructor(opts: {
     defaultAgent: string;
@@ -108,10 +109,12 @@ export class WebChannel implements Channel {
     remoteExec?: { enabled: boolean; timeoutMs?: number };
     // Abort the in-flight turn for a conversation (the Stop button). Injected by serve.
     abortTurn?: (conversationId: string) => Promise<boolean>;
-    // Viewer providers: agent manifests (registry, from the brain) and schedules (serve,
-    // static + agent-armed). Absent → the endpoints return empty shapes.
+    // Viewer providers: agent manifests (registry, from the brain), schedules (serve,
+    // static + agent-armed), and in-flight activity (serve's registry, per user).
+    // Absent → the endpoints return empty shapes.
     listAgentDetails?: () => Promise<Array<Record<string, unknown>>>;
     listSchedules?: () => Promise<Record<string, unknown>>;
+    listActivity?: (userId: string) => Promise<Array<Record<string, unknown>>>;
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -130,6 +133,7 @@ export class WebChannel implements Channel {
     this.abortTurn = opts.abortTurn;
     this.listAgentDetails = opts.listAgentDetails;
     this.listSchedules = opts.listSchedules;
+    this.listActivity = opts.listActivity;
   }
 
   // Whether this user currently has a `dae remote` executor connected — serve uses it to
@@ -307,6 +311,18 @@ export class WebChannel implements Channel {
         }
         if (req.method === "POST" && pathname === "/rpc/result") {
           await this.handleRpcResult(req, res, url, loginUser);
+          return;
+        }
+        if (req.method === "GET" && pathname === "/activity") {
+          // What the caller's agents are doing right now (in-flight turns, live labels).
+          const actUser = loginUser ?? url.searchParams.get("externalUserId");
+          let turns: Array<Record<string, unknown>> = [];
+          if (actUser && this.listActivity && this.sessions) {
+            const userId = this.sessions.resolveUser(this.id, actUser);
+            turns = await this.listActivity(userId).catch(() => []);
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ turns }));
           return;
         }
         if (req.method === "GET" && pathname === "/agents") {

@@ -16,6 +16,7 @@ import { spawnSync } from "node:child_process";
 
 const CI_SAFE = [
   "smoke-abort-turn",
+  "smoke-activity",
   "smoke-agent-shim",
   "smoke-attachment-index",
   "smoke-attachment-path",

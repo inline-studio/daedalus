@@ -80,6 +80,13 @@ body.desktop-mac header button { -webkit-app-region: no-drag; }
 .sb-item-row .sub { color: var(--text-dim); font-size: 11px; display: block;
                     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sb-item-row .off { color: var(--warn); }
+/* Activity section: a pulsing dot in the header while anything is in flight; rows are
+   clickable (jump to that conversation). */
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-dim); display: inline-block; }
+.live-dot.on { background: var(--accent); animation: livepulse 1.6s infinite ease-in-out; }
+@keyframes livepulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+#activity-list .sb-item-row { cursor: pointer; }
+#activity-list .sb-item-row .sub { color: var(--accent); }
 .sb-foot { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap;
            gap: 10px; min-height: 20px; }
 .sb-foot .ch { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700;

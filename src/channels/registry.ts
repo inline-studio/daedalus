@@ -25,6 +25,8 @@ export function buildChannels(
     status?: () => Promise<Record<string, unknown>>;
     abort?: (conversationId: string) => Promise<boolean>;
     schedules?: () => Promise<Record<string, unknown>>;
+    // In-flight turns for a user (GET /activity) — what every agent is doing right now.
+    activity?: (userId: string) => Promise<Array<Record<string, unknown>>>;
   },
 ): Channel[] {
   const out: Channel[] = [];
@@ -101,6 +103,7 @@ export function buildChannels(
         ...(extras?.status ? { status: extras.status } : {}),
         ...(extras?.abort ? { abortTurn: extras.abort } : {}),
         ...(extras?.schedules ? { listSchedules: extras.schedules } : {}),
+        ...(extras?.activity ? { listActivity: extras.activity } : {}),
         ...(listAgentDetails ? { listAgentDetails } : {}),
         ...(w.remoteExec?.enabled
           ? { remoteExec: { enabled: true, timeoutMs: w.remoteExec.timeoutMs } }
