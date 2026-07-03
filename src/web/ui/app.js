@@ -683,6 +683,46 @@
     try { return JSON.stringify(input, null, 2); } catch (e) { return String(input); }
   }
 
+  // --- Per-session view options: show/hide thinking, stream vs whole-reply. Stored per
+  // conversation id so the DnD session can run clean while work sessions stay verbose.
+  function viewOpts() {
+    var all;
+    try { all = JSON.parse(LS.getItem("dae_view") || "{}"); } catch (e) { all = {}; }
+    var v = (convId && all[convId]) || {};
+    return { thinking: v.thinking !== false, stream: v.stream !== false };
+  }
+  function setViewOpt(key, val) {
+    var all;
+    try { all = JSON.parse(LS.getItem("dae_view") || "{}"); } catch (e) { all = {}; }
+    if (!convId) return;
+    var v = all[convId] || {};
+    v[key] = val;
+    all[convId] = v;
+    LS.setItem("dae_view", JSON.stringify(all));
+  }
+  var viewMenu = $("view-menu");
+  function closeViewMenu() { viewMenu.style.display = "none"; }
+  $("view-opts").addEventListener("click", function (e) {
+    e.stopPropagation();
+    if (viewMenu.style.display !== "none") { closeViewMenu(); return; }
+    var v = viewOpts();
+    $("view-thinking").checked = v.thinking;
+    $("view-stream").checked = v.stream;
+    viewMenu.style.display = "block";
+  });
+  document.addEventListener("click", function (e) {
+    if (viewMenu.style.display !== "none" && !(e.target.closest && e.target.closest("#view-wrap"))) closeViewMenu();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && viewMenu.style.display !== "none") closeViewMenu();
+  });
+  $("view-thinking").addEventListener("change", function () { setViewOpt("thinking", this.checked); });
+  $("view-stream").addEventListener("change", function () { setViewOpt("stream", this.checked); });
+
+  // With streaming off, reply tokens accumulate here invisibly and land as one complete
+  // message at turn_done.
+  var suppressedText = "";
+
   function connect() {
     if (es) es.close();
     var u = "/events?externalUserId=" + encodeURIComponent(uid) +
@@ -740,6 +780,7 @@
       if (d.conversationId && convId && d.conversationId !== convId) return;
       // A turn is visibly in flight (covers reloads mid-turn and turns started elsewhere).
       if (!turnActive) setTurnActive(true);
+      if (!viewOpts().stream) { suppressedText += d.text || ""; return; } // whole-reply mode
       var b = textBlock();
       b.text += d.text || "";
       streamBubble.fullText += d.text || "";
@@ -751,6 +792,8 @@
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
       if (!turnActive) setTurnActive(true);
+      var v = viewOpts();
+      if (!v.thinking || !v.stream) return; // hidden for this session
       var wasAtBottom = isAtBottom();
       var b = thinkBlock();
       b.text += d.text || "";
@@ -762,6 +805,7 @@
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
       if (!turnActive) setTurnActive(true);
+      if (!viewOpts().stream) return; // whole-reply mode: no live chrome
       var s = ensureStreamBubble();
       closeCur(); // a tool call ends the current text/thinking block; it sits inline in the flow
       var t = makeToolRow(d.name, d.input, "running"); // tool_done resolves it to ok/error
@@ -786,6 +830,7 @@
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
       if (!turnActive) setTurnActive(true);
+      if (!viewOpts().stream) return; // whole-reply mode: no live chrome
       var s = ensureStreamBubble();
       var panel = s.subPanels[d.spawnId];
       if (d.kind === "start") {
@@ -847,6 +892,18 @@
       if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
       stopTurnTimer();
       setTurnActive(false);
+      // Whole-reply mode: the tokens were held back — deliver them as one complete message.
+      if (suppressedText) {
+        var whole = suppressedText;
+        suppressedText = "";
+        hideThinking();
+        addMsg("assistant", whole, [], ev.lastEventId);
+        if (d.context && d.context.inputTokens) updateContext(d.context);
+        lastStreamed = { text: whole, at: Date.now() }; // dedup vs a replayed persisted copy
+        maybeNotify(whole);
+        loadConversations();
+        return;
+      }
       if (!streamBubble) return;
       // Render each streamed text block as markdown now the turn is complete (each block is a
       // self-contained run of reply text between tool calls / reasoning).
@@ -891,11 +948,12 @@
     var empty = log.querySelector(".empty"); if (empty) empty.remove();
     var div = document.createElement("div"); div.className = "msg assistant";
     var flow = document.createElement("div");
+    var showThinking = viewOpts().thinking;
     (m.blocks || []).forEach(function (b) {
       if (b.t === "text") {
         var tb = document.createElement("div"); tb.innerHTML = md(b.text || ""); flow.appendChild(tb);
       } else if (b.t === "thinking") {
-        flow.appendChild(makeReasoning(b.text || "", true).el);
+        if (showThinking) flow.appendChild(makeReasoning(b.text || "", true).el);
       } else if (b.t === "tool") {
         flow.appendChild(makeToolRow(b.name, b.input, b.isError ? "err" : "ok").row);
       }
@@ -926,6 +984,8 @@
             else addMsg(m.role, m.text || "", m.attachments || [], m.at);
           });
         } finally { bulkLoading = false; }
+        // Nothing in this conversation (and nothing streamed in while loading) → splash.
+        if (!(j.messages || []).length && !log.children.length) log.innerHTML = splashHtml();
         jumpToBottom();
       })
       .catch(function (err) { console.error("loadHistory failed", err); });
@@ -956,10 +1016,138 @@
     if (i != null) { pending.splice(+i, 1); renderChips(); }
   });
 
-  $("file").addEventListener("change", function (e) {
+  function addFilesFromInput(e) {
     var files = Array.prototype.slice.call(e.target.files || []);
     Promise.all(files.map(fileToAttachment)).then(function (atts) { pending = pending.concat(atts); renderChips(); });
     e.target.value = "";
+  }
+  $("file").addEventListener("change", addFilesFromInput);
+  $("file-img").addEventListener("change", addFilesFromInput);
+
+  // --- Attach menu (the ＋): Files / Images / Paste image / URL. ----------------------------
+  var attachMenu = $("attach-menu");
+  function closeAttachMenu() { attachMenu.style.display = "none"; }
+  $("attach-btn").addEventListener("click", function (e) {
+    e.stopPropagation();
+    attachMenu.style.display = attachMenu.style.display === "none" ? "block" : "none";
+  });
+  document.addEventListener("click", function (e) {
+    if (attachMenu.style.display !== "none" && !(e.target.closest && e.target.closest("#attach-wrap"))) closeAttachMenu();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && attachMenu.style.display !== "none") closeAttachMenu();
+  });
+  attachMenu.addEventListener("click", function (e) {
+    var b = e.target.closest && e.target.closest("button[data-attach]");
+    if (!b) return;
+    closeAttachMenu();
+    var kind = b.getAttribute("data-attach");
+    if (kind === "files") $("file").click();
+    else if (kind === "images") $("file-img").click();
+    else if (kind === "paste") pasteImageFromClipboard();
+    else if (kind === "url") attachUrl();
+  });
+
+  // Read an image straight off the OS clipboard (needs the async clipboard API + permission;
+  // pasting with ⌘V into the composer works regardless via the paste handler below).
+  function pasteImageFromClipboard() {
+    if (!navigator.clipboard || !navigator.clipboard.read) {
+      toast("Clipboard access isn't available here — paste into the message box instead.", true);
+      return;
+    }
+    navigator.clipboard.read().then(function (items) {
+      var found = false;
+      items.forEach(function (item) {
+        var type = (item.types || []).filter(function (t) { return t.indexOf("image/") === 0; })[0];
+        if (!type) return;
+        found = true;
+        item.getType(type).then(function (blob) {
+          fileToAttachment(new File([blob], "pasted-image." + (type.split("/")[1] || "png"), { type: type }))
+            .then(function (a) { pending.push(a); renderChips(); });
+        });
+      });
+      if (!found) toast("No image on the clipboard.");
+    }).catch(function () { toast("Couldn't read the clipboard — paste into the message box instead.", true); });
+  }
+
+  // Attach a URL: drops the link into the message so the agent fetches it server-side
+  // (web_fetch) — nothing to upload from here.
+  function attachUrl() {
+    promptDialog({ title: "Attach URL", placeholder: "https://…", action: "Add" }, function (url) {
+      url = url.trim();
+      if (!url) return;
+      if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+      var input = $("text");
+      input.value = (input.value ? input.value.replace(/\s+$/, "") + "\n" : "") + url;
+      input.dispatchEvent(new Event("input"));
+      input.focus();
+    });
+  }
+
+  // ⌘V straight into the composer: images on the clipboard become attachments.
+  $("text").addEventListener("paste", function (e) {
+    var items = (e.clipboardData && e.clipboardData.items) || [];
+    var files = [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].kind === "file" && items[i].type.indexOf("image/") === 0) {
+        var f = items[i].getAsFile();
+        if (f) files.push(f);
+      }
+    }
+    if (!files.length) return;
+    e.preventDefault();
+    Promise.all(files.map(fileToAttachment)).then(function (atts) { pending = pending.concat(atts); renderChips(); });
+  });
+
+  // --- Dictation: record → POST /transcribe (server whisper) → text lands in the composer.
+  // The mic only shows when /status says the stack can transcribe.
+  var micRec = null;
+  function micAvailable(on) {
+    $("mic").style.display = on && navigator.mediaDevices && window.MediaRecorder ? "" : "none";
+  }
+  $("mic").addEventListener("click", function () {
+    var btn = $("mic");
+    if (btn.classList.contains("busy")) return;
+    if (micRec) { micRec.stop(); return; }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      var rec = new MediaRecorder(stream);
+      var chunksArr = [];
+      micRec = rec;
+      btn.classList.add("rec");
+      rec.addEventListener("dataavailable", function (e) { if (e.data && e.data.size) chunksArr.push(e.data); });
+      rec.addEventListener("stop", function () {
+        stream.getTracks().forEach(function (t) { t.stop(); });
+        micRec = null;
+        btn.classList.remove("rec");
+        var blob = new Blob(chunksArr, { type: rec.mimeType || "audio/webm" });
+        if (!blob.size) return;
+        btn.classList.add("busy");
+        var fr = new FileReader();
+        fr.onload = function () {
+          var b64 = String(fr.result).split(",")[1] || "";
+          fetch("/transcribe", {
+            method: "POST", headers: authHeaders(),
+            body: JSON.stringify({ audio: b64, mediaType: blob.type }),
+          })
+            .then(function (r) {
+              if (on401(r)) return null;
+              if (!r.ok) { failReason(r).then(function (why) { toast("Dictation failed: " + why, true); }); return null; }
+              return r.json();
+            })
+            .then(function (j) {
+              btn.classList.remove("busy");
+              if (!j || !j.text) return;
+              var input = $("text");
+              input.value = (input.value ? input.value.replace(/\s+$/, "") + " " : "") + j.text.trim();
+              input.dispatchEvent(new Event("input"));
+              input.focus();
+            })
+            .catch(function () { btn.classList.remove("busy"); toast("Dictation failed — network error.", true); });
+        };
+        fr.readAsDataURL(blob);
+      });
+      rec.start();
+    }).catch(function () { toast("Microphone unavailable — check browser permissions.", true); });
   });
 
   // --- Stop button: while a turn is in flight the Send button becomes Stop. ---------------
@@ -968,7 +1156,8 @@
     turnActive = on;
     var b = $("send");
     if (!b) return;
-    b.textContent = on ? "Stop" : "Send";
+    // Icon-sized button; CSS swaps the glyph (arrow ⇄ square) on the .stop class.
+    b.title = on ? "Stop this turn" : "Send (Enter)";
     b.classList.toggle("stop", on);
   }
   function stopTurn() {
@@ -1006,6 +1195,7 @@
     if (turnActive) { stopTurn(); return; }
     var text = $("text").value.trim();
     if (!text && !pending.length) return;
+    suppressedText = ""; // any held-back text from an aborted whole-reply turn is stale now
     var atts = pending.slice();
     var body = { externalUserId: uid };
     if (convId) body.conversationId = convId;
@@ -1191,11 +1381,43 @@
       .catch(function () { c.pinned = !want; renderConversations(); });
   }
 
+  // Two-row Unicode block font for the empty-chat splash. Each glyph is [top, bottom];
+  // letters outside the map (accents, digits) drop the art in favour of plain text.
+  var BLOCK_FONT = {
+    A: ["▄▀█", "█▀█"], B: ["█▀▄", "█▄█"], C: ["█▀▀", "█▄▄"], D: ["█▀▄", "█▄▀"],
+    E: ["█▀▀", "██▄"], F: ["█▀▀", "█  "], G: ["█▀▀", "█▄█"], H: ["█ █", "█▀█"],
+    I: ["█", "█"], J: ["  █", "█▄█"], K: ["█▄▀", "█ █"], L: ["█  ", "█▄▄"],
+    M: ["█▀▄▀█", "█ ▀ █"], N: ["█▄ █", "█ ▀█"], O: ["█▀█", "█▄█"], P: ["█▀█", "█▀▀"],
+    Q: ["█▀█", "█▄▀"], R: ["█▀█", "█▀▄"], S: ["█▀", "▄█"], T: ["▀█▀", " █ "],
+    U: ["█ █", "█▄█"], V: ["█ █", "▀▄▀"], W: ["█ █ █", "▀▄▀▄▀"], X: ["▀▄▀", "▄▀▄"],
+    Y: ["█ █", " █ "], Z: ["▀▀█", "█▄▄"], " ": ["  ", "  "],
+  };
+  function blockArt(name) {
+    var top = [], bottom = [];
+    for (var i = 0; i < name.length; i++) {
+      var g = BLOCK_FONT[name[i]];
+      if (!g) return null;
+      top.push(g[0]);
+      bottom.push(g[1]);
+    }
+    var art = top.join(" ") + "\n" + bottom.join(" ");
+    // Longer names would overflow small screens as art; plain text handles those.
+    return top.join(" ").length > 52 ? null : art;
+  }
+  function splashHtml() {
+    var name = String(ASSISTANT_NAME || "").toUpperCase();
+    var art = name ? blockArt(name) : null;
+    return '<div class="empty splash">' +
+      (art ? '<pre class="splash-art">' + esc(art) + "</pre>"
+           : '<div class="splash-name">' + esc(name || "DAEDALUS") + "</div>") +
+      '<div class="splash-hint">say hello</div></div>';
+  }
+
   // Reset the chat view to empty (used when switching/deleting conversations).
   function clearLog() {
     convo = [];
     if (selecting) exitSelect();
-    log.innerHTML = '<div class="empty">No messages yet. Say hello.</div>';
+    log.innerHTML = splashHtml();
     newSinceScrolled = 0;
     pill.classList.remove("on");
     // Drop any in-progress streamed bubble state so it can't bleed across conversations.
@@ -1204,6 +1426,7 @@
     streamBubble = null;
     lastStreamDiv = null;
     lastStreamed = null;
+    suppressedText = "";
     // The context readout + stop state belong to the conversation we just left.
     hideContext();
     setTurnActive(false);
@@ -1274,26 +1497,104 @@
     // externalUserId goes on the query string (the server reads the user from the cookie in
     // login mode, but from this param in token/open mode — same as GET/DELETE /conversations).
     fetch("/conversations?externalUserId=" + encodeURIComponent(uid), { method: "POST", headers: authHeaders(), body: "{}" })
-      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (r) {
+        if (on401(r)) return null;
+        if (!r.ok) {
+          failReason(r).then(function (why) { toast("Couldn't start a new session: " + why, true); });
+          return null;
+        }
+        return r.json();
+      })
       .then(function (c) {
         creatingConvo = false;
-        if (!c || !c.id) { statusEl.textContent = "couldn't start a new chat"; return; }
+        if (!c || !c.id) return;
         var known = conversations.some(function (x) { return x.id === c.id; });
         if (!known) conversations.unshift(c);
         selectConversation(c.id);
       })
-      .catch(function () { creatingConvo = false; statusEl.textContent = "couldn't start a new chat"; });
+      .catch(function () { creatingConvo = false; toast("Couldn't start a new session — network error.", true); });
+  }
+
+  // Transient notice, bottom-center. Errors must be LOUD — the status-bar text is easy to
+  // miss, and a failed delete that "does nothing" reads as a dead button (casa, 2026-07).
+  var toastTimer = null;
+  function toast(msg, isErr) {
+    var el = $("toast");
+    el.textContent = msg;
+    el.className = isErr ? "err" : "";
+    el.style.display = "block";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.style.display = "none"; }, isErr ? 6000 : 3500);
+  }
+
+  // In-house confirm dialog, styled like the app (the browser-native confirm looks alien
+  // and can't be themed). cb fires only on confirm. Esc / Cancel / overlay click dismiss.
+  // With opts.placeholder the dialog grows a text input and cb receives its value
+  // (promptDialog) — Enter confirms.
+  function confirmDialog(opts, cb) {
+    $("confirm-title").textContent = opts.title || "Are you sure?";
+    $("confirm-msg").textContent = opts.message || "";
+    $("confirm-yes").textContent = opts.action || "Delete";
+    $("confirm-yes").classList.toggle("neutral", Boolean(opts.neutral));
+    var field = $("confirm-input");
+    var withInput = "placeholder" in opts;
+    field.style.display = withInput ? "" : "none";
+    field.value = "";
+    field.placeholder = opts.placeholder || "";
+    var ov = $("confirm-overlay");
+    ov.style.display = "flex";
+    function close() {
+      ov.style.display = "none";
+      $("confirm-yes").removeEventListener("click", yes);
+      $("confirm-no").removeEventListener("click", close);
+      ov.removeEventListener("click", onOverlay);
+      document.removeEventListener("keydown", onKey);
+    }
+    function yes() { var v = field.value; close(); cb(v); }
+    function onOverlay(e) { if (e.target === ov) close(); }
+    function onKey(e) {
+      if (e.key === "Escape") { e.stopPropagation(); close(); }
+      if (e.key === "Enter" && withInput && document.activeElement === field) yes();
+    }
+    $("confirm-yes").addEventListener("click", yes);
+    $("confirm-no").addEventListener("click", close);
+    ov.addEventListener("click", onOverlay);
+    document.addEventListener("keydown", onKey);
+    (withInput ? field : $("confirm-no")).focus();
+  }
+  function promptDialog(opts, cb) {
+    confirmDialog({
+      title: opts.title,
+      message: opts.message,
+      action: opts.action || "OK",
+      neutral: true,
+      placeholder: opts.placeholder || "",
+    }, cb);
+  }
+
+  // Pull a human-readable reason out of an error response (JSON {error} or raw text).
+  function failReason(r) {
+    return r.text().then(function (t) {
+      try { t = JSON.parse(t).error || t; } catch (e) { /* raw text is fine */ }
+      return "HTTP " + r.status + (t ? " — " + String(t).slice(0, 140) : "");
+    }).catch(function () { return "HTTP " + r.status; });
   }
 
   function deleteConversation(id) {
     var match = conversations.filter(function (x) { return x.id === id; })[0];
     var label = match ? convLabel(match) : "this conversation";
-    if (!window.confirm('Delete "' + label + '"? This cannot be undone.')) return;
+    confirmDialog({
+      title: "Delete session",
+      message: '"' + label + '" and its history will be removed. This cannot be undone.',
+      action: "Delete",
+    }, function () { doDeleteConversation(id); });
+  }
+  function doDeleteConversation(id) {
     fetch("/conversations?externalUserId=" + encodeURIComponent(uid) + "&id=" + encodeURIComponent(id),
           { method: "DELETE", headers: authHeaders() })
       .then(function (r) {
         if (on401(r)) return;
-        if (!r.ok) { statusEl.textContent = "delete failed (" + r.status + ")"; return; }
+        if (!r.ok) { failReason(r).then(function (why) { toast("Couldn't delete the session: " + why, true); }); return; }
         conversations = conversations.filter(function (x) { return x.id !== id; });
         // If we deleted the conversation we were viewing, open the next most recent web
         // conversation — or bootstrap a fresh one when that was the last.
@@ -1309,7 +1610,7 @@
         }
         renderConversations();
       })
-      .catch(function () { statusEl.textContent = "delete failed"; });
+      .catch(function () { toast("Couldn't delete the session — network error.", true); });
   }
 
   // Optimistic local title for an unnamed conversation (mirrors the server's auto-title from
@@ -1387,6 +1688,8 @@
         // Executor state drives the composer's local/server toggle.
         executorConnected = Boolean(s.remoteExec && s.remoteExec.connected);
         renderExecToggle();
+        // Dictation mic only when the stack can transcribe (whisper configured).
+        micAvailable(Boolean(s.dictation));
         // Channel threads in the sidebar footer (Hermes-style): each enabled messaging
         // channel gets a section with the cross-channel Main thread — click to open the
         // same conversation your Telegram/WhatsApp messages land in.
@@ -1473,9 +1776,22 @@
     return m ? m + "m" + (s % 60) + "s" : s + "s";
   }
 
-  // Agents popover: IN FLIGHT first (live labels, click to jump), then the roster.
-  function renderAgentsPopover() {
-    var body = openPopover("agents", "Agents · Activity", "st-agents");
+  // Agents · Activity modal (the status-bar agents button): fills 90% of the viewport.
+  // Roster on the left — agents with an in-flight turn on top (live dot + elapsed), idle
+  // agents greyed underneath. Clicking one shows its detail on the right: the live turn
+  // (what it's doing, where, jump-to-conversation) or the manifest facts when idle.
+  var agSelected = null; // survives live refreshes while the modal is open
+  var agFlowPinned = true; // follow the newest step until the user scrolls up
+  var agFlowScroll = 0;
+  var agRefresh = null; // fast poll while the modal is open (the 8s bar poll is too slow to feel live)
+  function renderAgentsModal() {
+    if (panelKind !== "agents") {
+      openPanel("Agents · Activity", "agents");
+      agFlowPinned = true;
+    }
+    clearTimeout(agRefresh);
+    agRefresh = setTimeout(function () { if (panelKind === "agents") renderAgentsModal(); }, 2500);
+    var body = $("panel-body");
     Promise.all([
       fetch("/activity?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
         .then(function (r) { return r.ok ? r.json() : { turns: [] }; })
@@ -1484,36 +1800,156 @@
         .then(function (r) { return r.ok ? r.json() : { agents: [] }; })
         .catch(function () { return { agents: [] }; }),
     ]).then(function (res) {
-      if (popOpen !== "agents") return; // closed / switched while fetching
-      var turns = res[0].turns || [], agents = res[1].agents || [];
-      body.innerHTML = "";
+      if (panelKind !== "agents") return; // closed while fetching
+      var turns = res[0].turns || [], roster = res[1].agents || [];
+      // The orchestrator is the chat itself — its own activity streams there. This view is
+      // the SUB-agents: what's been delegated and what each delegate is doing right now.
+      roster = roster.filter(function (a) { return !a.orchestrator; });
+      // Attribute activity to sub-agents from the turn logs. A sub-agent's steps arrive
+      // prefixed with its chain ("cypher · tool: bash", "cypher › reviewer · tool: read",
+      // "spawning cypher"); an agent can also BE a turn's top-level agent (a cron firing
+      // it directly) — then its whole log belongs to it.
       var busy = {};
-      if (turns.length) {
-        group(body, "In flight");
-        turns.forEach(function (t) {
-          busy[t.agent] = t.activity || "working";
-          var el = row(t.agent + " · " + fmtSince(t.startedAt), (t.activity || "working") + " · " + t.channel);
-          el.className = "sb-item-row jump";
-          el.title = "Jump to this conversation";
-          el.addEventListener("click", function () {
-            closePopover();
-            if (t.conversationId && t.conversationId !== convId) selectConversation(t.conversationId);
-          });
-          body.appendChild(el);
-        });
+      function claim(name, t, step) {
+        if (!busy[name]) busy[name] = { steps: [], channel: t.channel, startedAt: step.at || t.startedAt };
+        busy[name].steps.push(step);
       }
-      group(body, "Agents");
-      agents.forEach(function (a) {
-        var detail = busy[a.name]
-          ? busy[a.name]
-          : [a.model, a.image ? "docker" : null, (a.subagents || []).length ? "→ " + a.subagents.join(", ") : null]
-              .filter(Boolean).join(" · ");
-        var el = row(a.name, detail, busy[a.name] ? "" : undefined);
-        if (busy[a.name]) el.className = "sb-item-row jump";
-        el.title = a.description || a.name;
-        body.appendChild(el);
+      turns.forEach(function (t) {
+        var steps = (t.log && t.log.length) ? t.log : [{ at: t.startedAt, label: t.activity || "working" }];
+        steps.forEach(function (s) {
+          roster.forEach(function (a) {
+            var n = a.name;
+            if (t.agent === n) { claim(n, t, s); return; }
+            if (s.label === "spawning " + n) { claim(n, t, { at: s.at, label: "spawned" }); return; }
+            if (s.label.indexOf(n + " · ") === 0) { claim(n, t, { at: s.at, label: s.label.slice(n.length + 3) }); return; }
+            if (s.label.indexOf(n + " › ") === 0) { claim(n, t, { at: s.at, label: s.label.slice(n.length + 3) }); }
+          });
+        });
       });
-      if (!agents.length) body.appendChild(row("(no agents)", ""));
+      var active = roster.filter(function (a) { return busy[a.name]; });
+      var idle = roster.filter(function (a) { return !busy[a.name]; });
+      active.sort(function (a, b) { return busy[a.name].startedAt.localeCompare(busy[b.name].startedAt); });
+      var ordered = active.concat(idle);
+      if (!agSelected || !roster.some(function (a) { return a.name === agSelected; })) {
+        agSelected = ordered.length ? ordered[0].name : null;
+      }
+
+      body.innerHTML = "";
+      var list = document.createElement("div");
+      list.className = "ag-list";
+      var detail = document.createElement("div");
+      detail.className = "ag-detail";
+      body.appendChild(list);
+      body.appendChild(detail);
+
+      function renderDetail() {
+        detail.innerHTML = "";
+        var a = roster.filter(function (x) { return x.name === agSelected; })[0];
+        if (!a) { detail.innerHTML = '<div class="ag-empty">No sub-agents in the brain.</div>'; return; }
+        var t = busy[a.name];
+        var h = document.createElement("h2");
+        h.textContent = a.name + " ";
+        var badge = document.createElement("span");
+        badge.className = "ag-state" + (t ? " busy" : "");
+        badge.textContent = t ? "active" : "idle";
+        h.appendChild(badge);
+        detail.appendChild(h);
+        if (a.description) {
+          var d = document.createElement("div");
+          d.className = "ag-desc";
+          d.textContent = a.description;
+          detail.appendChild(d);
+        }
+        if (t) {
+          // This sub-agent's inner life, flowing: thinking snippets, tool calls with
+          // their inputs, failures — its steps attributed out of the turn logs.
+          var live = document.createElement("div");
+          live.className = "ag-live";
+          var meta = document.createElement("div");
+          meta.className = "ag-live-meta";
+          meta.textContent = "via " + t.channel + " · working " + fmtSince(t.startedAt);
+          live.appendChild(meta);
+          var flow = document.createElement("div");
+          flow.className = "ag-flow";
+          t.steps.forEach(function (s) {
+            var stepEl = document.createElement("div");
+            stepEl.className = "ag-step" +
+              (s.label.indexOf("thinking") >= 0 ? " think" : "") +
+              (s.label.indexOf("tool failed") >= 0 ? " fail" : s.label.indexOf("tool:") >= 0 ? " tool" : "");
+            var tm = document.createElement("span");
+            tm.className = "t";
+            tm.textContent = String(s.at).slice(11, 19);
+            var lb = document.createElement("span");
+            lb.className = "l";
+            lb.textContent = s.label;
+            stepEl.appendChild(tm);
+            stepEl.appendChild(lb);
+            flow.appendChild(stepEl);
+          });
+          live.appendChild(flow);
+          detail.appendChild(live);
+          // Follow the newest step unless the user scrolled up to read history.
+          flow.scrollTop = agFlowPinned ? flow.scrollHeight : agFlowScroll;
+          flow.addEventListener("scroll", function () {
+            agFlowPinned = flow.scrollHeight - flow.scrollTop - flow.clientHeight < 30;
+            agFlowScroll = flow.scrollTop;
+          });
+        }
+        var kv = document.createElement("dl");
+        kv.className = "ag-kv";
+        function fact(k, v) {
+          if (!v) return;
+          var dt = document.createElement("dt");
+          dt.textContent = k;
+          var dd = document.createElement("dd");
+          dd.textContent = v;
+          kv.appendChild(dt);
+          kv.appendChild(dd);
+        }
+        fact("Model", a.model);
+        fact("Runs in", a.image ? "docker · " + a.image : a.execution ? a.execution : "");
+        fact("Sub-agents", (a.subagents || []).join(", "));
+        fact("Tools", (a.tools || []).join(", "));
+        fact("Schedule", a.schedule);
+        if (kv.children.length) detail.appendChild(kv);
+      }
+
+      function renderList() {
+        list.innerHTML = "";
+        ordered.forEach(function (a) {
+          var t = busy[a.name];
+          var el = document.createElement("button");
+          el.type = "button";
+          el.className = "ag-row" + (t ? " busy" : " idle") + (a.name === agSelected ? " sel" : "");
+          var dot = document.createElement("i");
+          dot.className = "ag-dot";
+          var txt = document.createElement("span");
+          txt.style.minWidth = "0";
+          var nm = document.createElement("span");
+          nm.className = "ag-name";
+          nm.textContent = a.name;
+          var sub = document.createElement("span");
+          sub.className = "ag-sub";
+          sub.textContent = t
+            ? (t.steps[t.steps.length - 1].label || "working") + " · " + fmtSince(t.startedAt)
+            : a.model || a.description || "";
+          txt.appendChild(nm);
+          txt.appendChild(sub);
+          el.appendChild(dot);
+          el.appendChild(txt);
+          el.addEventListener("click", function () {
+            agSelected = a.name;
+            agFlowPinned = true; // fresh agent — follow its newest steps
+            renderList();
+            renderDetail();
+          });
+          list.appendChild(el);
+        });
+        if (!ordered.length) list.innerHTML = '<div class="ag-empty">No sub-agents in the brain.</div>';
+      }
+
+      renderList();
+      renderDetail();
     });
   }
 
@@ -1540,19 +1976,27 @@
   }
 
   $("st-agents").addEventListener("click", function () {
-    if (popOpen === "agents" && Date.now() - popOpenedAt > 250) { closePopover(); return; }
-    renderAgentsPopover();
+    if (panelKind === "agents") { closePanel(); return; }
+    closePopover();
+    renderAgentsModal();
   });
   $("st-cron").addEventListener("click", function () {
     if (popOpen === "cron" && Date.now() - popOpenedAt > 250) { closePopover(); return; }
     renderCronPopover();
   });
 
-  // --- Modal panels: Skills & Tools / Artifacts (sidebar nav) -------------------------------
+  // --- Modal panels: Skills & Tools / Artifacts (sidebar nav) + Agents (status bar) ---------
+  var panelKind = null; // "skills" | "artifacts" | "agents" | null
   function closePanel() {
+    panelKind = null;
+    clearTimeout(agRefresh); // stop the agents modal's fast poll
+    $("panel").classList.remove("xl");
     $("panel-overlay").style.display = "none";
   }
-  function openPanel(title) {
+  function openPanel(title, kind) {
+    panelKind = kind || null;
+    // The agents view is a near-fullscreen two-pane layout; the others are compact lists.
+    $("panel").classList.toggle("xl", kind === "agents");
     $("panel-title").textContent = title;
     $("panel-body").innerHTML = "";
     $("panel-overlay").style.display = "flex";
@@ -1615,7 +2059,7 @@
       .catch(function () { statusEl.textContent = "skill " + action + " failed"; });
   }
   function renderSkillsPanel() {
-    var body = openPanel("Skills & Tools");
+    var body = openPanel("Skills & Tools", "skills");
     fetch("/skills?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
       .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
       .then(function (j) {
@@ -1656,9 +2100,11 @@
             }));
             if (s.origin === "agent") {
               actions.push(actBtn("Archive", "danger", function () {
-                if (window.confirm("Archive skill '" + s.name + "'? (recoverable under skills/.archive)")) {
-                  skillAction(s.name, "archive");
-                }
+                confirmDialog({
+                  title: "Archive skill",
+                  message: "'" + s.name + "' will move to skills/.archive (recoverable).",
+                  action: "Archive",
+                }, function () { skillAction(s.name, "archive"); });
               }));
             }
           }
@@ -1675,7 +2121,7 @@
     return n + " B";
   }
   function renderArtifactsPanel() {
-    var body = openPanel("Artifacts");
+    var body = openPanel("Artifacts", "artifacts");
     var searchWrap = document.createElement("div");
     searchWrap.className = "panel-search";
     var input = document.createElement("input");
@@ -1725,7 +2171,7 @@
         var n = (j.turns || []).length;
         $("activity-dot").classList.toggle("on", n > 0);
         $("st-active-n").textContent = n ? " · " + n + " active" : "";
-        if (popOpen === "agents") renderAgentsPopover();
+        // The agents modal runs its own 2.5s refresh while open — no extra render here.
       })
       .catch(function () { /* the bar degrades quietly */ });
   }

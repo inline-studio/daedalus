@@ -392,7 +392,7 @@ the credential model and the manual injection form: [docs/install.md](docs/insta
 |---|---|
 | `dae init` | Bootstrap `~/.daedalus/` from the shipped example |
 | `dae install` | Turnkey: ensure config, then `docker compose up -d` the stack |
-| `dae update` | Check for a newer release, install it, re-apply your configuration |
+| `dae update` | Check for a newer release, install it, re-apply your configuration (CLI-only on machines without an installed stack, e.g. `dae remote` clients) |
 | `dae uninstall [--purge]` | Stop the stack (`--purge` also deletes config; data preserved) |
 | `dae serve` | The long-running supervisor (channels + scheduler + dispatcher). The `daedalus` container runs this as its entrypoint, so in the normal stack you **never run it by hand** — operate via `docker compose` (see below). Host/dev-mode only. |
 | `dae agents` / `dae skills` / `dae mcp` | Browse what's in the brain |

@@ -260,8 +260,10 @@ function buildMenu() {
 app.whenReady().then(() => {
   // Belt-and-braces: the web UI asks for Notification permission via the standard API;
   // grant it for the configured server so the opt-in flow works exactly like a browser.
+  // "media" covers the composer's dictation mic (macOS still shows its own system
+  // microphone prompt on first use).
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
-    cb(permission === "notifications");
+    cb(permission === "notifications" || permission === "media");
   });
   buildMenu();
   createWindow();

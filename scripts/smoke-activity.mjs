@@ -34,12 +34,41 @@ const expect = (label, ok, detail = "") => {
 {
   expect("tool label", activityLabel({ type: "tool_use", id: "t", name: "bash", input: {} }) === "tool: bash");
   expect(
+    "tool label carries the telling input field",
+    activityLabel({ type: "tool_use", id: "t", name: "web_fetch", input: { url: "https://php.net/manual" } }) ===
+      "tool: web_fetch — https://php.net/manual",
+  );
+  expect(
     "subagent tool label carries the chain",
     activityLabel({ type: "tool_use", id: "t", name: "read", input: {}, origin: { path: ["cypher"], spawnId: "s" } }) === "cypher · tool: read",
   );
   expect("thinking label", activityLabel({ type: "thinking_delta", text: "…" }) === "thinking");
+  expect("tool_running adds nothing (tool_use already announced it)", activityLabel({ type: "tool_running", id: "t", name: "bash" }) === null);
+  expect("failed tool_result is called out", activityLabel({ type: "tool_result", id: "t", name: "bash", isError: true }) === "tool failed: bash");
+  expect("ok tool_result stays quiet", activityLabel({ type: "tool_result", id: "t", name: "bash", isError: false }) === null);
   expect("spawn label", activityLabel({ type: "subagent_start", prompt: "x", origin: { path: ["cypher"], spawnId: "s" } }) === "spawning cypher");
   expect("origin turn_complete is ignored", activityLabel({ type: "turn_complete", finalText: "", origin: { path: ["cypher"], spawnId: "s" } }) === null);
+}
+
+// --- 2b. The flowing log: accumulation, dedup, coalescing ---
+{
+  const reg = new ActivityRegistry();
+  reg.start({ conversationId: "c1", userId: "u1", agent: "artemis", channel: "web", startedAt: "2026-07-03T10:00:00Z", activity: "working" });
+  reg.update("c1", "thinking — what is", "think:0");
+  reg.update("c1", "thinking — what is the best approach", "think:0"); // same segment → refine in place
+  reg.update("c1", "tool: web_fetch — php.net");
+  reg.update("c1", "tool: web_fetch — php.net"); // exact repeat → ignored
+  reg.update("c1", "thinking — ok, array_values then", "think:1"); // new segment → new entry
+  const t = reg.listForUser("u1")[0];
+  expect(
+    "log accumulates one entry per step (coalesced thinking, deduped repeats)",
+    t.log.length === 3 &&
+      t.log[0].label === "thinking — what is the best approach" &&
+      t.log[1].label === "tool: web_fetch — php.net" &&
+      t.log[2].label === "thinking — ok, array_values then",
+    JSON.stringify(t.log.map((e) => e.label)),
+  );
+  expect("activity mirrors the newest step", t.activity === "thinking — ok, array_values then");
 }
 
 // --- 3. Dispatcher decorator ---
@@ -47,13 +76,17 @@ const expect = (label, ok, detail = "") => {
   const reg = new ActivityRegistry();
   let midDispatchTurns = null;
   let sawSink = null;
+  let midDispatchLog = null;
   const inner = {
     id: "stub",
     streaming: true,
     async dispatch(args) {
       sawSink = args.onEvent;
+      args.onEvent?.({ type: "thinking_delta", text: "weighing the " });
+      args.onEvent?.({ type: "thinking_delta", text: "two options" });
       args.onEvent?.({ type: "tool_use", id: "t1", name: "web_fetch", input: {} });
       midDispatchTurns = reg.listForUser("u1").map((t) => t.activity);
+      midDispatchLog = reg.listForUser("u1")[0]?.log.map((e) => e.label);
       return { status: "complete", finalText: "ok", turns: 1 };
     },
     async abort(sessionId) {
@@ -69,7 +102,13 @@ const expect = (label, ok, detail = "") => {
     originChannel: "web", onEvent: (ev) => events.push(ev),
   });
   expect("turn registered + live label mid-dispatch", JSON.stringify(midDispatchTurns) === '["tool: web_fetch"]', JSON.stringify(midDispatchTurns));
-  expect("caller sink still receives events", events.length === 1 && events[0].type === "tool_use");
+  expect(
+    "wrapper coalesces thinking deltas into one snippet entry before the tool step",
+    Array.isArray(midDispatchLog) && midDispatchLog.length === 2 &&
+      midDispatchLog[0] === "thinking — weighing the two options" && midDispatchLog[1] === "tool: web_fetch",
+    JSON.stringify(midDispatchLog),
+  );
+  expect("caller sink still receives events", events.length === 3 && events[2].type === "tool_use");
   expect("turn removed after dispatch", reg.size() === 0);
   expect("abort passes through", (await wrapped.abort("c9")) === true);
 

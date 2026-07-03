@@ -140,6 +140,11 @@ await chan.stop();
 
   const agents = await fetch(`${base2}/agents`).then((r) => r.json());
   expect("GET /agents returns manifest summaries", agents.agents?.length === 2 && agents.agents[1].image === "dev-node", JSON.stringify(agents));
+  expect(
+    "GET /agents flags the channel's orchestrator (the UI shows sub-agents only)",
+    agents.agents?.[0].orchestrator === true && agents.agents?.[1].orchestrator === undefined,
+    JSON.stringify(agents.agents?.map((a) => [a.name, a.orchestrator])),
+  );
   const scheds = await fetch(`${base2}/schedules`).then((r) => r.json());
   expect("GET /schedules returns static + dynamic", scheds.static?.length === 1 && scheds.dynamic?.length === 1);
 
@@ -160,7 +165,46 @@ await chan.stop();
   // /status reports per-caller executor state when remoteExec is enabled.
   const st = await fetch(`${base2}/status?externalUserId=u9`).then((r) => r.json());
   expect("status reports executor enabled+disconnected", st.remoteExec?.enabled === true && st.remoteExec?.connected === false, JSON.stringify(st.remoteExec));
+  expect("status reports dictation:false without a transcriber", st.dictation === false);
+  const noMic = await fetch(`${base2}/transcribe`, { method: "POST", body: JSON.stringify({ audio: "aGk=" }) });
+  expect("POST /transcribe 404s without a transcriber", noMic.status === 404);
   await chan2.stop();
+}
+
+// --- 4. Dictation: /transcribe + the status flag when a transcriber is wired ---
+{
+  const PORT3 = 18796;
+  let sawMediaType = null;
+  const chan3 = new WebChannel({
+    defaultAgent: "artemis",
+    port: PORT3,
+    sessions,
+    heartbeatMs: 60_000,
+    transcribe: async (audio, mediaType) => {
+      sawMediaType = mediaType;
+      return audio.toString("utf8") === "hello" ? "transcribed text" : null;
+    },
+  });
+  await chan3.start({ publish: async () => {} });
+  const base3 = `http://127.0.0.1:${PORT3}`;
+
+  const st3 = await fetch(`${base3}/status?externalUserId=u1`).then((r) => r.json());
+  expect("status reports dictation:true with a transcriber", st3.dictation === true);
+  const okRes = await fetch(`${base3}/transcribe`, {
+    method: "POST",
+    body: JSON.stringify({ audio: Buffer.from("hello").toString("base64"), mediaType: "audio/webm" }),
+  });
+  const okJson = await okRes.json();
+  expect("POST /transcribe decodes + returns the text", okRes.status === 200 && okJson.text === "transcribed text", JSON.stringify(okJson));
+  expect("transcriber receives the mediaType", sawMediaType === "audio/webm");
+  const badRes = await fetch(`${base3}/transcribe`, { method: "POST", body: JSON.stringify({ audio: "" }) });
+  expect("POST /transcribe without audio → 400", badRes.status === 400);
+  const failRes = await fetch(`${base3}/transcribe`, {
+    method: "POST",
+    body: JSON.stringify({ audio: Buffer.from("garble").toString("base64") }),
+  });
+  expect("transcriber null result → 502", failRes.status === 502);
+  await chan3.stop();
 }
 
 sessions.close();

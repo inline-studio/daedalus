@@ -176,12 +176,27 @@ Scope and safety:
   status bar showing gateway state, agent/cron counts, a context-window readout
   (`65.0k/200.0k · 32%` — the last turn's input tokens vs the agent's `contextWindow`),
   a session timer, and client/backend versions (`GET /status` powers the supervisor
-  half). The bar's **agents** and **cron** items are buttons: agents opens the roster
-  merged with live activity (`GET /agents` + `GET /activity` — every in-flight turn for
-  your user, channel + scheduled, live doing-now labels, click-to-jump; the item pulses
-  while anything runs; pairs with the Stop button), cron opens the schedule detail
-  (`GET /schedules`). The UI's source lives under `src/web/ui/` (plain HTML/CSS/JS),
-  assembled into the served module by `npm run build:web-ui`.
+  half). The bar's **agents** and **cron** items are buttons: agents opens the
+  **Agents · Activity modal** — a 90%-viewport two-pane view of the **sub-agents**
+  (the orchestrator is the chat itself, so `GET /agents` flags it and the modal
+  filters it out): busy delegates on top with live doing-now labels + elapsed,
+  idle ones greyed, and the selected agent's detail on the right — a flowing,
+  timestamped feed of its steps attributed out of the turn logs (thinking
+  snippets, tool calls with inputs, failures), auto-following and refreshed every
+  2.5s (`GET /activity` turns carry a rolling `log`); idle agents show their
+  manifest facts instead. The bar item pulses while anything runs and pairs with the Stop
+  button. Cron opens the schedule popover (`GET /schedules`). The composer has an
+  attach menu (Files / Images / Paste image / URL — ⌘V-pasted images attach
+  directly) and, when the stack has a transcriber configured, a dictation mic
+  (`POST /transcribe` — recorded audio comes back as text in the composer). Empty
+  conversations greet with the orchestrator's name as block art. A header eye
+  button holds per-session view options — hide thinking, and stream vs
+  whole-reply (tokens held back until the turn finishes) — stored per
+  conversation. Destructive actions (delete session, archive skill) confirm via
+  an in-app dialog, and failed mutations surface a toast with the server's
+  reason. The UI's source lives under
+  `src/web/ui/` (plain HTML/CSS/JS), assembled into the served module by
+  `npm run build:web-ui`.
 - **WhatsApp** — Cloud API channel (access token + phone-number id), off by default.
 
 Enable channels in `daedalus.config.yaml` under `channels:` (with `enabled: true` and a

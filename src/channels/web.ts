@@ -26,6 +26,9 @@ import { log } from "../log.js";
 //   - open: neither set — everything is open (front it with your own proxy).
 const SESSION_COOKIE = "dae_session";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// POST /transcribe body cap: base64 audio + JSON envelope. ~24MB of base64 ≈ 18MB of
+// audio — several minutes of dictation at opus rates, far beyond a composer's needs.
+const MAX_TRANSCRIBE_BODY = 24 * 1024 * 1024;
 
 interface WebAuth {
   username: string;
@@ -94,6 +97,7 @@ export class WebChannel implements Channel {
         read: (userId: string, ref: string) => Promise<{ data: Buffer; mediaType: string; filename?: string } | null>;
       }
     | undefined;
+  private transcribe: ((audio: Buffer, mediaType: string) => Promise<string | null>) | undefined;
 
   constructor(opts: {
     defaultAgent: string;
@@ -137,6 +141,9 @@ export class WebChannel implements Channel {
       list: (userId: string, q: string) => Promise<Array<Record<string, unknown>>>;
       read: (userId: string, ref: string) => Promise<{ data: Buffer; mediaType: string; filename?: string } | null>;
     };
+    // Composer dictation (POST /transcribe): audio → text via the stack's transcriber.
+    // Absent (no whisper configured) the endpoint 404s and the UI hides its mic.
+    transcribe?: (audio: Buffer, mediaType: string) => Promise<string | null>;
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -158,6 +165,7 @@ export class WebChannel implements Channel {
     this.listActivity = opts.listActivity;
     this.skillsProvider = opts.skillsProvider;
     this.artifactsProvider = opts.artifactsProvider;
+    this.transcribe = opts.transcribe;
   }
 
   // Whether this user currently has a `dae remote` executor connected — serve uses it to
@@ -428,8 +436,13 @@ export class WebChannel implements Channel {
         }
         if (req.method === "GET" && pathname === "/agents") {
           const agents = this.listAgentDetails ? await this.listAgentDetails().catch(() => []) : [];
+          // Flag the channel's own orchestrator: the UI's agents view shows SUB-agents
+          // (the orchestrator IS the chat — its activity streams there already).
+          const marked = agents.map((a) =>
+            a.name === this.defaultAgent ? { ...a, orchestrator: true } : a,
+          );
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ agents }));
+          res.end(JSON.stringify({ agents: marked }));
           return;
         }
         if (req.method === "GET" && pathname === "/schedules") {
@@ -455,8 +468,40 @@ export class WebChannel implements Channel {
               ...(this.executors.info(userId) ?? {}),
             };
           }
+          // Dictation: the composer shows its mic only when the stack can transcribe.
+          (body as Record<string, unknown>).dictation = Boolean(this.transcribe);
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(body));
+          return;
+        }
+        if (req.method === "POST" && pathname === "/transcribe") {
+          // Composer dictation: audio blob in → text out, via the stack's transcriber
+          // (the same whisper path inbound voice notes take). 404 when no transcriber is
+          // wired so the UI knows to hide the mic.
+          if (!this.transcribe) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "transcription not available" }));
+            return;
+          }
+          const body = await readJson(req, MAX_TRANSCRIBE_BODY);
+          const audioB64 = typeof body.audio === "string" ? body.audio : "";
+          const mediaType = typeof body.mediaType === "string" && body.mediaType ? body.mediaType : "audio/webm";
+          if (!audioB64) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "audio (base64) required" }));
+            return;
+          }
+          const text = await this.transcribe(Buffer.from(audioB64, "base64"), mediaType).catch((err) => {
+            log.warn({ err: (err as Error).message }, "dictation transcribe failed");
+            return null;
+          });
+          if (text == null) {
+            res.writeHead(502, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "transcription failed" }));
+            return;
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ text }));
           return;
         }
         if (req.method === "GET" && pathname === "/commands") {
@@ -1232,9 +1277,17 @@ function partsToText(content: ContentPart[]): string {
   return content.map((p) => (p.type === "text" ? p.text : "")).join("");
 }
 
-async function readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+async function readJson(req: http.IncomingMessage, maxBytes?: number): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (maxBytes && size > maxBytes) {
+      req.destroy();
+      throw new Error(`request body exceeds ${maxBytes} bytes`);
+    }
+    chunks.push(c as Buffer);
+  }
   const buf = Buffer.concat(chunks);
   if (!buf.length) return {};
   return JSON.parse(buf.toString("utf8")) as Record<string, unknown>;

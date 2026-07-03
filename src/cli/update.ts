@@ -1,6 +1,18 @@
 import { createRequire } from "node:module";
+import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { execa } from "execa";
 import { findComposeFile } from "../install.js";
+
+// True when the file exists and has any content — used to tell a completed install
+// (compose .env written by `dae install`) apart from a bare compose file.
+async function isNonEmptyFile(p: string): Promise<boolean> {
+  try {
+    return (await readFile(p, "utf8")).trim().length > 0;
+  } catch {
+    return false;
+  }
+}
 
 const REPO = "inline-studio/daedalus";
 
@@ -91,9 +103,18 @@ export async function runUpdate(opts: { check?: boolean; config?: string } = {})
   // The npm update above only refreshed the host CLI. Now RE-APPLY the full deployment so the
   // containers rebuild AND any config migrations / new setup that shipped in this release land
   // automatically — keeping `dae update` one-and-done (no second command afterwards).
+  //
+  // "Installed" means a COMPLETED install: the compose file AND the .env `dae install` writes
+  // beside it. A bare docker-compose.yml (a checkout cwd, leftovers from an abandoned setup)
+  // must not drag a client-only machine — one that just runs `dae remote` against a server
+  // elsewhere — into the interactive first-install wizard on every update.
   const composeFile = await findComposeFile();
-  if (!composeFile) {
-    console.log("\n(no installed stack found — run `dae install` to set up and start the containers)");
+  const installed = composeFile && (await isNonEmptyFile(path.join(path.dirname(composeFile), ".env")));
+  if (!installed) {
+    console.log(
+      "\n(no installed stack on this machine — CLI update only." +
+        "\n This is all a `dae remote` client machine needs; to host the containers here, run `dae install`.)",
+    );
     return;
   }
   // CRITICAL: re-EXEC the freshly-installed `dae`, rather than calling runInstall in-process.
