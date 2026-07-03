@@ -21,6 +21,8 @@ import { resolveProviderKey } from "../providers/resolve.js";
 import { buildSecretsBackend } from "../secrets/store/factory.js";
 import { connectAgentMcp, McpPool } from "../mcp/agent-mcp.js";
 import { autoSaveMemory } from "../memory/auto-save.js";
+import { runSkillReview, shouldRunSkillReview } from "../brain/skill-review.js";
+import { SkillLearningStore } from "../sessions/skill-learning-store.js";
 import { generateConversationTitle } from "../sessions/title.js";
 import { SessionStore, COMPACTION_CHANNEL, type PersistedMessage } from "../sessions/store.js";
 import { ConversationLog } from "../sessions/conversation-log.js";
@@ -90,6 +92,11 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
   // and closed in finally; building the tools is gated below.
   const attachmentIndex = config.sessions.attachmentIndex.enabled
     ? new AttachmentIndexStore(config.sessions.dbPath)
+    : undefined;
+  // Skill self-learning state (usage timestamps for the curator + the cross-turn nudge
+  // counter). Opened only when the feature is on; closed in finally.
+  const skillLearning = config.skills.learning.enabled
+    ? new SkillLearningStore(config.sessions.dbPath)
     : undefined;
   try {
     const attachments = new AttachmentStore(config.sessions.attachmentsPath);
@@ -193,7 +200,12 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     }
     // Progressive skill disclosure: the system prompt carries only a skill MENU
     // (name + summary). Give the agent the means to pull a full body on demand.
-    if (skills.length) builtinTools.push(buildLoadSkillTool(skills));
+    // When skill learning is on, every load bumps the usage tracker the curator reads.
+    if (skills.length) {
+      builtinTools.push(
+        buildLoadSkillTool(skills, skillLearning ? (s) => skillLearning.recordUse(s) : undefined),
+      );
+    }
     if (isSubagent) {
       // Subagents get ask_user so they can bubble questions up to the orchestrator.
       builtinTools.push(askUserTool);
@@ -257,37 +269,38 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       }
     }
 
+    const toolContext = {
+      runtime,
+      brainPath: config.brain.path,
+      brainWritable: config.brain.writable,
+      workspacePath: path.resolve(process.cwd()),
+      agentName: agent.name,
+      ...(input.originChannel ? { originChannel: input.originChannel } : {}),
+      ...(input.originExternalUserId
+        ? { originExternalUserId: input.originExternalUserId }
+        : {}),
+      ...(config.runtime.shared.enabled
+        ? {
+            shared: {
+              hostPath: config.runtime.shared.hostPath,
+              containerPath: config.runtime.shared.containerPath,
+            },
+          }
+        : {}),
+      // Shared skill-bin dir — same path inside the agent container as on the
+      // host (mounted via /data → /data). bash tool prepends this to $PATH.
+      skillBinDir: {
+        hostPath: path.join(dataDir, "skill-bin"),
+        containerPath: "/data/skill-bin",
+      },
+    };
     const kernel = new Kernel({
       provider,
       model: agent.model,
       system,
       builtinTools,
       mcpServers,
-      toolContext: {
-        runtime,
-        brainPath: config.brain.path,
-        brainWritable: config.brain.writable,
-        workspacePath: path.resolve(process.cwd()),
-        agentName: agent.name,
-        ...(input.originChannel ? { originChannel: input.originChannel } : {}),
-        ...(input.originExternalUserId
-          ? { originExternalUserId: input.originExternalUserId }
-          : {}),
-        ...(config.runtime.shared.enabled
-          ? {
-              shared: {
-                hostPath: config.runtime.shared.hostPath,
-                containerPath: config.runtime.shared.containerPath,
-              },
-            }
-          : {}),
-        // Shared skill-bin dir — same path inside the agent container as on the
-        // host (mounted via /data → /data). bash tool prepends this to $PATH.
-        skillBinDir: {
-          hostPath: path.join(dataDir, "skill-bin"),
-          containerPath: "/data/skill-bin",
-        },
-      },
+      toolContext,
       maxTurns: agent.maxTurns,
       maxTokens: agent.maxTokens,
       ...(agent.temperature !== undefined ? { temperature: agent.temperature } : {}),
@@ -479,6 +492,36 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       }
     }
 
+    // 9b-ter. Skill self-learning review. After a substantial TOP-LEVEL turn, a small fork
+    // replays the transcript with only the skill_manage tool and patches/creates skills
+    // (the procedures counterpart to the memory auto-save above). Gated on the turn being
+    // worth reviewing — enough tool calls, a skill in play, or the session nudge counter —
+    // so trivial turns don't pay an extra model call. Fully best-effort.
+    if (skillLearning && !isSubagent && !result.pendingQuestion && config.brain.writable) {
+      try {
+        const toolCalls = countToolUses(newMessages);
+        const skillLoaded = newMessages.some(
+          (m) =>
+            m.role === "assistant" &&
+            m.content.some((p) => p.type === "tool_use" && p.name === "load_skill"),
+        );
+        const nudgeTotal = toolCalls > 0 ? skillLearning.addToolCalls(sessionId, toolCalls) : 0;
+        if (shouldRunSkillReview(config.skills.learning, { toolCalls, skillLoaded, nudgeTotal })) {
+          const review = await runSkillReview({
+            config,
+            provider,
+            model: config.skills.learning.model ?? agent.model,
+            messages: result.messages.slice(messages.length - 1),
+            toolContext,
+          });
+          // A real write means the learning debt is paid — restart the cross-turn counter.
+          if (review.wrote) skillLearning.resetNudge(sessionId);
+        }
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, "skill-review: unexpected failure (ignored)");
+      }
+    }
+
     // 9c. Model-generated conversation title (web conversations). After the FIRST exchange in a
     // brand-new, non-default conversation, ask the model for a short topical title and replace
     // the provisional first-message snippet. Gated to the first exchange (no prior assistant
@@ -536,7 +579,19 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     sessions.close();
     scheduleStore.close();
     attachmentIndex?.close();
+    skillLearning?.close();
   }
+}
+
+// tool_use parts across a turn's new messages — the "was this turn substantial?" signal
+// for the skill-review trigger. Exported for tests.
+export function countToolUses(messages: Message[]): number {
+  let n = 0;
+  for (const m of messages) {
+    if (m.role !== "assistant") continue;
+    for (const p of m.content) if (p.type === "tool_use") n++;
+  }
+  return n;
 }
 
 // Replace image base64 payloads with a short marker so the debug log's full-input capture stays
