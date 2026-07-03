@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { ToolImpl, ToolContext } from "../tools/base.js";
+import type { TurnEventSink } from "../types.js";
 import type { ArtemisConfig, AgentManifest } from "../config/schema.js";
 import { loadAgent, listAgents } from "../brain/agents.js";
 import type { SessionStore } from "../sessions/store.js";
@@ -14,6 +16,10 @@ export interface OrchestratorContext {
   // dispatcher (synchronous kernel call). In docker mode this is the container
   // dispatcher (docker run a fresh subagent container, recursively).
   dispatcher: AgentDispatcher;
+  // The parent turn's live event sink, when it has one. spawn_subagent forwards the
+  // subagent's turn events into it — re-tagged with a TurnEventOrigin and bracketed by
+  // subagent_start/subagent_end — so streaming surfaces can show delegated work live.
+  onEvent?: TurnEventSink;
 }
 
 // `spawn_subagent` — the orchestrator's only handle to specialists. The subagent's
@@ -103,18 +109,40 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
         });
       }
 
-      const result = await ctx.dispatcher.dispatch({
-        agentName: sub.manifest.name,
-        sessionId: subSession.id,
-        userId: ctx.userId,
-        isSubagent: true,
-        // Propagate the parent turn's origin so a subagent that arms
-        // schedule_message still routes deliveries back to the real user.
-        ...(toolCtx.originChannel ? { originChannel: toolCtx.originChannel } : {}),
-        ...(toolCtx.originExternalUserId
-          ? { originExternalUserId: toolCtx.originExternalUserId }
-          : {}),
-      });
+      // Live subagent visibility: bracket the dispatch with subagent_start/subagent_end and
+      // re-tag every event the subagent's turn emits with an origin naming it. A nested
+      // spawn's events arrive here already tagged by the child's own wrapper — prepend this
+      // hop's agent name so `path` reads user-facing-first, and overwrite `spawnId` so the
+      // whole delegation tree groups under the top-level spawn call.
+      const sink = ctx.onEvent;
+      const spawnId = randomUUID().slice(0, 8);
+      const origin = { path: [name], spawnId };
+      sink?.({ type: "subagent_start", prompt, origin });
+      let result;
+      try {
+        result = await ctx.dispatcher.dispatch({
+          agentName: sub.manifest.name,
+          sessionId: subSession.id,
+          userId: ctx.userId,
+          isSubagent: true,
+          // Propagate the parent turn's origin so a subagent that arms
+          // schedule_message still routes deliveries back to the real user.
+          ...(toolCtx.originChannel ? { originChannel: toolCtx.originChannel } : {}),
+          ...(toolCtx.originExternalUserId
+            ? { originExternalUserId: toolCtx.originExternalUserId }
+            : {}),
+          ...(sink
+            ? {
+                onEvent: (ev) =>
+                  sink({ ...ev, origin: { path: [name, ...(ev.origin?.path ?? [])], spawnId } }),
+              }
+            : {}),
+        });
+      } catch (err) {
+        sink?.({ type: "subagent_end", status: "error", origin });
+        throw err;
+      }
+      sink?.({ type: "subagent_end", status: result.status, origin });
 
       if (result.status === "pending_question") {
         return {

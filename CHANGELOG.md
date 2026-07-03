@@ -13,6 +13,19 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Live sub-agent view.** Delegated work is no longer opaque: when an orchestrator
+  calls `spawn_subagent`, the subagent's turn events (tool calls, lifecycle) stream
+  back live, tagged with which agent they came from — through every dispatch mode,
+  including the per-turn agent containers (which now emit sentinel-framed event lines
+  on stdout). The web UI renders each spawn as a collapsible activity panel inside the
+  reply (prompt + tool rows resolving ✓/✗ in real time); the CLI prints dim
+  `[agent] tool: …` summary lines (`channels.cli.subagentEvents: summary | full | off`).
+  Nested spawns group under the top-level panel, labelled by their agent chain. Opt out
+  globally with `runtime.subagentEventStream: false`.
+
+
+### Added
+
 - **Agents can opt out of a prompt section entirely.** For `souls` / `personas` /
   `standards` / `operations`, an empty/omitted list still means "include all" and a
   named list still means "only those" — but `["none"]` now means "include nothing".

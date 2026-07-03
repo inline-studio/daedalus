@@ -256,6 +256,47 @@ export class WebChannel implements Channel {
   // persisted to the session and reloaded from history on reconnect, so nothing is lost.
   streamSink(externalUserId: string, conversationId?: string): TurnEventSink {
     return (ev) => {
+      // Subagent activity (origin-tagged events forwarded by spawn_subagent). Handled BEFORE
+      // the switch: a subagent's text_delta must never stream into the top-level reply bubble.
+      // Only the structural events go over the wire — deltas at subagent depth are dropped to
+      // bound SSE volume; the panel shows lifecycle + tool activity, not streamed prose.
+      if (ev.origin) {
+        const base = { spawnId: ev.origin.spawnId, path: ev.origin.path };
+        switch (ev.type) {
+          case "subagent_start":
+            this.sseEvent(externalUserId, conversationId, "subagent", {
+              ...base,
+              kind: "start",
+              prompt: ev.prompt.length > 500 ? ev.prompt.slice(0, 500) + "…" : ev.prompt,
+            });
+            break;
+          case "tool_use":
+            this.sseEvent(externalUserId, conversationId, "subagent", {
+              ...base,
+              kind: "tool",
+              id: ev.id,
+              name: ev.name,
+              input: ev.input,
+            });
+            break;
+          case "tool_result":
+            this.sseEvent(externalUserId, conversationId, "subagent", {
+              ...base,
+              kind: "tool_done",
+              id: ev.id,
+              isError: ev.isError,
+            });
+            break;
+          case "subagent_end":
+            this.sseEvent(externalUserId, conversationId, "subagent", {
+              ...base,
+              kind: "end",
+              status: ev.status,
+            });
+            break;
+        }
+        return;
+      }
       switch (ev.type) {
         case "text_delta":
           this.sseEvent(externalUserId, conversationId, "delta", { text: ev.text });

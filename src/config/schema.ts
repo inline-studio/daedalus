@@ -63,6 +63,11 @@ export const RuntimeConfigSchema = z.object({
       containerPath: z.string().default("/shared"),
     })
     .default({ enabled: true, hostPath: "./data/shared", containerPath: "/shared" }),
+  // Live subagent event streaming. When true (default), a dispatcher with a live event
+  // sink asks spawned agent-turn containers to stream their TurnEvents back over stdout
+  // (DAE_EVENT_STREAM=ndjson), so streaming surfaces show delegated work as it happens.
+  // Turn off to keep subagent turns opaque (buffered final-result-only, the old behaviour).
+  subagentEventStream: z.boolean().default(true),
   // SEC-03: default resource limits applied to EVERY agent container. Deliberately
   // CONSERVATIVE (1 CPU / 1 GB / 512 pids) so a runaway agent can't starve co-located
   // services or take down the host — an agent that needs more raises them in its own
@@ -282,7 +287,15 @@ export const StreamingConfigSchema = z.object({
 export type StreamingConfig = z.infer<typeof StreamingConfigSchema>;
 
 export const ChannelsConfigSchema = z.object({
-  cli: z.object({ enabled: z.boolean().default(false), defaultAgent: z.string() }).optional(),
+  cli: z
+    .object({
+      enabled: z.boolean().default(false),
+      defaultAgent: z.string(),
+      // How much live subagent activity to print: "summary" (default — spawn, tool names,
+      // completion), "full" (also each subagent's final reply text), "off" (opaque spawns).
+      subagentEvents: z.enum(["summary", "full", "off"]).default("summary"),
+    })
+    .optional(),
   web: z
     .object({
       enabled: z.boolean().default(false),

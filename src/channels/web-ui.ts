@@ -210,6 +210,22 @@ export const WEB_UI_HTML = `<!doctype html>
   .tool-call.open .detail { display: block; }
   .tool-call .detail pre { margin: 0; white-space: pre-wrap; word-break: break-all;
                            font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: #adbac7; }
+  /* Subagent activity panel — a collapsible inset grouping one spawn_subagent call's live
+     activity (prompt + tool rows). Same visual family as .tool-call, slightly recessed. */
+  .subagent { border: 1px solid #21262d; border-radius: 8px; background: #0b0e13; overflow: hidden; max-width: 560px; margin: 6px 0; }
+  .subagent .shead { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
+  .subagent .shead:hover { background: #12161c; }
+  .subagent .chev { color: #6e7681; width: 10px; flex-shrink: 0; }
+  .subagent .slabel { color: #adbac7; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; flex-shrink: 0; }
+  .subagent .state { flex-shrink: 0; margin-left: auto; font-size: 11px; color: #6e7681; }
+  .subagent.running .state { color: #d29922; }
+  .subagent.done .state { color: #3fb950; }
+  .subagent.err .state { color: #f85149; }
+  .subagent .sbody { border-top: 1px solid #21262d; padding: 6px 10px; }
+  .subagent.collapsed .sbody { display: none; }
+  .subagent .sprompt { color: #6e7681; font-size: 11.5px; margin-bottom: 4px; white-space: nowrap;
+                       overflow: hidden; text-overflow: ellipsis; }
+  .subagent .tool-call { max-width: none; }
   .msg img { max-width: 100%; border-radius: 8px; margin-top: 6px; }
   .msg a.file { display: inline-block; margin-top: 6px; color: #58a6ff; }
   .msg table { border-collapse: collapse; margin: 8px 0; display: block; overflow-x: auto; max-width: 100%; }
@@ -794,7 +810,7 @@ export const WEB_UI_HTML = `<!doctype html>
     div.setAttribute("data-idx", String(idx));
     // cur = the currently-open text/thinking block; textBlocks = all text blocks (md-rendered at
     // turn_done); fullText = the concatenated reply text (for the copy transcript).
-    streamBubble = { div: div, flow: flow, meta: meta, metaText: metaText, toolRows: {}, cur: null, textBlocks: [], fullText: "", idx: idx };
+    streamBubble = { div: div, flow: flow, meta: meta, metaText: metaText, toolRows: {}, subPanels: {}, cur: null, textBlocks: [], fullText: "", idx: idx };
     lastStreamDiv = div;
     if (wasAtBottom) jumpToBottom();
     return streamBubble;
@@ -861,6 +877,37 @@ export const WEB_UI_HTML = `<!doctype html>
     s.flow.appendChild(r.el);
     s.cur = { type: "thinking", el: r.el, body: r.body, chev: r.chev, text: "" };
     return s.cur;
+  }
+  function makeSubagentPanel(path, prompt) {
+    // One spawn_subagent call's live activity: a collapsible panel (expanded while running)
+    // holding the delegated prompt and the subagent's tool rows as they happen.
+    var el = document.createElement("div"); el.className = "subagent running";
+    var head = document.createElement("div"); head.className = "shead";
+    var chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "▾";
+    var lbl = document.createElement("span"); lbl.className = "slabel";
+    lbl.textContent = "⚙ " + (path && path.length ? path[0] : "subagent");
+    var state = document.createElement("span"); state.className = "state"; state.textContent = "working…";
+    head.appendChild(chev); head.appendChild(lbl); head.appendChild(state);
+    var body = document.createElement("div"); body.className = "sbody";
+    if (prompt) {
+      var p = document.createElement("div"); p.className = "sprompt"; p.title = prompt; p.textContent = prompt;
+      body.appendChild(p);
+    }
+    head.addEventListener("click", function () {
+      el.classList.toggle("collapsed");
+      chev.textContent = el.classList.contains("collapsed") ? "▸" : "▾";
+    });
+    el.appendChild(head); el.appendChild(body);
+    return {
+      el: el, body: body, tools: {},
+      finish: function (status) {
+        el.classList.remove("running");
+        el.classList.add(status === "error" ? "err" : "done");
+        el.classList.add("collapsed");
+        chev.textContent = "▸";
+        state.textContent = status === "complete" ? "done" : status === "pending_question" ? "needs input" : "failed";
+      },
+    };
   }
   // While a reply streams we show the RAW text as it types and render full markdown only once, at
   // turn_done. This avoids re-parsing partial markdown every token (the "wobble") and the
@@ -1030,6 +1077,49 @@ export const WEB_UI_HTML = `<!doctype html>
       t.row.classList.remove("running");
       t.row.classList.add(d.isError ? "err" : "ok");
       t.state.textContent = d.isError ? "✗" : "✓";
+    });
+    // Subagent activity: every event of one spawn_subagent call shares a spawnId and renders
+    // into one collapsible panel inline in the flow. Nested spawns arrive with the same spawnId
+    // and a longer path — their tool rows land in the same panel, name-prefixed by the chain.
+    es.addEventListener("subagent", function (ev) {
+      markActivity();
+      var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+      if (d.conversationId && convId && d.conversationId !== convId) return;
+      var s = ensureStreamBubble();
+      var panel = s.subPanels[d.spawnId];
+      if (d.kind === "start") {
+        if (!panel) {
+          closeCur(); // the panel sits inline in the flow, like a tool row
+          panel = makeSubagentPanel(d.path, d.prompt);
+          s.flow.appendChild(panel.el);
+          s.subPanels[d.spawnId] = panel;
+        } else if (d.path && d.path.length > 1) {
+          // A nested spawn inside this panel — note it as a line rather than a sub-panel.
+          var n = document.createElement("div"); n.className = "sprompt";
+          n.textContent = "⚙ " + d.path.join(" › ") + (d.prompt ? " — " + d.prompt : "");
+          n.title = d.prompt || "";
+          panel.body.appendChild(n);
+        }
+        if (isAtBottom()) jumpToBottom();
+        return;
+      }
+      if (!panel) return;
+      if (d.kind === "tool") {
+        var prefix = d.path && d.path.length > 1 ? d.path.slice(1).join(" › ") + " › " : "";
+        var t = makeToolRow(prefix + (d.name || "tool"), d.input, "running");
+        panel.body.appendChild(t.row);
+        panel.tools[d.id] = t;
+        if (isAtBottom()) jumpToBottom();
+      } else if (d.kind === "tool_done") {
+        var tr = panel.tools[d.id];
+        if (tr) {
+          tr.row.classList.remove("running");
+          tr.row.classList.add(d.isError ? "err" : "ok");
+          tr.state.textContent = d.isError ? "✗" : "✓";
+        }
+      } else if (d.kind === "end") {
+        panel.finish(d.status);
+      }
     });
     es.addEventListener("debug", function (ev) {
       markActivity();
