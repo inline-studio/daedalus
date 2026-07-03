@@ -80,7 +80,22 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
   // Honors DispatchArgs.onEvent: the container writes sentinel-framed TurnEvent lines on
   // stdout as its turn unfolds (DAE_EVENT_STREAM=ndjson), parsed + forwarded live below.
   readonly streaming = true;
+  // In-flight container names by sessionId — abort() force-removes them (the container
+  // equivalent of firing an AbortSignal; the turn persists nothing further).
+  private inflight = new Map<string, Set<string>>();
   constructor(private config: ArtemisConfig, private opts: ContainerDispatcherOptions) {}
+
+  async abort(sessionId: string): Promise<boolean> {
+    const names = this.inflight.get(sessionId);
+    if (!names || names.size === 0) return false;
+    const bin = this.opts.bin ?? "docker";
+    for (const name of names) {
+      await execa(bin, ["rm", "-f", name]).catch((err) =>
+        log.warn({ container: name, err: (err as Error).message }, "abort: docker rm failed"),
+      );
+    }
+    return true;
+  }
 
   async dispatch(args: DispatchArgs): Promise<DispatchResult> {
     // Per-agent image override comes from the manifest's container.image.
@@ -137,7 +152,20 @@ export class ContainerAgentDispatcher implements AgentDispatcher {
     if (streamEvents && args.onEvent && subprocess.stdout) {
       forwardEventLines(subprocess.stdout, args.onEvent);
     }
-    const result = await subprocess;
+    // Track for abort() while the container runs.
+    let names = this.inflight.get(args.sessionId);
+    if (!names) {
+      names = new Set();
+      this.inflight.set(args.sessionId, names);
+    }
+    names.add(containerName);
+    let result: Awaited<typeof subprocess>;
+    try {
+      result = await subprocess;
+    } finally {
+      names.delete(containerName);
+      if (names.size === 0) this.inflight.delete(args.sessionId);
+    }
 
     // BUG-17: remove the container on EVERY failure path (timeout / non-zero exit / unparseable
     // result), not only timeout. `--rm` covers a clean exit but not a wedged container; this

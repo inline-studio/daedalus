@@ -26,6 +26,9 @@ export async function runAgentWorker(config: ArtemisConfig): Promise<void> {
 
   const pool = new McpPool();
   const port = Number(process.env.DAE_WORKER_PORT ?? 10260);
+  // In-flight turns by sessionId — the Stop button's target. The supervisor forwards a
+  // user abort here (POST /abort) and the matching turn's AbortSignal fires.
+  const inflight = new Map<string, Set<AbortController>>();
 
   const server = http.createServer((req, res) => {
     if (req.method === "GET" && req.url === "/health") {
@@ -38,7 +41,25 @@ export async function runAgentWorker(config: ArtemisConfig): Promise<void> {
       req.setEncoding("utf8");
       req.on("data", (c) => (body += c));
       req.on("end", () => {
-        void handleTurn(config, pool, body, res);
+        void handleTurn(config, pool, body, res, inflight);
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/abort") {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        let sessionId = "";
+        try {
+          sessionId = String((JSON.parse(body) as { sessionId?: string }).sessionId ?? "");
+        } catch {
+          /* fall through to aborted:false */
+        }
+        const set = sessionId ? inflight.get(sessionId) : undefined;
+        if (set) for (const c of set) c.abort();
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ aborted: Boolean(set && set.size) }));
       });
       return;
     }
@@ -67,6 +88,7 @@ async function handleTurn(
   pool: McpPool,
   body: string,
   res: http.ServerResponse,
+  inflight: Map<string, Set<AbortController>>,
 ): Promise<void> {
   let args: DispatchArgs;
   try {
@@ -76,6 +98,17 @@ async function handleTurn(
     res.end(JSON.stringify({ error: "invalid JSON body" }));
     return;
   }
+  const controller = new AbortController();
+  let set = inflight.get(args.sessionId);
+  if (!set) {
+    set = new Set();
+    inflight.set(args.sessionId, set);
+  }
+  set.add(controller);
+  const releaseInflight = () => {
+    set.delete(controller);
+    if (set.size === 0) inflight.delete(args.sessionId);
+  };
   // Stream the turn as NDJSON: event lines as they happen, then a terminal result/error line.
   // Headers are written lazily on the first line so a failure BEFORE any output can still return
   // a proper HTTP error status; once streaming has begun, errors ride as a final error line.
@@ -101,17 +134,26 @@ async function handleTurn(
       ...(args.remoteExec ? { remoteExec: args.remoteExec } : {}),
       mcpPool: pool,
       onEvent: (ev) => writeLine({ kind: "event", event: ev }),
+      signal: controller.signal,
     });
     writeLine({ kind: "result", result });
     res.end();
   } catch (err) {
-    log.error({ err, agent: args.agentName }, "worker: turn failed");
-    if (!started) {
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: (err as Error).message }));
+    const aborted = (err as Error).name === "AbortError" || controller.signal.aborted;
+    if (aborted) {
+      log.info({ agent: args.agentName, session: args.sessionId }, "worker: turn aborted by user");
     } else {
-      writeLine({ kind: "error", error: (err as Error).message });
+      log.error({ err, agent: args.agentName }, "worker: turn failed");
+    }
+    const message = aborted ? "turn aborted" : (err as Error).message;
+    if (!started) {
+      res.writeHead(aborted ? 499 : 500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: message }));
+    } else {
+      writeLine({ kind: "error", error: message });
       res.end();
     }
+  } finally {
+    releaseInflight();
   }
 }

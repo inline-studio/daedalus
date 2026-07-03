@@ -99,6 +99,11 @@ export type DispatchResult =
 
 export interface AgentDispatcher {
   readonly id: string;
+  // Abort an in-flight turn for this session, when the implementation supports it.
+  // Fire-and-forget best-effort: returns true when an in-flight turn was found and an
+  // abort was issued. In-process cancels via AbortSignal; the worker forwards to its
+  // own per-turn controllers; the container dispatcher force-removes the container.
+  abort?(sessionId: string): Promise<boolean>;
   // True when this dispatcher honors DispatchArgs.onEvent (forwards live turn events to the
   // caller). All three implementations now do — in-process directly, the persistent worker over
   // its NDJSON HTTP stream, the one-shot container via sentinel-framed stdout event lines. serve

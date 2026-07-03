@@ -91,6 +91,25 @@ export class PersistentContainerDispatcher implements AgentDispatcher {
     );
   }
 
+  // Forward a user abort to the worker, which fires the matching turn's AbortSignal.
+  async abort(sessionId: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.url}/abort`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+        signal: AbortSignal.timeout(5_000),
+        dispatcher: directDispatcher,
+      } as unknown as RequestInit);
+      if (!res.ok) return false;
+      const j = (await res.json()) as { aborted?: boolean };
+      return Boolean(j.aborted);
+    } catch (err) {
+      log.warn({ err: (err as Error).message }, "abort forward to worker failed");
+      return false;
+    }
+  }
+
   // Parse the worker's NDJSON turn stream: forward each event line to `onEvent` (when present)
   // and return the terminal result. Throws on an error line or a stream that ends without one.
   private async consumeStream(res: Response, onEvent?: TurnEventSink): Promise<DispatchResult> {

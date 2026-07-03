@@ -178,6 +178,14 @@ export class Kernel {
       for (const tu of toolUses) onEvent?.({ type: "tool_use", id: tu.id, name: tu.name, input: tu.input });
       const toolResults: ToolResultPart[] = [];
       for (const tu of toolUses) {
+        // The user's Stop button: land the abort BETWEEN tool executions too, not only at
+        // the next model call (a multi-tool round can otherwise run on for minutes).
+        // A command already in flight completes; its result is simply never used.
+        if (signal?.aborted) {
+          const err = new Error("turn aborted");
+          err.name = "AbortError";
+          throw err;
+        }
         log.debug({ tool: tu.name, input: tu.input }, "tool call");
         onEvent?.({ type: "tool_running", id: tu.id, name: tu.name });
         try {

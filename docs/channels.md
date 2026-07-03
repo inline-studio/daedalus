@@ -103,6 +103,15 @@ Subagent **text isn't** streamed to the user — the panel shows lifecycle + too
 activity; the subagent's findings reach the user through the orchestrator's own reply,
 as before. Turn the streaming off globally with `runtime.subagentEventStream: false`.
 
+## Stopping a turn
+
+Streaming surfaces can abort an in-flight turn: the web/desktop **Send** button becomes
+**Stop** while a reply streams (the remote CLI takes `/stop`). `POST /abort
+{conversationId}` cancels the turn wherever it runs — AbortSignal in-process, a
+forwarded abort on the warm worker, `docker rm -f` for per-turn containers. Partial
+output stays visible, nothing further is persisted, and the conversation shows a quiet
+"⏹ Stopped." rather than an error. Buffered channels (Telegram) have no stop control.
+
 ## Remote execution (`dae remote`)
 
 The inverse of the usual deployment: the agent keeps running on the server — brain,

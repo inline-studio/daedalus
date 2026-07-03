@@ -76,6 +76,8 @@ export class WebChannel implements Channel {
   // Remote execution bridge (the `dae remote` CLI). Present only when enabled in config.
   private executors: ExecutorRegistry | undefined;
   private remoteExecTimeoutMs = 180_000;
+  // Supervisor hook: abort the in-flight turn for a conversation (POST /abort).
+  private abortTurn: ((conversationId: string) => Promise<boolean>) | undefined;
 
   constructor(opts: {
     defaultAgent: string;
@@ -101,6 +103,8 @@ export class WebChannel implements Channel {
     status?: () => Promise<Record<string, unknown>>;
     // Remote execution bridge (`dae remote`): /rpc/stream, /rpc/result, /rpc/exec.
     remoteExec?: { enabled: boolean; timeoutMs?: number };
+    // Abort the in-flight turn for a conversation (the Stop button). Injected by serve.
+    abortTurn?: (conversationId: string) => Promise<boolean>;
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -116,6 +120,7 @@ export class WebChannel implements Channel {
       this.executors = new ExecutorRegistry();
       if (opts.remoteExec.timeoutMs) this.remoteExecTimeoutMs = opts.remoteExec.timeoutMs;
     }
+    this.abortTurn = opts.abortTurn;
   }
 
   // Whether this user currently has a `dae remote` executor connected — serve uses it to
@@ -242,6 +247,35 @@ export class WebChannel implements Channel {
 
         if (req.method === "POST" && pathname === "/messages") {
           await this.handlePost(req, res, ctx, loginUser);
+          return;
+        }
+        if (req.method === "POST" && pathname === "/abort") {
+          // Stop the in-flight turn for one of the caller's conversations. Ownership is
+          // enforced the same way as every other conversation-scoped route.
+          const body = await readJson(req);
+          // In login mode the authenticated username IS the user (like /messages).
+          const externalUserId =
+            loginUser ??
+            (typeof body.externalUserId === "string" && body.externalUserId
+              ? body.externalUserId
+              : url.searchParams.get("externalUserId"));
+          if (!externalUserId || !this.abortTurn) {
+            res.writeHead(externalUserId ? 404 : 400);
+            res.end(externalUserId ? "abort not available" : "externalUserId required");
+            return;
+          }
+          const session = this.resolveConversation(
+            externalUserId,
+            typeof body.conversationId === "string" ? body.conversationId : undefined,
+          );
+          if (!session) {
+            res.writeHead(404);
+            res.end("conversation not found");
+            return;
+          }
+          const stopped = await this.abortTurn(session.id).catch(() => false);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ stopped }));
           return;
         }
         if (req.method === "GET" && pathname === "/events") {

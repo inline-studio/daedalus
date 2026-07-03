@@ -355,6 +355,25 @@ export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> 
         prompt();
         return;
       }
+      // Client-side commands (everything else — including server slash-commands like
+      // /compact — passes through as a normal message).
+      if (text === "/stop") {
+        void fetch(`${base}/abort`, {
+          method: "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({ externalUserId }),
+        })
+          .then((r) => (r.ok ? (r.json() as Promise<{ stopped?: boolean }>) : null))
+          .then((j) => {
+            process.stdout.write(j?.stopped ? dim("[stopping…]\n") : dim("[nothing to stop]\n"));
+            prompt();
+          })
+          .catch(() => {
+            process.stdout.write(dim("[stop failed]\n"));
+            prompt();
+          });
+        return;
+      }
       void fetch(`${base}/messages`, {
         method: "POST",
         headers: authHeaders(),

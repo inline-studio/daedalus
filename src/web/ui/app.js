@@ -709,6 +709,7 @@
       // finalized first so it isn't left dangling.
       finalizeStream();
       stopTurnTimer();
+      setTurnActive(false);
       if (lastStreamed && d.text && d.text === lastStreamed.text && Date.now() - lastStreamed.at < 15000) {
         lastStreamed = null;
         hideThinking();
@@ -836,6 +837,7 @@
       if (d.conversationId && convId && d.conversationId !== convId) return;
       if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
       stopTurnTimer();
+      setTurnActive(false);
       if (!streamBubble) return;
       // Render each streamed text block as markdown now the turn is complete (each block is a
       // self-contained run of reply text between tool calls / reasoning).
@@ -951,7 +953,28 @@
     e.target.value = "";
   });
 
+  // --- Stop button: while a turn is in flight the Send button becomes Stop. ---------------
+  var turnActive = false;
+  function setTurnActive(on) {
+    turnActive = on;
+    var b = $("send");
+    if (!b) return;
+    b.textContent = on ? "Stop" : "Send";
+    b.classList.toggle("stop", on);
+  }
+  function stopTurn() {
+    var body = { externalUserId: uid };
+    if (convId) body.conversationId = convId;
+    fetch("/abort", { method: "POST", headers: authHeaders(), body: JSON.stringify(body) })
+      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || !j.stopped) statusEl.textContent = "nothing to stop";
+      })
+      .catch(function () { statusEl.textContent = "stop failed"; });
+  }
+
   function send() {
+    if (turnActive) { stopTurn(); return; }
     var text = $("text").value.trim();
     if (!text && !pending.length) return;
     var atts = pending.slice();
@@ -967,9 +990,10 @@
     cmdMatches = []; renderCmdMenu();
     showThinking();
     startTurnTimer();
+    setTurnActive(true);
     fetch("/messages", { method: "POST", headers: authHeaders(), body: JSON.stringify(body) })
-      .then(function (r) { if (on401(r)) { hideThinking(); stopTurnTimer(); return; } if (!r.ok) { hideThinking(); stopTurnTimer(); statusEl.textContent = "send failed (" + r.status + ")"; } })
-      .catch(function () { hideThinking(); stopTurnTimer(); statusEl.textContent = "send failed"; });
+      .then(function (r) { if (on401(r)) { hideThinking(); stopTurnTimer(); setTurnActive(false); return; } if (!r.ok) { hideThinking(); stopTurnTimer(); setTurnActive(false); statusEl.textContent = "send failed (" + r.status + ")"; } })
+      .catch(function () { hideThinking(); stopTurnTimer(); setTurnActive(false); statusEl.textContent = "send failed"; });
   }
 
   function autosize() { var t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 180) + "px"; }
@@ -1150,8 +1174,9 @@
     streamBubble = null;
     lastStreamDiv = null;
     lastStreamed = null;
-    // The context readout belongs to the conversation we just left.
+    // The context readout + stop state belong to the conversation we just left.
     hideContext();
+    setTurnActive(false);
   }
 
   function openSidebar() { document.body.classList.add("sb-open"); }

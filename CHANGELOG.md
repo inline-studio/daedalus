@@ -13,6 +13,17 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Stop button — abort an in-flight turn.** Premature enter, wrong direction, runaway
+  tool loop: the web/desktop Send button becomes **Stop** while a turn streams, and the
+  remote CLI takes `/stop`. `POST /abort` (ownership-checked) cancels through whichever
+  dispatch mode is running the turn — in-process via AbortSignal (with a new
+  between-tools abort check so multi-tool rounds stop promptly), the warm worker via a
+  forwarded abort to its per-turn controllers, per-turn containers via force-removal.
+  Partial streamed output stays visible; nothing further is persisted; the surface shows
+  a quiet "⏹ Stopped." instead of an error.
+
+### Added
+
 - **Remote execution — `dae remote`.** The agent runs on the server; its tools run on
   your machine. The client is one process with two jobs: a chat REPL on the web
   channel, and the executor for your user — the turn's `bash`/`read`/`write`/`edit`

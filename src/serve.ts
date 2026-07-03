@@ -88,7 +88,24 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     };
   };
 
-  const channels = buildChannels(config.channels, sessions, config.identity.name, config.brain.path, { status });
+  // Stop button: abort the in-flight turn for a conversation via the dispatcher's own
+  // mechanism (AbortSignal / worker forward / docker rm). The set remembers which
+  // conversations were deliberately stopped so the dispatch failure that follows is
+  // reported as a quiet "stopped", not an error.
+  const abortedConvos = new Set<string>();
+  const abortTurn = async (conversationId: string): Promise<boolean> => {
+    const ok = (await dispatcher.abort?.(conversationId)) ?? false;
+    if (ok) {
+      abortedConvos.add(conversationId);
+      log.info({ conversationId }, "turn abort requested by user");
+    }
+    return ok;
+  };
+
+  const channels = buildChannels(config.channels, sessions, config.identity.name, config.brain.path, {
+    status,
+    abort: abortTurn,
+  });
   if (channels.length === 0) {
     log.error(
       "No channels enabled in config.channels — nothing to listen on. Enable at least one (cli/web/telegram/whatsapp).",
@@ -205,6 +222,9 @@ export async function serve(config: ArtemisConfig): Promise<void> {
       if (!replyAlreadyStreamed || outgoing.attachments?.length) {
         await ch.send(msg.externalUserId, outgoing);
       }
+      // A late Stop that didn't land (the turn finished first) shouldn't mislabel the
+      // NEXT failure in this conversation as a deliberate stop.
+      if (conversationId) abortedConvos.delete(conversationId);
       // The debug-log pointer is no longer sent as its own message — it's surfaced as activity
       // chrome via the `debug_log` turn event (streaming channels), alongside tool/reasoning.
       log.info(
@@ -212,6 +232,15 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         "turn complete",
       );
     } catch (err) {
+      // A deliberately stopped turn is not an error — the user pressed Stop, so the
+      // dispatch failing is exactly what they asked for. Quiet notice, no scary message.
+      if (conversationId && abortedConvos.delete(conversationId)) {
+        log.info({ agent: agentName, conversationId }, "turn stopped by user");
+        await ch
+          .send(msg.externalUserId, { text: "⏹ Stopped.", conversationId })
+          .catch(() => undefined);
+        return;
+      }
       // The operator gets the full stack via log.error. The USER (over telegram/web/
       // wherever) gets a humanised explanation — see kernel/error-message.ts. The raw
       // message is incomprehensible noise to anyone not reading the source.

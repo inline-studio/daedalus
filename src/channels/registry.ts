@@ -18,8 +18,12 @@ export function buildChannels(
   sessions?: SessionStore,
   identityName?: string,
   brainPath?: string,
-  // Extra web-channel wiring the supervisor owns (GET /status snapshot provider).
-  extras?: { status?: () => Promise<Record<string, unknown>> },
+  // Extra web-channel wiring the supervisor owns: the GET /status snapshot provider and
+  // the POST /abort in-flight-turn canceller.
+  extras?: {
+    status?: () => Promise<Record<string, unknown>>;
+    abort?: (conversationId: string) => Promise<boolean>;
+  },
 ): Channel[] {
   const out: Channel[] = [];
   if (config.cli?.enabled) {
@@ -66,6 +70,7 @@ export function buildChannels(
         ...(w.userName ? { userName: w.userName } : {}),
         ...(listCommands ? { listCommands } : {}),
         ...(extras?.status ? { status: extras.status } : {}),
+        ...(extras?.abort ? { abortTurn: extras.abort } : {}),
         ...(w.remoteExec?.enabled
           ? { remoteExec: { enabled: true, timeoutMs: w.remoteExec.timeoutMs } }
           : {}),

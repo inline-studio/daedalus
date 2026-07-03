@@ -79,6 +79,9 @@ export interface RunAgentTurnInput {
   // the user's machine via the supervisor's /rpc/exec bridge instead of locally. Only set
   // for top-level turns whose originating user has a connected executor.
   remoteExec?: { userId: string; url: string; token: string };
+  // Abort signal for the whole turn (the user's Stop button). In-process path only — a
+  // signal can't cross the container/worker hop; those get aborted at their own layer.
+  signal?: AbortSignal;
 }
 
 export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchResult> {
@@ -411,7 +414,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
                 : ev,
             )
         : input.onEvent;
-    const result = await kernel.runWithMessages(messages, undefined, onEvent);
+    const result = await kernel.runWithMessages(messages, input.signal, onEvent);
 
     // 9. Persist whatever the kernel produced beyond the existing tail. Skip a
     // content-less, tool-less assistant message (e.g. the model returned an empty
