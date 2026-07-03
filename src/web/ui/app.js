@@ -734,6 +734,8 @@
       markActivity();
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
+      // A turn is visibly in flight (covers reloads mid-turn and turns started elsewhere).
+      if (!turnActive) setTurnActive(true);
       var b = textBlock();
       b.text += d.text || "";
       streamBubble.fullText += d.text || "";
@@ -744,6 +746,7 @@
       markActivity();
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
+      if (!turnActive) setTurnActive(true);
       var wasAtBottom = isAtBottom();
       var b = thinkBlock();
       b.text += d.text || "";
@@ -754,6 +757,7 @@
       markActivity();
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
+      if (!turnActive) setTurnActive(true);
       var s = ensureStreamBubble();
       closeCur(); // a tool call ends the current text/thinking block; it sits inline in the flow
       var t = makeToolRow(d.name, d.input, "running"); // tool_done resolves it to ok/error
@@ -777,6 +781,7 @@
       markActivity();
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
+      if (!turnActive) setTurnActive(true);
       var s = ensureStreamBubble();
       var panel = s.subPanels[d.spawnId];
       if (d.kind === "start") {
