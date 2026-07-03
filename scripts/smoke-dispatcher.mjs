@@ -33,6 +33,7 @@ function fakeConfig() {
     sessions: { dbPath: "/tmp/sessions.sqlite", attachmentsPath: "/tmp/attachments", historyLimit: 80 },
     onecli: { enabled: false, baseUrl: "http://localhost:10254", agent: "daedalus" },
     identity: { name: "Test" },
+    skills: { learning: { enabled: false, writeApproval: true, minToolCalls: 5, nudgeInterval: 10, maxReviewTurns: 6, curator: { enabled: false, schedule: "0 4 * * 0", staleAfterDays: 30, archiveAfterDays: 90 } } },
   };
 }
 
@@ -131,6 +132,22 @@ function fakeConfig() {
     JSON.stringify(names) === JSON.stringify(["bash", "read"]),
     `got ${names.join(",")}`,
   );
+}
+
+// 7b. Explicit-only tools (skill_manage): excluded from the wildcard, but naming one
+// NEXT to the wildcard is a deliberate grant — `tools: ['*', 'skill_manage']`.
+{
+  const { selectBuiltins } = await import("../dist/tools/registry.js");
+  const wild = selectBuiltins(["*"], fakeConfig()).map((t) => t.definition.name);
+  expect("wildcard alone excludes skill_manage", !wild.includes("skill_manage"), wild.join(","));
+  const wildPlus = selectBuiltins(["*", "skill_manage"], fakeConfig()).map((t) => t.definition.name);
+  expect(
+    "wildcard + explicit name grants skill_manage on top of everything",
+    wildPlus.includes("skill_manage") && wildPlus.includes("bash"),
+    wildPlus.join(","),
+  );
+  const explicit = selectBuiltins(["skill_manage"], fakeConfig()).map((t) => t.definition.name);
+  expect("explicit-only selection works alone", JSON.stringify(explicit) === '["skill_manage"]');
 }
 
 // 8. ContainerAgentDispatcher: when DAE_AGENT_RUNTIME_VOLUME is set, the dispatch
