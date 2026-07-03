@@ -68,7 +68,12 @@ export function selectBuiltins(
   deps: { scheduleStore?: ScheduleStore } = {},
 ): ToolImpl[] {
   const isWildcard = names.includes("*");
-  const resolved = isWildcard ? builtinNames() : names;
+  // The wildcard never includes explicit-only tools (skill_manage — brain-write powers a
+  // wildcard subagent must not silently inherit), but naming one NEXT to the wildcard is
+  // a deliberate grant: `tools: ['*', 'skill_manage']` = everything plus that opt-in.
+  const resolved = isWildcard
+    ? [...builtinNames(), ...names.filter((n) => n !== "*" && EXPLICIT_ONLY_TOOLS[n])]
+    : names;
   const out: ToolImpl[] = [];
   for (const n of resolved) {
     if (STATIC_TOOLS[n]) {
