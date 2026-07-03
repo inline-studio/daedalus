@@ -313,25 +313,77 @@ footer { position: relative; border-top: 1px solid var(--border); background: va
 #chips .chip { background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 6px; padding: 3px 8px; font-size: 12px; }
 #chips .chip b { cursor: pointer; margin-left: 6px; color: var(--err); }
 .row { display: flex; gap: 8px; align-items: flex-end; }
-textarea { flex: 1; resize: none; background: var(--bg-raised); color: var(--text); border: 1px solid var(--border-strong);
-           border-radius: 12px; padding: 10px 14px; font: inherit; max-height: 180px; }
-textarea:focus { outline: none; border-color: var(--accent-strong); }
+/* Combined input group: the attach ＋ sits inside the field, Hermes-style. */
+#input-group { flex: 1; min-width: 0; display: flex; align-items: flex-end;
+               background: var(--bg-raised); border: 1px solid var(--border-strong); border-radius: 12px; }
+#input-group:focus-within { border-color: var(--accent-strong); }
+textarea { flex: 1; min-width: 0; resize: none; background: transparent; color: var(--text); border: none;
+           padding: 10px 14px 10px 4px; font: inherit; max-height: 180px; }
+textarea:focus { outline: none; }
 textarea::placeholder { color: var(--text-dim); }
-.row button, .row label.attach { background: var(--accent-strong); color: #04211d; border: 1px solid var(--accent);
+.row button { background: var(--accent-strong); color: #04211d; border: 1px solid var(--accent);
            border-radius: 10px; padding: 10px 15px; cursor: pointer; font: inherit; font-weight: 600; }
-.row label.attach { background: transparent; border-color: var(--border-strong); color: var(--text-soft); font-weight: 400; }
-.row label.attach:hover { background: var(--bg-raised); }
 .row button:disabled { opacity: .5; cursor: default; }
+/* Attach ＋ button + its pop-up menu (Files / Images / Paste image / URL). Lives INSIDE
+   the input group, so it's a quiet ghost button rather than a bordered one. */
+#attach-wrap { position: relative; }
+#attach-btn { background: transparent; border: none; color: var(--text-dim);
+              font-weight: 400; font-size: 17px; line-height: 1; padding: 10px 8px 10px 12px; }
+#attach-btn:hover { background: none; color: var(--accent); }
+#attach-menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 40; width: 230px;
+               background: var(--bg-panel); border: 1px solid var(--border-strong); border-radius: 10px;
+               box-shadow: 0 10px 32px rgba(0,0,0,.55); padding: 6px; }
+#attach-menu .am-head { padding: 6px 10px 4px; font-size: 10px; font-weight: 700;
+                        letter-spacing: 0.14em; color: var(--text-dim); text-transform: uppercase; }
+#attach-menu button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+                      background: none; border: none; color: var(--text-soft); font: inherit; font-size: 13.5px;
+                      font-weight: 400; padding: 8px 10px; border-radius: 7px; cursor: pointer; }
+#attach-menu button:hover { background: var(--bg-raised); color: var(--text); }
+#attach-menu button svg { color: var(--text-dim); flex-shrink: 0; }
+#attach-menu .am-tip { border-top: 1px solid var(--border); margin-top: 6px; padding: 8px 10px 4px;
+                       font-size: 11.5px; color: var(--text-dim); }
+/* Dictation mic: quiet by default, red + pulsing while recording. */
+#mic { background: transparent; border: 1px solid var(--border-strong); color: var(--text-soft);
+       font-weight: 400; padding: 9px 12px; display: inline-flex; align-items: center; }
+#mic:hover { background: var(--bg-raised); }
+#mic.rec { color: var(--err); border-color: var(--err); animation: mic-pulse 1.2s ease-in-out infinite; }
+#mic.busy { opacity: .5; cursor: default; }
+@keyframes mic-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(248, 81, 73, .35); }
+                       50% { box-shadow: 0 0 0 5px rgba(248, 81, 73, 0); } }
 /* Execution-placement toggle: visible only when the user's executor is connected. */
 #exec-toggle { background: transparent; border: 1px solid var(--border-strong); color: var(--text-muted);
                border-radius: 10px; padding: 10px 12px; cursor: pointer; font: inherit; font-size: 13px;
                white-space: nowrap; }
 #exec-toggle.local { color: var(--accent); border-color: var(--accent-strong); }
 #exec-toggle:hover { background: var(--bg-raised); }
-/* Send becomes Stop while a turn is in flight. */
+/* Send ⇄ Stop: icon-sized (matches ＋ / mic); the .stop class swaps the glyph. */
+#send { padding: 9px 12px; display: inline-flex; align-items: center; }
+#send .ic-stop { display: none; }
+#send.stop .ic-send { display: none; }
+#send.stop .ic-stop { display: block; }
 .row button.stop { background: transparent; color: var(--err); border-color: var(--err); }
 .row button.stop:hover { background: rgba(248, 81, 73, 0.12); }
+/* Per-session view options dropdown (header). */
+#view-wrap { position: relative; display: inline-flex; }
+#view-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 40; width: 250px;
+             background: var(--bg-panel); border: 1px solid var(--border-strong); border-radius: 10px;
+             box-shadow: 0 10px 32px rgba(0,0,0,.55); padding: 6px; }
+#view-menu .vm-head { padding: 6px 10px 4px; font-size: 10px; font-weight: 700;
+                      letter-spacing: 0.14em; color: var(--text-dim); text-transform: uppercase; }
+#view-menu label { display: flex; align-items: center; gap: 9px; padding: 8px 10px; border-radius: 7px;
+                   font-size: 13.5px; color: var(--text-soft); cursor: pointer; }
+#view-menu label:hover { background: var(--bg-raised); }
+#view-menu input { accent-color: var(--accent-strong); }
+#view-menu .vm-tip { border-top: 1px solid var(--border); margin-top: 6px; padding: 8px 10px 4px;
+                     font-size: 11.5px; color: var(--text-dim); }
 .empty { color: var(--text-muted); text-align: center; margin: auto; }
+/* Empty-chat splash: block-art agent name + "say hello". */
+.splash { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.splash pre { margin: 0; font: 12px/1.25 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+              color: var(--accent); text-shadow: 0 0 18px var(--accent-soft); user-select: none; }
+.splash .splash-name { font-size: 22px; font-weight: 700; letter-spacing: 0.28em; color: var(--accent); }
+.splash .splash-hint { font-size: 13px; color: var(--text-dim); letter-spacing: 0.08em; }
+@media (max-width: 560px) { .splash pre { font-size: 8px; } }
 /* "New messages below" pill — appears in the log when new messages arrive
    while the user has scrolled up; clicking it jumps to the bottom. */
 #new-pill { position: fixed; bottom: 118px; left: 50%; transform: translateX(-50%);
@@ -380,6 +432,76 @@ textarea::placeholder { color: var(--text-dim); }
                             font-size: 13px; padding: 0 2px; }
 #panel .panel-head button:hover { color: var(--text); }
 #panel .panel-body { overflow-y: auto; padding: 8px; }
+/* XL variant: the Agents · Activity modal fills most of the viewport — agent list on the
+   left (active first, idle greyed), the selected agent's live activity on the right. */
+#panel.xl { width: 90vw; max-width: 90vw; height: 90vh; max-height: 90vh; }
+#panel.xl .panel-body { display: flex; flex: 1; min-height: 0; padding: 0; overflow: hidden; }
+.ag-list { width: min(280px, 38vw); flex-shrink: 0; overflow-y: auto; padding: 8px;
+           border-right: 1px solid var(--border); }
+.ag-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+          background: none; border: none; font: inherit; color: var(--text-soft);
+          padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.ag-row:hover { background: var(--bg-raised); }
+.ag-row.sel { background: var(--accent-soft); color: var(--text); }
+.ag-row.idle { opacity: 0.45; }
+.ag-row .ag-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--border-strong); }
+.ag-row.busy .ag-dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+.ag-row .ag-name { font-size: 13px; font-weight: 600; }
+.ag-row .ag-sub { display: block; font-size: 11px; color: var(--text-dim);
+                  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ag-row.busy .ag-sub { color: var(--accent); }
+.ag-detail { flex: 1; min-width: 0; overflow-y: auto; padding: 18px 22px; }
+.ag-detail h2 { margin: 0 0 2px; font-size: 17px; display: flex; align-items: center; gap: 10px; }
+.ag-state { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+            padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border-strong); color: var(--text-dim); }
+.ag-state.busy { color: var(--ok); border-color: var(--ok); }
+.ag-desc { color: var(--text-muted); font-size: 13px; margin: 4px 0 14px; }
+.ag-kv { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 6px 14px; font-size: 13px; }
+.ag-kv dt { color: var(--text-dim); }
+.ag-kv dd { margin: 0; color: var(--text-soft); overflow-wrap: anywhere; }
+.ag-live { margin: 0 0 16px; padding: 12px 14px; background: var(--bg-inset); border: 1px solid var(--border);
+           border-radius: 10px; }
+.ag-live .ag-live-meta { font-size: 12px; color: var(--text-dim); margin-bottom: 8px; }
+/* The flowing step feed: what the agent is doing inside the turn, newest at the bottom. */
+.ag-flow { max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 2px;
+           font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.ag-flow .ag-step { display: flex; gap: 10px; padding: 3px 2px; border-radius: 5px; color: var(--text-soft); }
+.ag-flow .ag-step .t { color: var(--text-dim); flex-shrink: 0; font-size: 11px; padding-top: 1px; }
+.ag-flow .ag-step .l { overflow-wrap: anywhere; }
+.ag-flow .ag-step.think .l { color: var(--text-muted); font-style: italic; }
+.ag-flow .ag-step.tool .l { color: var(--accent); }
+.ag-flow .ag-step.fail .l { color: var(--err); }
+.ag-flow .ag-step:last-child { background: var(--accent-soft); }
+.ag-flow .ag-step:last-child .l::after { content: "▍"; margin-left: 3px; color: var(--accent);
+                                         animation: cursor-blink 1.1s steps(1) infinite; }
+@keyframes cursor-blink { 50% { opacity: 0; } }
+.ag-empty { color: var(--text-dim); font-size: 13px; padding: 24px; text-align: center; }
+/* In-house confirm dialog + transient toast. */
+#confirm-overlay { position: fixed; inset: 0; z-index: 70; background: rgba(0,0,0,.55);
+                   display: flex; align-items: center; justify-content: center; }
+#confirm-box { width: min(400px, calc(100vw - 48px)); background: var(--bg-panel);
+               border: 1px solid var(--border-strong); border-radius: 12px; padding: 18px 18px 14px;
+               box-shadow: 0 12px 40px rgba(0,0,0,.6); }
+#confirm-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+#confirm-msg { font-size: 13px; color: var(--text-muted); overflow-wrap: anywhere; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.confirm-actions button { font: inherit; font-size: 13px; border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+#confirm-no { background: none; color: var(--text-soft); border: 1px solid var(--border-strong); }
+#confirm-no:hover { background: var(--bg-raised); }
+#confirm-yes { background: rgba(248, 81, 73, 0.12); color: var(--err); border: 1px solid var(--err); }
+#confirm-yes:hover { background: var(--err); color: #fff; }
+/* Neutral (non-destructive) action styling for prompt dialogs (e.g. Attach URL). */
+#confirm-yes.neutral { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-strong); }
+#confirm-yes.neutral:hover { background: var(--accent-strong); color: #04211d; }
+#confirm-input { display: block; width: 100%; margin-top: 12px; background: var(--bg); color: var(--text);
+                 border: 1px solid var(--border-strong); border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 13.5px; }
+#confirm-input:focus { outline: none; border-color: var(--accent-strong); }
+#toast { position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%); z-index: 80;
+         max-width: min(520px, calc(100vw - 32px)); background: var(--bg-raised); color: var(--text);
+         border: 1px solid var(--border-strong); border-left: 3px solid var(--accent);
+         border-radius: 10px; padding: 10px 14px; font-size: 13px;
+         box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+#toast.err { border-left-color: var(--err); }
 .panel-note { padding: 6px 10px; font-size: 12px; color: var(--text-dim); }
 .panel-search { padding: 4px 8px 8px; }
 .panel-search input { width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);

@@ -216,6 +216,9 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     activity: async (userId) => activity.listForUser(userId) as unknown as Array<Record<string, unknown>>,
     skills: skillsProvider,
     artifacts: artifactsProvider,
+    // Dictation only when a real transcriber is configured — a noop would give the UI a
+    // mic that always fails.
+    ...(transcriber.id !== "noop" ? { transcribe: (a: Buffer, m: string) => transcriber.transcribe(a, m) } : {}),
   });
   if (channels.length === 0) {
     log.error(

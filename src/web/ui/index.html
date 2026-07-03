@@ -44,6 +44,18 @@
     <button id="notify" class="icon-btn" title="Notify me when a reply lands and this tab isn't focused">
       <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 2a4 4 0 0 0-4 4v2.5L2.8 11h10.4L12 8.5V6a4 4 0 0 0-4-4Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M6.5 13a1.6 1.6 0 0 0 3 0" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
     </button>
+    <!-- Per-session view options: show/hide thinking, stream vs whole-reply. -->
+    <span id="view-wrap">
+      <button id="view-opts" class="icon-btn" title="View options for this session">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M1.8 8s2.2-4.2 6.2-4.2S14.2 8 14.2 8 12 12.2 8 12.2 1.8 8 1.8 8Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+      </button>
+      <div id="view-menu" style="display:none">
+        <div class="vm-head">This session</div>
+        <label><input type="checkbox" id="view-thinking" /> Show thinking</label>
+        <label><input type="checkbox" id="view-stream" /> Stream replies</label>
+        <div class="vm-tip">Streaming off shows each reply complete, once it's finished.</div>
+      </div>
+    </span>
     <button id="gear" class="icon-btn" title="Settings">
       <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.8v1.7M8 12.5v1.7M1.8 8h1.7M12.5 8h1.7M3.6 3.6l1.2 1.2M11.2 11.2l1.2 1.2M12.4 3.6l-1.2 1.2M4.8 11.2l-1.2 1.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
     </button>
@@ -64,17 +76,39 @@
     <button id="save">save</button>
     <span class="meta" id="uid"></span>
   </div>
-  <div id="log"><div class="empty">No messages yet. Say hello.</div></div>
+  <!-- Empty state (the block-art splash) is rendered by app.js so it can carry the
+       configured assistant name. -->
+  <div id="log"></div>
   <button id="new-pill" type="button">↓ new messages</button>
   <footer>
     <div id="cmd-menu"></div>
     <div id="chips"></div>
     <div class="row">
-      <textarea id="text" rows="1" placeholder="Describe what you need…  (Enter to send, Shift+Enter for newline)"></textarea>
+      <!-- One input group, Hermes-style: the attach ＋ lives inside the field. -->
+      <div id="input-group">
+        <div id="attach-wrap">
+          <button id="attach-btn" type="button" title="Attach">＋</button>
+          <div id="attach-menu" style="display:none">
+            <div class="am-head">Attach</div>
+            <button type="button" data-attach="files"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M9.5 1.5H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5z"/><path d="M9.5 1.5V5H13"/></svg>Files…</button>
+            <button type="button" data-attach="images"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="5.5" cy="6.5" r="1"/><path d="M2 11l3.5-3 3 2.5L11 8l3 3"/></svg>Images…</button>
+            <button type="button" data-attach="paste"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="2.5" width="10" height="12" rx="1.5"/><path d="M6 2.5V4h4V2.5"/></svg>Paste image</button>
+            <button type="button" data-attach="url"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M6.5 9.5a3 3 0 0 0 4.2.3l2-2a3 3 0 0 0-4.2-4.2l-1 1"/><path d="M9.5 6.5a3 3 0 0 0-4.2-.3l-2 2a3 3 0 0 0 4.2 4.2l1-1"/></svg>URL…</button>
+            <div class="am-tip">Tip: paste or drop images straight into the chat.</div>
+          </div>
+          <input id="file" type="file" multiple hidden />
+          <input id="file-img" type="file" accept="image/*" multiple hidden />
+        </div>
+        <textarea id="text" rows="1" placeholder="Describe what you need…  (Enter to send, Shift+Enter for newline)"></textarea>
+      </div>
       <button id="exec-toggle" type="button" style="display:none"
               title="Where this conversation's commands run: your machine (via dae remote) or the server">⌁ local</button>
-      <label class="attach" title="Attach files">📎<input id="file" type="file" multiple hidden /></label>
-      <button id="send">Send</button>
+      <button id="mic" type="button" style="display:none" title="Dictate (transcribed on the server)"><svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="6" y="1.5" width="4" height="8" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><path d="M8 12v2.5"/></svg></button>
+      <!-- Send ⇄ Stop: one icon-sized button; the .stop class (turn in flight) swaps the glyph. -->
+      <button id="send" title="Send (Enter)">
+        <svg class="ic-send" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg class="ic-stop" viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg>
+      </button>
     </div>
   </footer>
   </div>
@@ -94,6 +128,19 @@
     <div class="pop-head"><span id="pop-title"></span><button id="pop-close" type="button" title="Close">✕</button></div>
     <div class="pop-body" id="pop-body"></div>
   </div>
+  <!-- In-house confirm dialog (replaces the browser-native confirm) + transient toasts. -->
+  <div id="confirm-overlay" style="display:none">
+    <div id="confirm-box">
+      <div id="confirm-title"></div>
+      <div id="confirm-msg"></div>
+      <input id="confirm-input" type="text" style="display:none" />
+      <div class="confirm-actions">
+        <button id="confirm-no" type="button">Cancel</button>
+        <button id="confirm-yes" type="button">Delete</button>
+      </div>
+    </div>
+  </div>
+  <div id="toast" style="display:none"></div>
   <div id="statusbar">
     <span class="st-item"><i class="dot" id="st-gw-dot"></i><span id="st-gw">Gateway</span></span>
     <button class="st-item st-btn" id="st-agents" title="Agents — click for live activity"><i class="live-dot" id="activity-dot"></i><b id="st-agents-n">–</b> agents<span id="st-active-n"></span></button>

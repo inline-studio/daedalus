@@ -79,6 +79,21 @@ async function makeMd() {
       purify.status === 200 && /javascript/.test(purify.headers.get("content-type") ?? "") && pjs.includes("DOMPurify"),
     );
   }
+  // In-house confirm dialog + toast + the Agents · Activity modal (90% viewport, roster
+  // left / detail right). window.confirm looked alien and swallowed errors silently.
+  ok("shell ships the in-house confirm dialog + toast markup", html.includes('id="confirm-overlay"') && html.includes('id="toast"'));
+  ok("shell no longer calls window.confirm", !html.includes("window.confirm"));
+  ok("agents modal: XL panel + roster/detail panes wired", html.includes("renderAgentsModal") && html.includes("ag-list") && html.includes("ag-detail") && /#panel\.xl\s*\{[^}]*90vw/.test(html));
+  ok("failed session mutations surface a toast with the server reason", html.includes("Couldn't delete the session") && html.includes("Couldn't start a new session"));
+  ok("agents modal streams the flowing step feed (no jump-to-conversation)", html.includes("ag-flow") && !html.includes("Open conversation"));
+  ok("empty chats render the block-art splash with the assistant name", html.includes("BLOCK_FONT") && html.includes("splash-hint") && html.includes("say hello"));
+  ok("composer ships the attach menu (Files / Images / Paste / URL)", html.includes('id="attach-menu"') && html.includes('data-attach="files"') && html.includes('data-attach="url"'));
+  ok("composer ships the dictation mic (hidden until /status says dictation)", html.includes('id="mic"') && html.includes("/transcribe"));
+  ok("send is an icon button that swaps to a stop glyph", html.includes('class="ic-send"') && html.includes('class="ic-stop"'));
+  ok("agents modal shows sub-agents only (orchestrator filtered, activity attributed)", html.includes("a.orchestrator") && html.includes("spawning "));
+  ok("composer: attach ＋ lives inside one input group with the textarea", html.includes('id="input-group"') && /#input-group\s*\{[^}]*flex/.test(html));
+  ok("per-session view options: thinking + streaming toggles", html.includes('id="view-menu"') && html.includes('id="view-thinking"') && html.includes('id="view-stream"') && html.includes("suppressedText"));
+
   // Cache-busting headers — without these the browser caches the inline
   // JS/CSS shell aggressively, so a `dae update` never reaches the user
   // until they hard-refresh. Scott hit exactly this after PR #82 deployed.

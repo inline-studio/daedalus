@@ -13,6 +13,67 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Live turn feed in the Agents · Activity modal.** The detail pane now streams the
+  selected agent's inner life: coalesced thinking snippets ("thinking — array_filter
+  keeps keys, so…"), tool calls with their telling input ("tool: web_fetch —
+  php.net/manual"), and failures — timestamped, auto-following, refreshed every
+  2.5s while open. The activity tracker keeps a rolling per-turn log (cap 100)
+  behind the existing one-line label; `GET /activity` turns now carry it as `log`.
+  The "Open conversation" button is gone — the user talks to the orchestrator, this
+  view is for watching agents work.
+- **Composer dictation.** A mic button records in the browser and transcribes via
+  `POST /transcribe` (the same whisper path inbound voice notes use); the text lands
+  in the composer for editing. Shown only when the stack has a transcriber
+  configured (`/status` reports `dictation`). The desktop shell grants the media
+  permission so the mic works there too.
+- **Attach menu.** The paperclip is now a ＋ opening an attach menu: Files…,
+  Images…, Paste image (clipboard), and URL… (dropped into the message for the
+  agent to fetch). Images pasted with ⌘V into the composer attach directly.
+- **Empty-chat splash.** New/empty conversations greet with the orchestrator's name
+  as two-row block art (any A–Z name; longer or non-Latin names fall back to styled
+  text) over a "say hello" hint, replacing the plain placeholder line.
+- **Per-session view options.** An eye button in the chat header opens "This
+  session" toggles: **Show thinking** (hides live + history reasoning blocks) and
+  **Stream replies** (off = the working indicator runs while tokens are held back,
+  then the reply lands complete in one markdown-rendered message). Stored per
+  conversation — a role-play session can run clean while work sessions stay
+  verbose.
+- **Icon send/stop.** The Send button is now an icon (↑) sized like the composer's
+  other buttons, swapping to a red stop square while a turn is in flight.
+- **Sub-agents-only activity view.** The Agents · Activity modal no longer lists the
+  orchestrator — it IS the chat, its activity already streams there. `GET /agents`
+  flags the channel's orchestrator; the modal shows the delegates, attributing each
+  one's steps out of the turn logs (spawns, chain-prefixed tool calls) and showing
+  agents that run as their own top-level turns (cron fires) directly.
+- **Combined input group.** The attach ＋ now sits inside the message field
+  (one bordered group, Hermes-style) instead of being a separate button.
+
+### Added
+
+- **Agents · Activity modal.** The status-bar agents button now opens a
+  near-fullscreen (90% viewport) two-pane modal instead of a small popover: the
+  agent roster on the left with in-flight agents on top (live dot, current
+  activity, elapsed) and idle agents greyed below; clicking an agent shows its
+  detail on the right — the live turn (what it's doing, via which channel,
+  jump-to-conversation) or the manifest facts (model, runtime, sub-agents, tools)
+  when idle. Live-refreshes while open; selection survives refreshes.
+- **In-house confirm dialog + error toasts (web).** Destructive actions (delete
+  session, archive skill) confirm via a styled in-app dialog instead of the
+  browser-native `window.confirm`. Failed session create/delete now raise a
+  visible toast carrying the server's actual reason (e.g. `HTTP 500 — database or
+  disk is full`) instead of a barely-visible status-bar note that read as a dead
+  button.
+
+### Fixed
+
+- **`dae update` on client-only machines.** The post-update re-apply now runs only
+  when a *completed* install exists (compose file **and** its `.env`). A machine
+  that just runs `dae remote` against a remote server — or has a stray
+  `docker-compose.yml` in the cwd / leftovers from an abandoned setup — gets a CLI
+  update only, instead of being dropped into the interactive first-install wizard.
+
+### Added
+
 - **Desktop release workflow.** `.github/workflows/desktop.yml` builds and releases
   the app **automatically on merge to `main`** (path-filtered to `apps/desktop/**`;
   manual dispatch remains, optionally with an explicit version). Gate first — server

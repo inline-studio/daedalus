@@ -37,6 +37,8 @@ export function buildChannels(
       list: (userId: string, q: string) => Promise<Array<Record<string, unknown>>>;
       read: (userId: string, ref: string) => Promise<{ data: Buffer; mediaType: string; filename?: string } | null>;
     };
+    // Composer dictation (POST /transcribe) — the supervisor's transcriber, when it's real.
+    transcribe?: (audio: Buffer, mediaType: string) => Promise<string | null>;
   },
 ): Channel[] {
   const out: Channel[] = [];
@@ -116,6 +118,7 @@ export function buildChannels(
         ...(extras?.activity ? { listActivity: extras.activity } : {}),
         ...(extras?.skills ? { skillsProvider: extras.skills } : {}),
         ...(extras?.artifacts ? { artifactsProvider: extras.artifacts } : {}),
+        ...(extras?.transcribe ? { transcribe: extras.transcribe } : {}),
         ...(listAgentDetails ? { listAgentDetails } : {}),
         ...(w.remoteExec?.enabled
           ? { remoteExec: { enabled: true, timeoutMs: w.remoteExec.timeoutMs } }
