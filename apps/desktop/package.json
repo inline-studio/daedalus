@@ -17,6 +17,7 @@
       "main.js",
       "preload.js",
       "updater.js",
+      "executor.js",
       "setup.html"
     ],
     "mac": {

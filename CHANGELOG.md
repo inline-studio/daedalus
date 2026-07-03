@@ -13,6 +13,21 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Desktop app: local execution + wizard.** The Electron shell embeds an executor —
+  the desktop equivalent of `dae remote`: conversations started in the app run their
+  commands and file edits on your machine, in a chosen workspace, with a **native
+  approval dialog** per command (Allow / Always allow prefix / Deny; the dangerous-
+  pattern denylist always asks, even in free rein). The first successful connect offers
+  to enable it (one-time wizard step: workspace picker + approval mode); **Server →
+  Local Execution…** changes or disables it later, with live On/Reconnecting/Off state
+  in the menu. Executor auth is borrowed from the window itself (login cookie via the
+  cookies API, or the web UI's stored uid/token), so it is always the same user as the
+  chat; the allowlist and audit log are the same `~/.daedalus/` files the CLI uses, so
+  an "always allow" applies across both surfaces. The `--smoke-test` mode now proves
+  the executor registers and serves requests end to end.
+
+### Added
+
 - **`dae remote` is a real terminal interface.** Not a bare REPL any more: a
   persistent, hand-rolled-ANSI terminal app (zero new dependencies) with streaming
   replies, dim tool/sub-agent activity lines, a live status line (gateway · session ·
