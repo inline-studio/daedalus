@@ -155,6 +155,51 @@ program
     for (const n of names) console.log(n);
   });
 
+// `skill` command group — review queue for agent-created skills. When
+// skills.learning.writeApproval is on, every create/patch the review pass makes lands in
+// <brain>/skills/.pending/ instead of going live; these commands are how the operator
+// promotes or discards them.
+const skillCmd = program
+  .command("skill")
+  .description("review agent-created skills awaiting approval (skills/.pending)");
+
+skillCmd
+  .command("pending")
+  .description("list staged skills awaiting approval")
+  .action(async () => {
+    const config = loadConfig(program.opts().config);
+    const { listPendingSkills } = await import("./tools/skill-manage.js");
+    const pending = await listPendingSkills(config.brain.path);
+    if (!pending.length) {
+      console.log("(no pending skills)");
+      return;
+    }
+    for (const p of pending) {
+      console.log(`${p.name}  ${p.patchesExisting ? "[patch]" : "[new]"}  ${p.description}`);
+    }
+    console.log(`\nApprove with \`dae skill approve <name>\`, discard with \`dae skill reject <name>\`.`);
+  });
+
+skillCmd
+  .command("approve <name>")
+  .description("promote a staged skill to the live brain")
+  .action(async (name: string) => {
+    const config = loadConfig(program.opts().config);
+    const { approvePendingSkill } = await import("./tools/skill-manage.js");
+    await approvePendingSkill(config.brain.path, name);
+    console.log(`✓ skill '${name}' is live`);
+  });
+
+skillCmd
+  .command("reject <name>")
+  .description("discard a staged skill")
+  .action(async (name: string) => {
+    const config = loadConfig(program.opts().config);
+    const { rejectPendingSkill } = await import("./tools/skill-manage.js");
+    await rejectPendingSkill(config.brain.path, name);
+    console.log(`✗ skill '${name}' discarded`);
+  });
+
 program
   .command("mcp")
   .description("list MCP servers in the brain repo's mcp config")

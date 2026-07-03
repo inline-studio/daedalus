@@ -58,6 +58,7 @@ const CI_SAFE = [
   "smoke-ssrf",
   "smoke-skill-bootstrap",
   "smoke-skill-disclosure",
+  "smoke-skill-learning",
   "smoke-skill-triggers",
   "smoke-store-reopen",
   "smoke-stream",

@@ -13,6 +13,20 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Skill self-learning.** Daedalus can now grow its own skill library from experience.
+  A new `skill_manage` tool (explicit opt-in, excluded from `tools: ['*']`) lets an agent
+  create, patch, extend, and archive skills; a post-turn review pass replays substantial
+  turns with only that tool and captures reusable workflows, fixes, and user corrections —
+  patch-before-create, class-level skills only, never transient failures. Writes are
+  staged under `skills/.pending/` for human review by default (`dae skill
+  pending|approve|reject`); live writes are git-committed when the brain is a repo. A
+  deterministic weekly curator marks agent-created skills unused 30+ days as stale and
+  archives them (never deletes) after 90, driven by a `load_skill` usage tracker; pinned
+  and human-authored skills are untouched. Configure under `skills.learning` (off by
+  default; requires `brain.writable: true`).
+
+### Added
+
 - **Live sub-agent view.** Delegated work is no longer opaque: when an orchestrator
   calls `spawn_subagent`, the subagent's turn events (tool calls, lifecycle) stream
   back live, tagged with which agent they came from — through every dispatch mode,

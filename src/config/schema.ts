@@ -156,6 +156,47 @@ export const MemoryConfigSchema = z.object({
 });
 export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
 
+// Skill self-learning: the post-turn review pass that lets the agent create/patch its own
+// skills (via the skill_manage tool), plus the staleness curator that ages unused
+// agent-created skills out. Off by default — turning it on also requires `brain.writable:
+// true` (skill_manage refuses to write otherwise).
+export const SkillsConfigSchema = z.object({
+  learning: z
+    .object({
+      enabled: z.boolean().default(false),
+      // Optional model override for the review pass, used with the AGENT'S provider. Leave
+      // unset to reuse the agent's own model — same model means the review replays a warm
+      // prompt-cache prefix, so the pass is cheap.
+      model: z.string().optional(),
+      // Run the review only after substantial turns: at least this many tool calls, OR a
+      // skill was loaded this turn, OR the accumulated per-session nudge counter (below)
+      // crossed its threshold. Keeps trivial turns from paying an extra LLM call.
+      minToolCalls: z.number().int().positive().default(5),
+      // Cross-turn backstop: total tool calls accumulated in a session since the last
+      // skill_manage use; crossing it arms the next review even for small turns.
+      nudgeInterval: z.number().int().positive().default(10),
+      // When true (the default), skill_manage stages every create/patch under
+      // skills/.pending/ for human review (`dae skill pending|approve|reject`) instead of
+      // writing live. Turn off once the generated skills have earned trust.
+      writeApproval: z.boolean().default(true),
+      // Tool-loop budget for one review pass (it's a mini agent turn with only skill_manage).
+      maxReviewTurns: z.number().int().positive().default(6),
+      curator: z
+        .object({
+          enabled: z.boolean().default(true),
+          // When the curator sweep runs (cron, supervisor timezone).
+          schedule: z.string().default("0 4 * * 0"),
+          // Agent-created skills unused for this long are marked status: stale…
+          staleAfterDays: z.number().int().positive().default(30),
+          // …and this long moves them to skills/.archive/ (never deleted).
+          archiveAfterDays: z.number().int().positive().default(90),
+        })
+        .default({ enabled: true, schedule: "0 4 * * 0", staleAfterDays: 30, archiveAfterDays: 90 }),
+    })
+    .default({}),
+});
+export type SkillsConfig = z.infer<typeof SkillsConfigSchema>;
+
 // DEPRECATED. MemPalace has been removed from the daedalus stack (Graphiti is the memory
 // backend — see GraphitiConfigSchema). This schema is retained only so older configs that
 // still carry a `mempalace:` block validate; `dae install` no longer writes it and the
@@ -410,6 +451,7 @@ export const ArtemisConfigSchema = z.object({
   }),
   mcp: McpConfigSchema.default({}),
   memory: MemoryConfigSchema.default({ backend: "none", brainSync: { enabled: false, schedule: "0 */6 * * *" } }),
+  skills: SkillsConfigSchema.default({}),
   mempalace: MempalaceConfigSchema.default({
     localHttp: {
       enabled: false,
@@ -559,5 +601,14 @@ export const SkillManifestSchema = z.object({
       secrets: z.array(z.string()).default([]),
     })
     .default({ secrets: [] }),
+  // Who authored this skill. "agent" marks skills created by the skill-learning review pass
+  // (via skill_manage); the staleness curator only ever touches those — human-authored skills
+  // (the default, since existing SKILL.md files carry no origin) are never auto-transitioned.
+  origin: z.enum(["human", "agent"]).default("human"),
+  // Lifecycle state, managed by the curator: "stale" (unused past the threshold) demotes the
+  // skill in the system-prompt menu; archival moves the whole directory to skills/.archive/.
+  status: z.enum(["active", "stale"]).default("active"),
+  // Pinned skills are exempt from every curator transition (never marked stale or archived).
+  pinned: z.boolean().default(false),
 });
 export type SkillManifest = z.infer<typeof SkillManifestSchema>;

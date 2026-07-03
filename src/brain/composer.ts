@@ -75,6 +75,9 @@ export async function composeSystemPrompt(input: ComposerInput): Promise<string>
   if (souls.length) parts.push(section("Soul", souls));
   if (personas.length) parts.push(section("Persona", personas));
   if (skills.length) parts.push(section("Skills", [skillMenu(skills)]));
+  // Skill upkeep contract — only for agents that can actually write skills. Built-in (not
+  // a brain file) because it's coupled to the skill_manage tool's existence.
+  if ((agent.tools ?? []).includes("skill_manage")) parts.push(section("Skill upkeep", [SKILL_UPKEEP]));
   // Brain-defined commands expand into a preamble before the message reaches the agent;
   // built-ins (currently /compact) are handled by the supervisor and never reach it. Both
   // are listed so the agent can answer "what commands are available?". Subagents skip the
@@ -144,14 +147,36 @@ function section(title: string, items: string[]): string {
   return `# ${title}\n\n${items.join("\n\n")}`;
 }
 
+// The standing learn-as-you-go contract for agents holding skill_manage (the write side of
+// skill self-learning). Mirrors the review pass's rules so in-turn saves and the post-turn
+// review pull in the same direction.
+const SKILL_UPKEEP = [
+  "You can create and maintain your own skills with the `skill_manage` tool.",
+  "",
+  "- After completing a complex task (5+ tool calls), fixing a tricky error, or discovering",
+  "  a non-trivial workflow, save the approach as a skill so you can reuse it next time.",
+  "- When a skill you loaded proves outdated, incomplete, or wrong, patch it immediately —",
+  "  don't wait to be asked. Skills that aren't maintained become liabilities.",
+  "- Prefer patching an existing skill over creating a new one; new skills must be",
+  "  class-level procedures, never one-session notes.",
+  "- Durable facts about the user belong in memory; procedures and workflows belong in",
+  "  skills. Never persist environment-transient failures or negative tool claims.",
+].join("\n");
+
 // Progressive disclosure: list each skill by name + one-line description rather than
 // inlining the full SKILL.md body. The full body is fetched on demand via the
 // `load_skill` tool. This keeps the per-turn system prompt small even for an agent
 // with many or large skills — the bodies are only spent when a skill is actually used.
+// Stale skills (curator-flagged, unused past the threshold) sort last and carry a marker
+// so the agent treats their instructions with suspicion — and patches them back to life.
 function skillMenu(skills: LoadedSkill[]): string {
-  const lines = skills.map((s) => {
+  const ordered = [...skills].sort(
+    (a, b) => Number(a.manifest.status === "stale") - Number(b.manifest.status === "stale"),
+  );
+  const lines = ordered.map((s) => {
     const desc = s.manifest.description ? ` — ${s.manifest.description}` : "";
-    return `- **${s.manifest.name}**${desc}`;
+    const stale = s.manifest.status === "stale" ? " *(stale — unused for a while; verify before relying on it)*" : "";
+    return `- **${s.manifest.name}**${desc}${stale}`;
   });
   return [
     "These skills are available to you. Only the name and a one-line summary are shown here —",

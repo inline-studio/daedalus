@@ -18,6 +18,9 @@ import { loadSchedules, startScheduler } from "./scheduler/cron.js";
 import { startSchedulePoller } from "./scheduler/poller.js";
 import { listAgents } from "./brain/agents.js";
 import { createRequire } from "node:module";
+import { Cron } from "croner";
+import { SkillLearningStore } from "./sessions/skill-learning-store.js";
+import { runSkillCurator } from "./brain/skill-curator.js";
 import { log } from "./log.js";
 
 const PKG_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
@@ -230,6 +233,30 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     bus,
   });
 
+  // Skill staleness curator: a deterministic cron sweep that ages unused agent-created
+  // skills out (stale → archived, never deleted). Needs the brain writable — without that
+  // there's nothing it could do, so it simply doesn't start.
+  let curatorJob: Cron | undefined;
+  let skillLearningStore: SkillLearningStore | undefined;
+  const learning = config.skills.learning;
+  if (learning.enabled && learning.curator.enabled && config.brain.writable) {
+    skillLearningStore = new SkillLearningStore(config.sessions.dbPath);
+    const store = skillLearningStore;
+    curatorJob = new Cron(learning.curator.schedule, async () => {
+      try {
+        await runSkillCurator({
+          brainPath: config.brain.path,
+          store,
+          staleAfterDays: learning.curator.staleAfterDays,
+          archiveAfterDays: learning.curator.archiveAfterDays,
+        });
+      } catch (err) {
+        log.warn({ err: (err as Error).message }, "skill-curator: sweep threw (ignored)");
+      }
+    });
+    log.info({ schedule: learning.curator.schedule }, "skill curator armed");
+  }
+
   log.info(
     { schedules: running.length, channels: channels.length, dispatcher: dispatcher.id },
     "daedalus serving",
@@ -238,10 +265,12 @@ export async function serve(config: ArtemisConfig): Promise<void> {
   const shutdown = async () => {
     log.info("shutting down");
     poller.stop();
+    curatorJob?.stop();
     for (const r of running) r.job.stop();
     await bus.stopAll();
     sessions.close();
     scheduleStore.close();
+    skillLearningStore?.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
