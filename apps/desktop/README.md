@@ -35,7 +35,7 @@ the page loads and the preload bridge is exposed, then exits.
 ## Package
 
 ```bash
-npm run dist   # electron-builder → dmg (mac, arm64+x64) / AppImage (linux)
+npm run dist   # electron-builder → dmg (mac, arm64+x64) / NSIS installer (windows) / AppImage (linux)
 ```
 
 Unsigned by default — fine for your own machines (macOS will ask for a one-time
@@ -46,9 +46,12 @@ Privacy & Security override on first launch of a downloaded copy).
 Distribution + updates run entirely from **GitHub Releases** (tag desktop builds
 `desktop-v<version>` so they don't collide with the server's `v0.1.0-<run>` tags):
 
-- **Linux (AppImage), and macOS once builds are signed:** electron-updater checks the
-  GitHub feed at launch, downloads in the background, and offers "Restart now" — fully
-  automatic.
+- **Linux (AppImage), Windows (NSIS), and macOS once builds are signed:**
+  electron-updater checks the GitHub feed at launch, downloads in the background, and
+  offers "Restart now" — fully automatic. Windows does NOT require code signing for
+  auto-update (only macOS gates on it); unsigned Windows builds just show a SmartScreen
+  warning on first install. Windows signing, if ever wanted, is a separate CA
+  certificate — the Apple Developer account doesn't cover it.
 - **Unsigned macOS builds:** the OS blocks in-place self-update — Squirrel.Mac (the
   macOS update engine) only applies updates to code-signed apps (electron-builder:
   "macOS application must be signed in order for auto updating to work"). These builds

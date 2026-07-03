@@ -41,6 +41,16 @@
       "provider": "github",
       "owner": "inline-studio",
       "repo": "daedalus"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
     }
   },
   "devDependencies": {
