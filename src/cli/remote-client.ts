@@ -346,6 +346,10 @@ export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> 
     "chat",
   );
 
+  // Execution placement for messages sent from THIS repl: local (the whole point of the
+  // CLI) unless the user flips it per conversation with /local off.
+  let execMode: "local" | "server" = "local";
+
   // --- REPL (interactive terminals only; headless runs are executor-only) ---
   if (rl) {
     process.stdout.write(`[dae remote] connected — type a message; Ctrl-C to exit\n> `);
@@ -357,6 +361,47 @@ export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> 
       }
       // Client-side commands (everything else — including server slash-commands like
       // /compact — passes through as a normal message).
+      if (text === "/local on" || text === "/local off") {
+        execMode = text.endsWith("on") ? "local" : "server";
+        process.stdout.write(
+          dim(`[execution: ${execMode === "local" ? "your machine" : "the server"}]\n`),
+        );
+        prompt();
+        return;
+      }
+      if (text === "/agents") {
+        void fetch(`${base}/agents?externalUserId=${encodeURIComponent(externalUserId)}`, { headers: authHeaders() })
+          .then((r) => (r.ok ? (r.json() as Promise<{ agents?: Array<Record<string, unknown>> }>) : null))
+          .then((j) => {
+            for (const a of j?.agents ?? []) {
+              const bits = [a.model, a.image ? "docker" : null, Array.isArray(a.subagents) && a.subagents.length ? `→ ${(a.subagents as string[]).join(", ")}` : null]
+                .filter(Boolean)
+                .join(" · ");
+              process.stdout.write(`${String(a.name).padEnd(16)} ${dim(String(bits))}\n`);
+            }
+            if (!j?.agents?.length) process.stdout.write(dim("(no agents)\n"));
+            prompt();
+          })
+          .catch(() => { process.stdout.write(dim("[agents fetch failed]\n")); prompt(); });
+        return;
+      }
+      if (text === "/crons") {
+        void fetch(`${base}/schedules?externalUserId=${encodeURIComponent(externalUserId)}`, { headers: authHeaders() })
+          .then((r) => (r.ok ? (r.json() as Promise<{ static?: Array<Record<string, unknown>>; dynamic?: Array<Record<string, unknown>> }>) : null))
+          .then((j) => {
+            for (const s of j?.static ?? []) {
+              process.stdout.write(`${String(s.name).padEnd(24)} ${dim(`${s.schedule} · ${s.agent}${s.enabled ? "" : " · disabled"}`)}\n`);
+            }
+            for (const d of j?.dynamic ?? []) {
+              const when = d.recurring ? String(d.recurring) : `next ${String(d.nextFire ?? "")}`;
+              process.stdout.write(`${String(d.prompt ?? d.id).slice(0, 40).padEnd(42)} ${dim(`${when} · ${d.agent}`)}\n`);
+            }
+            if (!j?.static?.length && !j?.dynamic?.length) process.stdout.write(dim("(nothing scheduled)\n"));
+            prompt();
+          })
+          .catch(() => { process.stdout.write(dim("[schedules fetch failed]\n")); prompt(); });
+        return;
+      }
       if (text === "/stop") {
         void fetch(`${base}/abort`, {
           method: "POST",
@@ -377,7 +422,7 @@ export async function runRemoteClient(opts: RemoteClientOptions): Promise<void> 
       void fetch(`${base}/messages`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ externalUserId, text }),
+        body: JSON.stringify({ externalUserId, text, execution: execMode }),
       })
         .then((r) => {
           if (r.status === 401) process.stdout.write("unauthorized — check the token / login\n");

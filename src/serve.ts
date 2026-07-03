@@ -102,9 +102,38 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     return ok;
   };
 
+  // GET /schedules viewer: static brain schedules + live agent-armed rows, read fresh
+  // per request so brain edits and newly-armed callbacks show up without a restart.
+  const listSchedulesForUi = async (): Promise<Record<string, unknown>> => {
+    const statics = await loadSchedules(config.brain.path).catch(() => []);
+    let dynamic: unknown[] = [];
+    try {
+      dynamic = scheduleStore.listActive().map((s) => ({
+        id: s.id,
+        agent: s.agentName,
+        prompt: s.prompt.length > 140 ? s.prompt.slice(0, 140) + "…" : s.prompt,
+        nextFire: s.dueAt,
+        recurring: s.recurringCron,
+        createdBy: s.createdByAgent,
+      }));
+    } catch {
+      /* partial view is fine */
+    }
+    return {
+      static: statics.map((s) => ({
+        name: s.name,
+        agent: s.agent,
+        schedule: s.schedule,
+        enabled: s.enabled !== false,
+      })),
+      dynamic,
+    };
+  };
+
   const channels = buildChannels(config.channels, sessions, config.identity.name, config.brain.path, {
     status,
     abort: abortTurn,
+    schedules: listSchedulesForUi,
   });
   if (channels.length === 0) {
     log.error(
@@ -152,6 +181,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
       const webCfg = config.channels.web;
       if (
         webCfg?.remoteExec.enabled &&
+        msg.execution !== "server" && // per-message opt-out (WS6e); default is local
         ch instanceof WebChannel &&
         ch.remoteConnected(ingested.userId)
       ) {

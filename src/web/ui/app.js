@@ -978,6 +978,26 @@
       .catch(function () { statusEl.textContent = "stop failed"; });
   }
 
+  // --- Execution placement (WS6e): local (the connected executor) vs server. The toggle
+  // only shows when /status reports an executor for this user; preference persists.
+  var executorConnected = false;
+  var execMode = LS.getItem("dae_exec") === "server" ? "server" : "local";
+  function renderExecToggle() {
+    var b = $("exec-toggle");
+    if (!b) return;
+    b.style.display = executorConnected ? "" : "none";
+    b.textContent = execMode === "local" ? "⌁ local" : "☁ server";
+    b.classList.toggle("local", execMode === "local");
+    b.title = execMode === "local"
+      ? "Commands run on YOUR machine (via dae remote). Click to run on the server instead."
+      : "Commands run on the server. Click to run on your machine.";
+  }
+  $("exec-toggle").addEventListener("click", function () {
+    execMode = execMode === "local" ? "server" : "local";
+    LS.setItem("dae_exec", execMode);
+    renderExecToggle();
+  });
+
   function send() {
     if (turnActive) { stopTurn(); return; }
     var text = $("text").value.trim();
@@ -985,6 +1005,7 @@
     var atts = pending.slice();
     var body = { externalUserId: uid };
     if (convId) body.conversationId = convId;
+    if (executorConnected) body.execution = execMode;
     if (text) body.text = text;
     if (atts.length) body.attachments = atts;
     // Optimistically name a still-unnamed conversation from its first message, mirroring the
@@ -1350,7 +1371,7 @@
   }
 
   function loadStatus() {
-    fetch("/status", { headers: authHeaders() })
+    fetch("/status?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
       .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
       .then(function (s) {
         if (!s) return;
@@ -1359,6 +1380,9 @@
           $("st-cron-n").textContent = String((s.schedules.static || 0) + (s.schedules.dynamic || 0));
         }
         if (s.version) $("st-backend").textContent = "backend v" + s.version;
+        // Executor state drives the composer's local/server toggle.
+        executorConnected = Boolean(s.remoteExec && s.remoteExec.connected);
+        renderExecToggle();
         // Channel badges in the sidebar footer (the web channel itself is omitted — you're in it).
         var foot = $("sb-channels");
         if (foot && s.channels && s.channels.length) {
@@ -1380,6 +1404,69 @@
   setGateway("warn");
   loadStatus();
   setInterval(loadStatus, 60000);
+
+  // --- Sidebar viewers: Agents + Cron (fetch on first expand, refresh on re-expand) ---
+  function row(title, sub, subClass) {
+    var el = document.createElement("div");
+    el.className = "sb-item-row";
+    el.appendChild(document.createTextNode(title));
+    if (sub) {
+      var s = document.createElement("span");
+      s.className = "sub" + (subClass ? " " + subClass : "");
+      s.textContent = sub;
+      el.appendChild(s);
+    }
+    return el;
+  }
+  function loadAgentsList() {
+    fetch("/agents?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
+      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j) return;
+        var list = $("agents-list");
+        list.innerHTML = "";
+        $("agents-n").textContent = String((j.agents || []).length);
+        (j.agents || []).forEach(function (a) {
+          var detail = [a.model, a.image ? "docker" : null, (a.subagents || []).length ? "→ " + a.subagents.join(", ") : null]
+            .filter(Boolean).join(" · ");
+          var el = row(a.name, detail);
+          el.title = a.description || a.name;
+          list.appendChild(el);
+        });
+        if (!(j.agents || []).length) list.appendChild(row("(no agents)", ""));
+      })
+      .catch(function () {});
+  }
+  function loadCronsList() {
+    fetch("/schedules?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
+      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j) return;
+        var list = $("crons-list");
+        list.innerHTML = "";
+        var statics = j.static || [], dyn = j.dynamic || [];
+        $("crons-n").textContent = String(statics.length + dyn.length);
+        statics.forEach(function (s) {
+          list.appendChild(row(s.name, s.schedule + " · " + s.agent + (s.enabled ? "" : " · disabled"), s.enabled ? "" : "off"));
+        });
+        dyn.forEach(function (d) {
+          var when = d.recurring ? d.recurring : ("next " + String(d.nextFire || "").replace("T", " ").slice(0, 16));
+          list.appendChild(row(d.prompt || d.id, when + " · " + d.agent));
+        });
+        if (!statics.length && !dyn.length) list.appendChild(row("(nothing scheduled)", ""));
+      })
+      .catch(function () {});
+  }
+  function wireSect(id, loader) {
+    var sect = $(id);
+    sect.querySelector(".sb-sect-head").addEventListener("click", function () {
+      var open = sect.classList.toggle("open");
+      sect.querySelector(".chev").textContent = open ? "▾" : "▸";
+      if (open) loader();
+    });
+  }
+  wireSect("sect-agents", loadAgentsList);
+  wireSect("sect-crons", loadCronsList);
 
   // Session timer: time since this page opened (mm:ss, then h:mm:ss).
   var sessionStart = Date.now();

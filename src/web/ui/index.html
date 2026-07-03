@@ -21,6 +21,16 @@
     <div class="sb-head"><button id="new-convo" type="button">＋ New session</button></div>
     <div class="sb-search"><input id="convo-search" type="search" placeholder="Search sessions…" autocomplete="off" /></div>
     <div id="convo-list"></div>
+    <div id="sb-meta">
+      <div class="sb-sect" id="sect-agents">
+        <div class="sb-sect-head"><span class="chev">▸</span>Agents <span class="n" id="agents-n"></span></div>
+        <div class="sb-sect-body" id="agents-list"></div>
+      </div>
+      <div class="sb-sect" id="sect-crons">
+        <div class="sb-sect-head"><span class="chev">▸</span>Cron <span class="n" id="crons-n"></span></div>
+        <div class="sb-sect-body" id="crons-list"></div>
+      </div>
+    </div>
     <div class="sb-foot" id="sb-channels"></div>
   </aside>
   <div id="main">
@@ -53,6 +63,8 @@
     <div id="chips"></div>
     <div class="row">
       <textarea id="text" rows="1" placeholder="Describe what you need…  (Enter to send, Shift+Enter for newline)"></textarea>
+      <button id="exec-toggle" type="button" style="display:none"
+              title="Where this conversation's commands run: your machine (via dae remote) or the server">⌁ local</button>
       <label class="attach" title="Attach files">📎<input id="file" type="file" multiple hidden /></label>
       <button id="send">Send</button>
     </div>

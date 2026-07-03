@@ -2,6 +2,7 @@ import type { ChannelsConfig } from "../config/schema.js";
 import type { SessionStore } from "../sessions/store.js";
 import { loadAgent } from "../brain/agents.js";
 import { loadAgentCommands } from "../brain/commands.js";
+import { listAgents } from "../brain/agents.js";
 import type { Channel } from "./base.js";
 import { CliChannel } from "./cli.js";
 import { WebChannel, type WebCommandInfo } from "./web.js";
@@ -18,11 +19,12 @@ export function buildChannels(
   sessions?: SessionStore,
   identityName?: string,
   brainPath?: string,
-  // Extra web-channel wiring the supervisor owns: the GET /status snapshot provider and
-  // the POST /abort in-flight-turn canceller.
+  // Extra web-channel wiring the supervisor owns: the GET /status snapshot provider, the
+  // POST /abort in-flight-turn canceller, and the GET /schedules viewer.
   extras?: {
     status?: () => Promise<Record<string, unknown>>;
     abort?: (conversationId: string) => Promise<boolean>;
+    schedules?: () => Promise<Record<string, unknown>>;
   },
 ): Channel[] {
   const out: Channel[] = [];
@@ -42,6 +44,33 @@ export function buildChannels(
       w.username && w.passwordHash && w.sessionSecret
         ? { username: w.username, passwordHash: w.passwordHash, sessionSecret: w.sessionSecret }
         : undefined;
+    // GET /agents viewer: every agent's manifest summary, read fresh from the brain per
+    // request (edits show live). Failures degrade to an empty list.
+    const listAgentDetails = brainPath
+      ? async (): Promise<Array<Record<string, unknown>>> => {
+          try {
+            const names = await listAgents(brainPath);
+            const out: Array<Record<string, unknown>> = [];
+            for (const n of names) {
+              const a = await loadAgent(brainPath, n).catch(() => null);
+              if (!a) continue;
+              out.push({
+                name: a.manifest.name,
+                description: a.manifest.description,
+                provider: a.manifest.provider,
+                model: a.manifest.model,
+                tools: a.manifest.tools,
+                skills: a.manifest.skills,
+                subagents: a.manifest.subagents,
+                ...(a.manifest.container?.image ? { image: a.manifest.container.image } : {}),
+              });
+            }
+            return out;
+          } catch {
+            return [];
+          }
+        }
+      : undefined;
     // Resolve the default agent's slash-commands on demand (per request, so brain edits
     // show up live). Any load failure degrades to "no commands" rather than failing the UI.
     const listCommands = brainPath
@@ -71,6 +100,8 @@ export function buildChannels(
         ...(listCommands ? { listCommands } : {}),
         ...(extras?.status ? { status: extras.status } : {}),
         ...(extras?.abort ? { abortTurn: extras.abort } : {}),
+        ...(extras?.schedules ? { listSchedules: extras.schedules } : {}),
+        ...(listAgentDetails ? { listAgentDetails } : {}),
         ...(w.remoteExec?.enabled
           ? { remoteExec: { enabled: true, timeoutMs: w.remoteExec.timeoutMs } }
           : {}),

@@ -115,6 +115,54 @@ const get = (path) => fetch(base + path).then((r) => r.json());
 }
 
 await chan.stop();
+
+// --- 5. Viewers + execution flag (WS6d/e) on a second channel instance ---
+{
+  const PORT2 = 18794;
+  const published = [];
+  const chan2 = new WebChannel({
+    defaultAgent: "artemis",
+    port: PORT2,
+    sessions,
+    heartbeatMs: 60_000,
+    remoteExec: { enabled: true, timeoutMs: 2_000 },
+    listAgentDetails: async () => [
+      { name: "artemis", description: "orchestrator", provider: "openai", model: "m", tools: ["*"], skills: ["*"], subagents: ["cypher"] },
+      { name: "cypher", description: "coder", provider: "openai", model: "m", tools: [], skills: [], subagents: [], image: "dev-node" },
+    ],
+    listSchedules: async () => ({
+      static: [{ name: "morning-brief", agent: "artemis", schedule: "0 7 * * *", enabled: true }],
+      dynamic: [{ id: "sched_1", agent: "artemis", prompt: "check build", nextFire: "2026-07-04T10:00:00Z", recurring: null, createdBy: "artemis" }],
+    }),
+  });
+  await chan2.start({ publish: async (m) => published.push(m) });
+  const base2 = `http://127.0.0.1:${PORT2}`;
+
+  const agents = await fetch(`${base2}/agents`).then((r) => r.json());
+  expect("GET /agents returns manifest summaries", agents.agents?.length === 2 && agents.agents[1].image === "dev-node", JSON.stringify(agents));
+  const scheds = await fetch(`${base2}/schedules`).then((r) => r.json());
+  expect("GET /schedules returns static + dynamic", scheds.static?.length === 1 && scheds.dynamic?.length === 1);
+
+  // Execution flag: valid values pass through to the published message; junk is dropped.
+  await fetch(`${base2}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ externalUserId: "u9", text: "hi", execution: "server" }),
+  });
+  await fetch(`${base2}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ externalUserId: "u9", text: "hi", execution: "sideways" }),
+  });
+  expect("execution: 'server' rides the published message", published[0]?.execution === "server", JSON.stringify(published[0]));
+  expect("invalid execution values are dropped", published[1]?.execution === undefined);
+
+  // /status reports per-caller executor state when remoteExec is enabled.
+  const st = await fetch(`${base2}/status?externalUserId=u9`).then((r) => r.json());
+  expect("status reports executor enabled+disconnected", st.remoteExec?.enabled === true && st.remoteExec?.connected === false, JSON.stringify(st.remoteExec));
+  await chan2.stop();
+}
+
 sessions.close();
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);

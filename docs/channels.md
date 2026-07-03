@@ -131,9 +131,11 @@ server-side with `channels.web.remoteExec.enabled: true`.
 
 Scope and safety:
 
-- Only turns **you start from the remote CLI** execute on your machine (the executor is
-  keyed to your user). Telegram/web conversations, schedules, and **subagents** are
-  unaffected — they run server-side as always.
+- Only turns started by **your user with a connected executor** execute on your machine.
+  In login mode the executor is keyed to the logged-in user, so the web UI and desktop
+  app share it too — a `⌁ local / ☁ server` toggle in the composer (and `/local on|off`
+  in the CLI) opts individual conversations out per message. Schedules and **subagents**
+  are unaffected — they run server-side as always.
 - Every command asks for confirmation (`y/N/a` — `a` persists a two-token prefix to
   `~/.daedalus/remote-allow.json` so routine commands stop asking). `--yolo` skips the
   prompt, but a denylist of catastrophic patterns (`rm -rf`, `sudo`, `mkfs`, …) ALWAYS
@@ -152,7 +154,9 @@ Scope and safety:
 - **Web** — a minimal HTTP + SSE surface. `POST /messages` to send (optionally with
   base64 attachments), `GET /events?externalUserId=…` for the reply stream. A bearer
   token (`web.token`) guards it when set. The built-in chat UI (served at `GET /`) is a
-  full session workspace: a sidebar with pinned sessions + title search, and a status bar
+  full session workspace: a sidebar with pinned sessions + title search, collapsible
+  **Agents** and **Cron** viewers (`GET /agents`, `GET /schedules` — manifest summaries
+  and static + agent-armed schedules, read fresh per request), and a status bar
   showing gateway state, agent/cron counts, a context-window readout
   (`65.0k/200.0k · 32%` — the last turn's input tokens vs the agent's `contextWindow`),
   a session timer, and client/backend versions (`GET /status` powers the supervisor

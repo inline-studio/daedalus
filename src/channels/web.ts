@@ -78,6 +78,9 @@ export class WebChannel implements Channel {
   private remoteExecTimeoutMs = 180_000;
   // Supervisor hook: abort the in-flight turn for a conversation (POST /abort).
   private abortTurn: ((conversationId: string) => Promise<boolean>) | undefined;
+  // Viewer providers (GET /agents, GET /schedules) — injected like status/commands.
+  private listAgentDetails: (() => Promise<Array<Record<string, unknown>>>) | undefined;
+  private listSchedules: (() => Promise<Record<string, unknown>>) | undefined;
 
   constructor(opts: {
     defaultAgent: string;
@@ -105,6 +108,10 @@ export class WebChannel implements Channel {
     remoteExec?: { enabled: boolean; timeoutMs?: number };
     // Abort the in-flight turn for a conversation (the Stop button). Injected by serve.
     abortTurn?: (conversationId: string) => Promise<boolean>;
+    // Viewer providers: agent manifests (registry, from the brain) and schedules (serve,
+    // static + agent-armed). Absent → the endpoints return empty shapes.
+    listAgentDetails?: () => Promise<Array<Record<string, unknown>>>;
+    listSchedules?: () => Promise<Record<string, unknown>>;
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -121,6 +128,8 @@ export class WebChannel implements Channel {
       if (opts.remoteExec.timeoutMs) this.remoteExecTimeoutMs = opts.remoteExec.timeoutMs;
     }
     this.abortTurn = opts.abortTurn;
+    this.listAgentDetails = opts.listAgentDetails;
+    this.listSchedules = opts.listSchedules;
   }
 
   // Whether this user currently has a `dae remote` executor connected — serve uses it to
@@ -300,10 +309,35 @@ export class WebChannel implements Channel {
           await this.handleRpcResult(req, res, url, loginUser);
           return;
         }
+        if (req.method === "GET" && pathname === "/agents") {
+          const agents = this.listAgentDetails ? await this.listAgentDetails().catch(() => []) : [];
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ agents }));
+          return;
+        }
+        if (req.method === "GET" && pathname === "/schedules") {
+          const body = this.listSchedules
+            ? await this.listSchedules().catch(() => ({ static: [], dynamic: [] }))
+            : { static: [], dynamic: [] };
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(body));
+          return;
+        }
         if (req.method === "GET" && pathname === "/status") {
           // Supervisor snapshot for the UI's status bar. Best-effort: a provider failure
           // degrades to {} rather than erroring the bar.
           const body = this.status ? await this.status().catch(() => ({})) : {};
+          // Per-caller executor state, so the UI can show the local-execution toggle only
+          // when it means something.
+          const statusUser = loginUser ?? url.searchParams.get("externalUserId");
+          if (this.executors && this.sessions && statusUser) {
+            const userId = this.sessions.resolveUser(this.id, statusUser);
+            (body as Record<string, unknown>).remoteExec = {
+              enabled: true,
+              connected: this.executors.connected(userId),
+              ...(this.executors.info(userId) ?? {}),
+            };
+          }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(body));
           return;
@@ -703,6 +737,9 @@ export class WebChannel implements Channel {
       ...(typeof body.text === "string" ? { text: body.text } : {}),
       ...(conversationId ? { conversationId } : {}),
       ...(typeof body.addressedTo === "string" ? { addressedTo: body.addressedTo } : {}),
+      ...(body.execution === "local" || body.execution === "server"
+        ? { execution: body.execution }
+        : {}),
       ...(typeof body.externalMessageId === "string" ? { externalMessageId: body.externalMessageId } : {}),
       ...(attachments.length ? { attachments } : {}),
       receivedAt: new Date().toISOString(),

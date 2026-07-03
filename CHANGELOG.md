@@ -13,6 +13,17 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Agents & Cron viewers + per-conversation execution toggle.** The web sidebar gains
+  collapsible **Agents** (name, model, docker image, delegation targets — from new
+  `GET /agents`) and **Cron** (static brain schedules + live agent-armed callbacks with
+  next fire — `GET /schedules`) sections; the remote CLI gets `/agents` and `/crons`.
+  When your `dae remote` executor is connected, a `⌁ local / ☁ server` toggle appears in
+  the web composer (and `/local on|off` in the CLI) to choose per conversation whether
+  the turn's commands run on your machine or the server (`execution` field on
+  `POST /messages`); `GET /status` now reports your executor's connection state.
+
+### Added
+
 - **Stop button — abort an in-flight turn.** Premature enter, wrong direction, runaway
   tool loop: the web/desktop Send button becomes **Stop** while a turn streams, and the
   remote CLI takes `/stop`. `POST /abort` (ownership-checked) cancels through whichever
