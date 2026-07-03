@@ -259,7 +259,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
       // (web channel only), the turn's tools run on THEIR machine. The bridge URL defaults
       // by dispatch topology: in-process turns reach the supervisor on loopback; container/
       // worker turns reach it by compose service name on the daedalus network.
-      let remoteExec: { userId: string; url: string; token: string } | undefined;
+      let remoteExec: { userId: string; url: string; token: string; env?: Record<string, string> } | undefined;
       const webCfg = config.channels.web;
       if (
         webCfg?.remoteExec.enabled &&
@@ -271,8 +271,9 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         const url =
           webCfg.remoteExec.internalUrl ??
           (dispatcher.id === "in-process" ? `http://127.0.0.1:${port}` : `http://daedalus:${port}`);
-        remoteExec = { userId: ingested.userId, url, token: getRpcToken() };
-        log.info({ user: ingested.userId }, "remote executor connected — turn will execute locally on it");
+        const env = ch.executorInfo(ingested.userId) ?? undefined;
+        remoteExec = { userId: ingested.userId, url, token: getRpcToken(), ...(env ? { env } : {}) };
+        log.info({ user: ingested.userId, ...env }, "remote executor connected — turn will execute locally on it");
       }
       const result = await dispatcher.dispatch({
         agentName,

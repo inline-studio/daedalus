@@ -166,6 +166,14 @@ export class WebChannel implements Channel {
     return this.executors?.connected(userId) ?? false;
   }
 
+  // The connected executor's machine description (workspace/hostname/platform/arch) —
+  // feeds the turn's execution-environment context line.
+  executorInfo(userId: string): Record<string, string> | null {
+    const info = this.executors?.info(userId);
+    if (!info) return null;
+    return { workspace: info.workspace, ...info.env };
+  }
+
   async start(ctx: ChannelContext): Promise<void> {
     this.server = http.createServer(async (req, res) => {
       try {
@@ -503,6 +511,13 @@ export class WebChannel implements Channel {
     }
     const userId = this.sessions.resolveUser(this.id, externalUserId);
     const workspace = url.searchParams.get("workspace") ?? "";
+    // Optional machine description (hostname/platform/arch) for the turn's
+    // execution-environment context line. Length-capped defensively.
+    const env: Record<string, string> = {};
+    for (const key of ["hostname", "platform", "arch"]) {
+      const v = url.searchParams.get(key);
+      if (v) env[key] = v.slice(0, 80);
+    }
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -510,7 +525,7 @@ export class WebChannel implements Channel {
       "X-Accel-Buffering": "no",
     });
     res.write(`: executor registered\n\n`);
-    this.executors.register(userId, res, workspace);
+    this.executors.register(userId, res, workspace, env);
     const heartbeat = setInterval(() => {
       try {
         res.write(`event: heartbeat\ndata: {}\n\n`);

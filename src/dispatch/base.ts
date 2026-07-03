@@ -51,12 +51,14 @@ export interface DispatchArgs {
   // dispatcher forwards sentinel-framed event lines from the container's stdout. All three
   // deliver the same TurnEvents, so streaming surfaces work regardless of dispatch mode.
   onEvent?: TurnEventSink;
-  // Remote execution (`dae remote`): set by serve when the originating user has a
-  // connected executor. The turn's bash + read/write/edit then run on that user's
-  // machine via the supervisor's /rpc/exec bridge at `url`, guarded by `token`
-  // (the per-boot DAE_RPC_TOKEN). Deliberately NOT threaded into subagent spawns —
-  // only the top-level, user-facing turn executes remotely.
-  remoteExec?: { userId: string; url: string; token: string };
+  // Remote execution (`dae remote` / the desktop executor): set by serve when the
+  // originating user has a connected executor. The turn's bash + read/write/edit then
+  // run on that user's machine via the supervisor's /rpc/exec bridge at `url`, guarded
+  // by `token` (the per-boot DAE_RPC_TOKEN). `env` describes the executor's machine
+  // (hostname/platform/arch/workspace) for the turn's execution-environment context
+  // line. Threaded into subagent spawns ONLY when the sub-agent declares
+  // `execution: executor` (see kernel/orchestrator.ts).
+  remoteExec?: { userId: string; url: string; token: string; env?: Record<string, string> };
 }
 
 // A file the agent attached to its reply (via the `attach_to_reply` tool). Carried as a

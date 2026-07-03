@@ -47,6 +47,9 @@ interface Executor {
   res: http.ServerResponse;
   workspace: string;
   connectedAt: string;
+  // Machine description the client registered with (hostname/platform/arch) — feeds the
+  // turn's execution-environment context line.
+  env: Record<string, string>;
   pending: Map<string, { resolve: (r: RemoteExecResult) => void; timer: NodeJS.Timeout }>;
 }
 
@@ -56,7 +59,7 @@ export class ExecutorRegistry {
   // Register a freshly-connected executor stream. One executor per user: a new
   // connection replaces the old one (a reconnecting laptop must not be locked out by
   // its own half-dead predecessor), whose pending requests are failed fast.
-  register(userId: string, res: http.ServerResponse, workspace: string): void {
+  register(userId: string, res: http.ServerResponse, workspace: string, env: Record<string, string> = {}): void {
     const prev = this.byUser.get(userId);
     if (prev) {
       this.failAll(prev, "executor replaced by a new connection");
@@ -70,9 +73,10 @@ export class ExecutorRegistry {
       res,
       workspace,
       connectedAt: new Date().toISOString(),
+      env,
       pending: new Map(),
     });
-    log.info({ userId, workspace }, "remote-exec: executor connected");
+    log.info({ userId, workspace, ...env }, "remote-exec: executor connected");
   }
 
   unregister(userId: string, res: http.ServerResponse): void {
@@ -87,9 +91,9 @@ export class ExecutorRegistry {
     return this.byUser.has(userId);
   }
 
-  info(userId: string): { workspace: string; connectedAt: string } | null {
+  info(userId: string): { workspace: string; connectedAt: string; env: Record<string, string> } | null {
     const ex = this.byUser.get(userId);
-    return ex ? { workspace: ex.workspace, connectedAt: ex.connectedAt } : null;
+    return ex ? { workspace: ex.workspace, connectedAt: ex.connectedAt, env: ex.env } : null;
   }
 
   // Submit a request to the user's executor and await the result. Rejects fast when no

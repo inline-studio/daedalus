@@ -13,6 +13,19 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Executor placement + environment awareness.** A sub-agent can declare
+  `execution: executor` in its frontmatter to REQUIRE the user's machine — for
+  sub-agent stacks whose tooling lives on the host (host-only CLIs, local projects).
+  The orchestrator threads the parent turn's executor grant into exactly those spawns
+  (everything else stays server-side) and fails fast with clear guidance when no
+  executor is connected. Executors now advertise their machine
+  (hostname/platform/arch) on registration, and every remotely-executing turn gets an
+  ephemeral execution-environment context line ("bash runs on scotts-mba
+  (darwin/arm64), workspace …") so the model stops assuming the server container's
+  toolchain and probes with `command -v` instead.
+
+### Added
+
 - **Desktop app: local execution + wizard.** The Electron shell embeds an executor —
   the desktop equivalent of `dae remote`: conversations started in the app run their
   commands and file edits on your machine, in a chosen workspace, with a **native

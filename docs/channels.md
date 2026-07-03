@@ -142,8 +142,14 @@ Scope and safety:
 - Only turns started by **your user with a connected executor** execute on your machine.
   In login mode the executor is keyed to the logged-in user, so the web UI and desktop
   app share it too — a `⌁ local / ☁ server` toggle in the composer (and `/local on|off`
-  in the CLI) opts individual conversations out per message. Schedules and **subagents**
-  are unaffected — they run server-side as always.
+  in the CLI) opts individual conversations out per message. Schedules run server-side
+  as always. **Sub-agents** run server-side unless their manifest declares
+  `execution: executor` — those are for host-only tooling and run through your executor
+  too (failing fast, with guidance, when none is connected).
+- Turns that execute remotely get an ephemeral **execution-environment** context line —
+  "bash runs on scotts-mba (darwin/arm64), workspace …" — so the agent stops assuming
+  the server container's toolchain and probes with `command -v` instead. Executors
+  advertise hostname/platform/arch when they register.
 - Every command asks for confirmation (`y/N/a` — `a` persists a two-token prefix to
   `~/.daedalus/remote-allow.json` so routine commands stop asking). `--yolo` skips the
   prompt, but a denylist of catastrophic patterns (`rm -rf`, `sudo`, `mkfs`, …) ALWAYS

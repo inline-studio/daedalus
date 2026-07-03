@@ -75,10 +75,12 @@ export interface RunAgentTurnInput {
   // Ephemeral skill-trigger directive — injected into the model's view of the last user message
   // for this turn only, never persisted. See IngestResult.turnDirective.
   turnDirective?: string;
-  // Remote execution (`dae remote`): when set, this turn's bash + read/write/edit run on
-  // the user's machine via the supervisor's /rpc/exec bridge instead of locally. Only set
-  // for top-level turns whose originating user has a connected executor.
-  remoteExec?: { userId: string; url: string; token: string };
+  // Remote execution (`dae remote` / desktop executor): when set, this turn's bash +
+  // read/write/edit run on the user's machine via the supervisor's /rpc/exec bridge.
+  // Set for top-level turns whose user has a connected executor, and threaded into
+  // sub-agents that declare `execution: executor`. `env` describes the machine for the
+  // execution-environment context line.
+  remoteExec?: { userId: string; url: string; token: string; env?: Record<string, string> };
   // Abort signal for the whole turn (the user's Stop button). In-process path only — a
   // signal can't cross the container/worker hop; those get aborted at their own layer.
   signal?: AbortSignal;
@@ -236,6 +238,8 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       // Forward this turn's live sink so delegated work streams to the user. The
       // wrapper in spawn_subagent re-tags subagent events with their origin.
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
+      // The executor grant, for sub-agents that declare `execution: executor`.
+      ...(input.remoteExec ? { remoteExec: input.remoteExec } : {}),
     });
     if (orchestratorTool) builtinTools.push(orchestratorTool);
 
@@ -268,6 +272,29 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       timeAware: agent.timeAware,
       ...(agent.timezone ? { timezone: agent.timezone } : {}),
     });
+
+    // Execution-environment context (WS7): when this turn's tools run on the user's
+    // machine, say so — the model must stop assuming the server container's toolchain
+    // and probe (`command -v`) where it matters. Same ephemeral in-place mechanism as
+    // the time context: model-visible this turn only, never persisted.
+    if (input.remoteExec) {
+      const env = input.remoteExec.env ?? {};
+      const where = [env.hostname, env.platform && env.arch ? `${env.platform}/${env.arch}` : env.platform]
+        .filter(Boolean)
+        .join(", ");
+      const line =
+        `# Execution environment\n` +
+        `bash/read/write/edit run on the USER'S machine${where ? ` (${where})` : ""}` +
+        `${env.workspace ? `, workspace ${env.workspace}` : ""} — NOT the server container. ` +
+        `The server's skills-installed binaries and /shared paths do not apply here; probe ` +
+        "with `command -v` before relying on a tool.";
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]!.role === "user") {
+          messages[i]!.content.push({ type: "text", text: line });
+          break;
+        }
+      }
+    }
 
     // Ephemeral skill-trigger directive: prepend the matched skill's instructions to the model's
     // view of the last user message for THIS turn only (not persisted — see IngestResult). This

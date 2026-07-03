@@ -292,9 +292,15 @@ export function startExecutor(opts: ExecutorOptions): void {
     });
   }
 
+  // Advertise the machine (hostname/platform/arch) so the turn's execution-environment
+  // context line can name where commands actually run.
+  const envQs =
+    `&hostname=${encodeURIComponent(os.hostname().split(".")[0] ?? "")}` +
+    `&platform=${encodeURIComponent(os.platform())}` +
+    `&arch=${encodeURIComponent(os.arch())}`;
   void consumeSse(
     session,
-    `/rpc/stream?externalUserId=${encodeURIComponent(session.externalUserId)}&workspace=${encodeURIComponent(workspace)}${session.authQuery}`,
+    `/rpc/stream?externalUserId=${encodeURIComponent(session.externalUserId)}&workspace=${encodeURIComponent(workspace)}${envQs}${session.authQuery}`,
     (event, data) => {
       if (event !== "request") return;
       let reqObj: RpcRequest;

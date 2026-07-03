@@ -120,6 +120,10 @@ async function runLoop(opts, me) {
       const qs = new URLSearchParams();
       if (auth.externalUserId) qs.set("externalUserId", auth.externalUserId);
       qs.set("workspace", opts.workspace);
+      // Machine description for the turn's execution-environment context line.
+      qs.set("hostname", os.hostname().split(".")[0] || "");
+      qs.set("platform", os.platform());
+      qs.set("arch", os.arch());
       const res = await fetch(`${base}/rpc/stream?${qs}`, {
         headers: auth.headers,
         signal: me.controller.signal,

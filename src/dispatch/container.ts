@@ -312,10 +312,14 @@ export function buildContainerArgs(input: {
   // on stdout, which dispatch() parses + forwards. Only set when the caller has a live sink.
   if (input.streamEvents) a.push("-e", "DAE_EVENT_STREAM=ndjson");
   // Remote execution: user id + bridge URL on the argv (not secret); the token by env
-  // NAME only (value supplied via the dispatcher's env — SEC-09).
+  // NAME only (value supplied via the dispatcher's env — SEC-09). The machine
+  // description crosses as JSON for the execution-environment context line.
   if (dispatchArgs.remoteExec) {
     a.push("-e", `DAE_RPC_URL=${dispatchArgs.remoteExec.url}`);
     a.push("-e", "DAE_RPC_TOKEN");
+    if (dispatchArgs.remoteExec.env) {
+      a.push("-e", `DAE_RPC_ENV=${JSON.stringify(dispatchArgs.remoteExec.env)}`);
+    }
   }
   a.push("-e", `DAE_AGENT_IMAGE_DEFAULT=${opts.defaultImage}`);
   a.push("-e", `DAE_AGENT_NETWORK=${opts.network}`);

@@ -169,12 +169,97 @@ const rpcExec = (body) =>
   expect("absolute paths outside the workspace are refused", threwAbs);
 }
 
-// --- 5. remoteConnected + executor replacement ---
+// --- 5. Environment advertisement (WS7) ---
 {
   const userId = sessions.resolveUser("web", UID);
-  expect("remoteConnected(userId) is true while the executor is up", chan.remoteConnected(userId) === true);
-  executorAbort.abort();
+  const info = chan.executorInfo(userId);
+  expect(
+    "executorInfo carries workspace (env params optional)",
+    info !== null && typeof info.workspace === "string",
+    JSON.stringify(info),
+  );
+  // A second scripted executor registering WITH machine params replaces the first and
+  // its description becomes visible.
+  const abort2 = new AbortController();
+  void fetch(
+    `${base}/rpc/stream?externalUserId=${UID}&workspace=/tmp/ws2&hostname=scotts-mba&platform=darwin&arch=arm64`,
+    { signal: abort2.signal },
+  ).catch(() => {});
+  await new Promise((r) => setTimeout(r, 300));
+  const info2 = chan.executorInfo(userId);
+  expect(
+    "hostname/platform/arch registered from the stream params",
+    info2?.hostname === "scotts-mba" && info2?.platform === "darwin" && info2?.arch === "arm64",
+    JSON.stringify(info2),
+  );
+  abort2.abort();
+  await new Promise((r) => setTimeout(r, 200));
+}
+
+// --- 6. Executor placement (WS7): execution: executor frontmatter ---
+{
+  const { buildSpawnSubagentTool } = await import("../dist/kernel/orchestrator.js");
+  const fsp = await import("node:fs/promises");
+  const brain = mkdtempSync(join(tmpdir(), "dae-smoke-placement-"));
+  await fsp.mkdir(join(brain, "agents"), { recursive: true });
+  await fsp.writeFile(
+    join(brain, "agents", "host-worker.md"),
+    "---\nprovider: openai\nmodel: m\nexecution: executor\n---\nRuns on the host.\n",
+  );
+  await fsp.writeFile(
+    join(brain, "agents", "server-worker.md"),
+    "---\nprovider: openai\nmodel: m\n---\nRuns server-side.\n",
+  );
+  const stubSessions = { getOrCreateSession: () => ({ id: "s" }), tail: () => [], appendMessage: () => {} };
+  const grant = { userId: "u1", url: "http://bridge", token: "t", env: { hostname: "mba" } };
+  const dispatched = [];
+  const dispatcher = {
+    id: "stub",
+    dispatch: async (args) => {
+      dispatched.push(args);
+      return { status: "complete", finalText: "ok", turns: 1 };
+    },
+  };
+  const mkTool = (remoteExec) =>
+    buildSpawnSubagentTool({
+      config: { brain: { path: brain, writable: false } },
+      parent: { name: "orchestrator", subagents: ["host-worker", "server-worker"] },
+      sessions: stubSessions,
+      userId: "u1",
+      dispatcher,
+      ...(remoteExec ? { remoteExec } : {}),
+    });
+
+  const withGrant = await mkTool(grant);
+  await withGrant.invoke({ agent: "host-worker", prompt: "go" }, {});
+  expect(
+    "executor-flagged subagent receives the parent's grant",
+    dispatched[0]?.remoteExec?.url === "http://bridge" && dispatched[0]?.remoteExec?.env?.hostname === "mba",
+    JSON.stringify(dispatched[0]?.remoteExec),
+  );
+  await withGrant.invoke({ agent: "server-worker", prompt: "go" }, {});
+  expect("unflagged subagent stays server-side", dispatched[1]?.remoteExec === undefined);
+
+  const withoutGrant = await mkTool(undefined);
+  const refused = await withoutGrant.invoke({ agent: "host-worker", prompt: "go" }, {});
+  expect(
+    "executor-flagged spawn without an executor fails fast with guidance",
+    refused.isError === true && /dae remote/.test(refused.content),
+    refused.content,
+  );
+  expect("failed placement never dispatched", dispatched.length === 2);
+}
+
+// --- 7. remoteConnected lifecycle (self-contained stream; the earlier ones are gone) ---
+{
+  const userId = sessions.resolveUser("web", UID);
+  executorAbort.abort(); // ensure the section-1 executor (already replaced) is fully torn down
   await executorDone;
+  const abort3 = new AbortController();
+  void fetch(`${base}/rpc/stream?externalUserId=${UID}&workspace=/tmp/ws3`, { signal: abort3.signal }).catch(() => {});
+  await new Promise((r) => setTimeout(r, 300));
+  expect("remoteConnected(userId) is true while an executor is up", chan.remoteConnected(userId) === true);
+  abort3.abort();
   await new Promise((r) => setTimeout(r, 200));
   expect("remoteConnected flips false after disconnect", chan.remoteConnected(userId) === false);
 }

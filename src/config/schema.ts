@@ -547,6 +547,14 @@ export const AgentManifestSchema = z.object({
   // providers/model-info.ts); set this for LiteLLM aliases and local models. When neither
   // is known the UI shows a plain token count instead of a percentage.
   contextWindow: z.number().int().positive().optional(),
+  // Where this agent's tools execute when spawned as a SUBAGENT:
+  //   "server"   — (default) the usual container/worker placement.
+  //   "executor" — REQUIRES the user's machine: the parent turn's connected executor
+  //                (`dae remote` / the desktop app). For sub-agents whose tooling lives
+  //                on the host (host-only CLIs, local projects). Spawning one without a
+  //                connected executor fails fast with a clear message. Top-level turns
+  //                ignore this — their placement is the per-conversation toggle.
+  execution: z.enum(["server", "executor"]).default("server"),
   // Model reasoning ("thinking").
   //   enabled      — request Anthropic extended thinking (budget_tokens). ANTHROPIC ONLY: the
   //                  OpenAI-compatible path emits reasoning on its own, so this flag is ignored

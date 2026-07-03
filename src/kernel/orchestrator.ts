@@ -20,6 +20,10 @@ export interface OrchestratorContext {
   // subagent's turn events into it — re-tagged with a TurnEventOrigin and bracketed by
   // subagent_start/subagent_end — so streaming surfaces can show delegated work live.
   onEvent?: TurnEventSink;
+  // The parent turn's remote-exec grant (the user's connected executor), when it has
+  // one. Only threaded into sub-agents that DECLARE `execution: executor` — everything
+  // else stays server-side regardless of the parent's placement.
+  remoteExec?: { userId: string; url: string; token: string; env?: Record<string, string> };
 }
 
 // `spawn_subagent` — the orchestrator's only handle to specialists. The subagent's
@@ -82,6 +86,21 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
       }
       const sub = await loadAgent(ctx.config.brain.path, name);
 
+      // Executor placement (WS7): a sub-agent declaring `execution: executor` must run
+      // its tools on the user's machine. Without a connected executor there is nothing
+      // to run on — fail fast with a message the orchestrator can relay, instead of
+      // silently executing host-only tooling inside a container where it doesn't exist.
+      const wantsExecutor = sub.manifest.execution === "executor";
+      if (wantsExecutor && !ctx.remoteExec) {
+        return {
+          content:
+            `subagent '${name}' requires the user's machine (execution: executor), but no ` +
+            `executor is connected for this conversation. Ask the user to start ` +
+            "`dae remote` (or enable Local Execution in the desktop app) and try again.",
+          isError: true,
+        };
+      }
+
       // The subagent owns its own per-user session (keyed by userId + subagent name).
       // Append the inbound turn before dispatching so the agent reads it from history.
       const subSession = ctx.sessions.getOrCreateSession(ctx.userId, sub.manifest.name);
@@ -137,6 +156,7 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
                   sink({ ...ev, origin: { path: [name, ...(ev.origin?.path ?? [])], spawnId } }),
               }
             : {}),
+          ...(wantsExecutor && ctx.remoteExec ? { remoteExec: ctx.remoteExec } : {}),
         });
       } catch (err) {
         sink?.({ type: "subagent_end", status: "error", origin });

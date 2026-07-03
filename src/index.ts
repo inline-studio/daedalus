@@ -93,12 +93,21 @@ program
       // Remote execution: the dispatcher put the bridge URL + user on the argv/env; the
       // token rides in env only (SEC-09). All three present → the turn's tools run on
       // the user's machine.
+      let remoteExecEnv: Record<string, string> | undefined;
+      try {
+        if (process.env.DAE_RPC_ENV) {
+          remoteExecEnv = JSON.parse(process.env.DAE_RPC_ENV) as Record<string, string>;
+        }
+      } catch {
+        /* a garbled env description just means a generic context line */
+      }
       const remoteExec =
         opts.remoteExecUser && process.env.DAE_RPC_URL && process.env.DAE_RPC_TOKEN
           ? {
               userId: opts.remoteExecUser,
               url: process.env.DAE_RPC_URL,
               token: process.env.DAE_RPC_TOKEN,
+              ...(remoteExecEnv ? { env: remoteExecEnv } : {}),
             }
           : undefined;
       // Live event streaming across the container hop: when the spawning dispatcher set
