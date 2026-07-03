@@ -154,17 +154,17 @@ Scope and safety:
 - **Web** — a minimal HTTP + SSE surface. `POST /messages` to send (optionally with
   base64 attachments), `GET /events?externalUserId=…` for the reply stream. A bearer
   token (`web.token`) guards it when set. The built-in chat UI (served at `GET /`) is a
-  full session workspace: a sidebar with pinned sessions + title search, collapsible
-  **Agents** and **Cron** viewers (`GET /agents`, `GET /schedules` — manifest summaries
-  and static + agent-armed schedules, read fresh per request), a live **Activity**
-  section (`GET /activity` — every in-flight turn for your user, channel + scheduled,
-  with a live doing-now label and click-to-jump; pairs with the Stop button), and a
-  status bar
-  showing gateway state, agent/cron counts, a context-window readout
+  full session workspace: a sidebar with pinned sessions + title search + a section per
+  enabled messaging channel (the cross-channel Main thread, click-to-open), and a
+  status bar showing gateway state, agent/cron counts, a context-window readout
   (`65.0k/200.0k · 32%` — the last turn's input tokens vs the agent's `contextWindow`),
   a session timer, and client/backend versions (`GET /status` powers the supervisor
-  half). The UI's source lives under `src/web/ui/` (plain HTML/CSS/JS), assembled into
-  the served module by `npm run build:web-ui`.
+  half). The bar's **agents** and **cron** items are buttons: agents opens the roster
+  merged with live activity (`GET /agents` + `GET /activity` — every in-flight turn for
+  your user, channel + scheduled, live doing-now labels, click-to-jump; the item pulses
+  while anything runs; pairs with the Stop button), cron opens the schedule detail
+  (`GET /schedules`). The UI's source lives under `src/web/ui/` (plain HTML/CSS/JS),
+  assembled into the served module by `npm run build:web-ui`.
 - **WhatsApp** — Cloud API channel (access token + phone-number id), off by default.
 
 Enable channels in `daedalus.config.yaml` under `channels:` (with `enabled: true` and a

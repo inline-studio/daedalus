@@ -84,7 +84,11 @@
     var b = $("notify");
     if (!b) return;
     if (!("Notification" in window)) { b.style.display = "none"; return; }
-    b.textContent = (notifyOn && Notification.permission === "granted") ? "🔔 on" : "🔔 off";
+    var on = notifyOn && Notification.permission === "granted";
+    b.classList.toggle("on", on);
+    b.title = on
+      ? "Reply notifications are ON (click to turn off)"
+      : "Notify me when a reply lands and this tab isn't focused";
   }
   $("notify").addEventListener("click", function () {
     if (!("Notification" in window)) return;
@@ -1383,19 +1387,31 @@
         // Executor state drives the composer's local/server toggle.
         executorConnected = Boolean(s.remoteExec && s.remoteExec.connected);
         renderExecToggle();
-        // Channel badges in the sidebar footer (the web channel itself is omitted — you're in it).
+        // Channel threads in the sidebar footer (Hermes-style): each enabled messaging
+        // channel gets a section with the cross-channel Main thread — click to open the
+        // same conversation your Telegram/WhatsApp messages land in.
         var foot = $("sb-channels");
-        if (foot && s.channels && s.channels.length) {
+        if (foot && s.channels) {
           foot.innerHTML = "";
           s.channels.forEach(function (name) {
-            if (name === "web") return;
-            var b = document.createElement("span");
-            b.className = "ch";
+            if (name === "web" || name === "cli") return;
+            var head = document.createElement("div");
+            head.className = "sb-ch-head";
             var d = document.createElement("i");
             d.className = "dot";
-            b.appendChild(d);
-            b.appendChild(document.createTextNode(name));
-            foot.appendChild(b);
+            head.appendChild(d);
+            head.appendChild(document.createTextNode(name + " "));
+            var n = document.createElement("span");
+            n.className = "n";
+            n.textContent = "1";
+            head.appendChild(n);
+            foot.appendChild(head);
+            var thread = row("Main thread", "shared cross-channel conversation");
+            thread.className = "sb-item-row jump";
+            thread.addEventListener("click", function () {
+              if (defaultConvId && defaultConvId !== convId) selectConversation(defaultConvId);
+            });
+            foot.appendChild(thread);
           });
         }
       })
@@ -1405,7 +1421,8 @@
   loadStatus();
   setInterval(loadStatus, 60000);
 
-  // --- Sidebar viewers: Agents + Cron (fetch on first expand, refresh on re-expand) ---
+  // --- Status-bar popovers: agents (+ live activity) and cron. The status-bar items are
+  // the buttons — clicking toggles an anchored panel, like the reference app. ---------------
   function row(title, sub, subClass) {
     var el = document.createElement("div");
     el.className = "sb-item-row";
@@ -1418,89 +1435,135 @@
     }
     return el;
   }
-  function loadAgentsList() {
-    fetch("/agents?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
-      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
-      .then(function (j) {
-        if (!j) return;
-        var list = $("agents-list");
-        list.innerHTML = "";
-        $("agents-n").textContent = String((j.agents || []).length);
-        (j.agents || []).forEach(function (a) {
-          var detail = [a.model, a.image ? "docker" : null, (a.subagents || []).length ? "→ " + a.subagents.join(", ") : null]
-            .filter(Boolean).join(" · ");
-          var el = row(a.name, detail);
-          el.title = a.description || a.name;
-          list.appendChild(el);
-        });
-        if (!(j.agents || []).length) list.appendChild(row("(no agents)", ""));
-      })
-      .catch(function () {});
+  function group(list, label) {
+    var g = document.createElement("div");
+    g.className = "pop-group";
+    g.textContent = label;
+    list.appendChild(g);
   }
-  function loadCronsList() {
-    fetch("/schedules?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
-      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
-      .then(function (j) {
-        if (!j) return;
-        var list = $("crons-list");
-        list.innerHTML = "";
-        var statics = j.static || [], dyn = j.dynamic || [];
-        $("crons-n").textContent = String(statics.length + dyn.length);
-        statics.forEach(function (s) {
-          list.appendChild(row(s.name, s.schedule + " · " + s.agent + (s.enabled ? "" : " · disabled"), s.enabled ? "" : "off"));
-        });
-        dyn.forEach(function (d) {
-          var when = d.recurring ? d.recurring : ("next " + String(d.nextFire || "").replace("T", " ").slice(0, 16));
-          list.appendChild(row(d.prompt || d.id, when + " · " + d.agent));
-        });
-        if (!statics.length && !dyn.length) list.appendChild(row("(nothing scheduled)", ""));
-      })
-      .catch(function () {});
+  var popOpen = null; // "agents" | "cron" | null
+  var popOpenedAt = 0; // guards a double-dispatched click from instantly re-closing it
+  function closePopover() {
+    popOpen = null;
+    $("popover").style.display = "none";
   }
-  function wireSect(id, loader) {
-    var sect = $(id);
-    sect.querySelector(".sb-sect-head").addEventListener("click", function () {
-      var open = sect.classList.toggle("open");
-      sect.querySelector(".chev").textContent = open ? "▾" : "▸";
-      if (open) loader();
-    });
+  function openPopover(kind, title, anchorId) {
+    popOpen = kind;
+    popOpenedAt = Date.now();
+    $("pop-title").textContent = title;
+    $("pop-body").innerHTML = "";
+    var pop = $("popover");
+    pop.style.display = "block";
+    // Anchor above the clicked status item (clamped to the viewport).
+    var r = $(anchorId).getBoundingClientRect();
+    pop.style.left = Math.max(8, Math.min(r.left - 8, window.innerWidth - pop.offsetWidth - 8)) + "px";
+    return $("pop-body");
   }
-  wireSect("sect-agents", loadAgentsList);
-  wireSect("sect-crons", loadCronsList);
+  $("pop-close").addEventListener("click", closePopover);
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && popOpen) closePopover(); });
+  document.addEventListener("click", function (e) {
+    if (!popOpen) return;
+    if (e.target.closest && (e.target.closest("#popover") || e.target.closest(".st-btn"))) return;
+    closePopover();
+  });
 
-  // Activity: what every agent is doing right now, across this user's conversations and
-  // scheduled turns. Polled continuously (a cheap in-memory lookup server-side) so the
-  // header dot pulses whenever anything is in flight; rows jump to the conversation.
   function fmtSince(iso) {
     var s = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
     var m = Math.floor(s / 60);
     return m ? m + "m" + (s % 60) + "s" : s + "s";
   }
-  function loadActivity() {
+
+  // Agents popover: IN FLIGHT first (live labels, click to jump), then the roster.
+  function renderAgentsPopover() {
+    var body = openPopover("agents", "Agents · Activity", "st-agents");
+    Promise.all([
+      fetch("/activity?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
+        .then(function (r) { return r.ok ? r.json() : { turns: [] }; })
+        .catch(function () { return { turns: [] }; }),
+      fetch("/agents?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
+        .then(function (r) { return r.ok ? r.json() : { agents: [] }; })
+        .catch(function () { return { agents: [] }; }),
+    ]).then(function (res) {
+      if (popOpen !== "agents") return; // closed / switched while fetching
+      var turns = res[0].turns || [], agents = res[1].agents || [];
+      body.innerHTML = "";
+      var busy = {};
+      if (turns.length) {
+        group(body, "In flight");
+        turns.forEach(function (t) {
+          busy[t.agent] = t.activity || "working";
+          var el = row(t.agent + " · " + fmtSince(t.startedAt), (t.activity || "working") + " · " + t.channel);
+          el.className = "sb-item-row jump";
+          el.title = "Jump to this conversation";
+          el.addEventListener("click", function () {
+            closePopover();
+            if (t.conversationId && t.conversationId !== convId) selectConversation(t.conversationId);
+          });
+          body.appendChild(el);
+        });
+      }
+      group(body, "Agents");
+      agents.forEach(function (a) {
+        var detail = busy[a.name]
+          ? busy[a.name]
+          : [a.model, a.image ? "docker" : null, (a.subagents || []).length ? "→ " + a.subagents.join(", ") : null]
+              .filter(Boolean).join(" · ");
+        var el = row(a.name, detail, busy[a.name] ? "" : undefined);
+        if (busy[a.name]) el.className = "sb-item-row jump";
+        el.title = a.description || a.name;
+        body.appendChild(el);
+      });
+      if (!agents.length) body.appendChild(row("(no agents)", ""));
+    });
+  }
+
+  function renderCronPopover() {
+    var body = openPopover("cron", "Schedules", "st-cron");
+    fetch("/schedules?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
+      .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
+      .then(function (j) {
+        if (!j || popOpen !== "cron") return;
+        body.innerHTML = "";
+        var statics = j.static || [], dyn = j.dynamic || [];
+        if (statics.length) group(body, "Brain schedules");
+        statics.forEach(function (s) {
+          body.appendChild(row(s.name, s.schedule + " · " + s.agent + (s.enabled ? "" : " · disabled"), s.enabled ? "" : "off"));
+        });
+        if (dyn.length) group(body, "Agent-armed");
+        dyn.forEach(function (d) {
+          var when = d.recurring ? d.recurring : ("next " + String(d.nextFire || "").replace("T", " ").slice(0, 16));
+          body.appendChild(row(d.prompt || d.id, when + " · " + d.agent));
+        });
+        if (!statics.length && !dyn.length) body.appendChild(row("(nothing scheduled)", ""));
+      })
+      .catch(function () {});
+  }
+
+  $("st-agents").addEventListener("click", function () {
+    if (popOpen === "agents" && Date.now() - popOpenedAt > 250) { closePopover(); return; }
+    renderAgentsPopover();
+  });
+  $("st-cron").addEventListener("click", function () {
+    if (popOpen === "cron" && Date.now() - popOpenedAt > 250) { closePopover(); return; }
+    renderCronPopover();
+  });
+
+  // Continuous light poll: pulses the agents button while anything is in flight, shows
+  // the active count, and live-refreshes the agents popover when it's open.
+  function pollActivity() {
     fetch("/activity?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
       .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
       .then(function (j) {
         if (!j) return;
-        var turns = j.turns || [];
-        $("activity-n").textContent = String(turns.length);
-        $("activity-dot").classList.toggle("on", turns.length > 0);
-        var list = $("activity-list");
-        list.innerHTML = "";
-        turns.forEach(function (t) {
-          var el = row(t.agent + " · " + fmtSince(t.startedAt), (t.activity || "working") + " · " + t.channel);
-          el.title = "Jump to this conversation";
-          el.addEventListener("click", function () {
-            if (t.conversationId && t.conversationId !== convId) selectConversation(t.conversationId);
-          });
-          list.appendChild(el);
-        });
-        if (!turns.length) list.appendChild(row("(idle)", ""));
+        var n = (j.turns || []).length;
+        $("activity-dot").classList.toggle("on", n > 0);
+        $("st-active-n").textContent = n ? " · " + n + " active" : "";
+        if (popOpen === "agents") renderAgentsPopover();
       })
-      .catch(function () { /* the section degrades quietly */ });
+      .catch(function () { /* the bar degrades quietly */ });
   }
-  wireSect("sect-activity", loadActivity);
-  loadActivity();
-  setInterval(loadActivity, 8000);
+  pollActivity();
+  setInterval(pollActivity, 8000);
 
   // Session timer: time since this page opened (mm:ss, then h:mm:ss).
   var sessionStart = Date.now();

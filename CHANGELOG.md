@@ -13,22 +13,26 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
-- **Live activity view.** A pulsing ACTIVITY section in the web sidebar (and
-  `/activity` in the remote CLI) shows what every agent is doing right now — in-flight
-  turns across all your conversations AND scheduled fires, each with a live label
-  (thinking / replying / `tool: bash` / `cypher · tool: read`), the channel, and
-  elapsed time; click a row to jump to that conversation (where the Stop button
-  awaits). Implemented as a decorator around the supervisor's dispatcher — the one
-  choke point every top-level turn flows through — feeding an in-memory registry
-  exposed per-user via `GET /activity`. Buffered channels' turns (Telegram) are
-  tracked too.
+- **Live activity view.** The status bar's **agents** button pulses while anything is
+  in flight and shows the active count; clicking it opens an Agents · Activity popover —
+  in-flight turns across all your conversations AND scheduled fires, each with a live
+  label (thinking / replying / `tool: bash` / `cypher · tool: read`), channel, and
+  elapsed time, click-to-jump (where the Stop button awaits) — followed by the agent
+  roster. The CLI mirrors it as `/activity`. Implemented as a decorator around the
+  supervisor's dispatcher — the one choke point every top-level turn flows through —
+  feeding an in-memory registry exposed per-user via `GET /activity`. Buffered
+  channels' turns (Telegram) are tracked too.
 
 ### Added
 
-- **Agents & Cron viewers + per-conversation execution toggle.** The web sidebar gains
-  collapsible **Agents** (name, model, docker image, delegation targets — from new
-  `GET /agents`) and **Cron** (static brain schedules + live agent-armed callbacks with
-  next fire — `GET /schedules`) sections; the remote CLI gets `/agents` and `/crons`.
+- **Agents & Cron viewers + per-conversation execution toggle.** The status bar's
+  **agents** and **cron** items are now buttons: clicking opens anchored popovers with
+  the detail — the agent roster (name, model, docker image, delegation targets — from
+  new `GET /agents`) and schedules (static brain schedules + live agent-armed callbacks
+  with next fire — `GET /schedules`); the remote CLI gets `/agents` and `/crons`. The
+  sidebar shows a Hermes-style section per enabled messaging channel (e.g. TELEGRAM)
+  with the cross-channel Main thread, click-to-open; the header is slimmer with proper
+  icon buttons.
   When your `dae remote` executor is connected, a `⌁ local / ☁ server` toggle appears in
   the web composer (and `/local on|off` in the CLI) to choose per conversation whether
   the turn's commands run on your machine or the server (`execution` field on
