@@ -38,6 +38,13 @@ services:
       context: .
       args:
         DAEDALUS_VERSION: ${DAEDALUS_VERSION:-latest}
+      # Stamped on every image this stack BUILDS (labels survive in the image config
+      # after a rebuild un-tags it), so `dae install` can prune ONLY daedalus's
+      # superseded dangling images afterwards. Must match DAEDALUS_IMAGE_LABEL in
+      # src/install.ts — keep every build section's labels identical (services
+      # sharing an image tag must agree on the build).
+      labels:
+        studio.in-line.project: daedalus
     # Two jobs, both needing root (so no `user:` override):
     #   1. Populate the injectable runtime volume from the image's /dae-runtime.
     #   2. chown the data + shared volumes to ${UID} — named volumes are root-owned
@@ -61,6 +68,8 @@ services:
       context: .
       args:
         DAEDALUS_VERSION: ${DAEDALUS_VERSION:-latest}
+      labels:
+        studio.in-line.project: daedalus
     restart: unless-stopped
     init: true
     environment:
@@ -146,6 +155,8 @@ services:
       context: .
       args:
         DAEDALUS_VERSION: ${DAEDALUS_VERSION:-latest}
+      labels:
+        studio.in-line.project: daedalus
     # Source the SSH shim before launching so operator-mounted keys
     # (<configDir>/ssh/ → /etc/daedalus/ssh) are symlinked into $HOME/.ssh.
     # The warm worker runs top-level agent turns in-process and never goes
@@ -200,6 +211,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.graphiti
+      labels:
+        studio.in-line.project: daedalus
     image: ${GRAPHITI_IMAGE:-daedalus-graphiti:local}
     restart: unless-stopped
     profiles: ["graphiti"]
