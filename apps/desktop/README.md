@@ -5,10 +5,12 @@ wherever it lives (your server); this app is a native window on the web channel 
 integration a browser tab can't give you:
 
 - **Local execution** — the app can be your machine's EXECUTOR: conversations you start
-  here run their commands and file edits locally, in a workspace you choose, with a
-  native approval dialog per command (Allow / Always allow prefix / Deny; dangerous
-  patterns always ask). First connect offers to enable it; change any time under
-  **Server → Local Execution…**. Auth is borrowed from the window (login cookie or the
+  here run their commands and file edits locally, in a workspace (default
+  `~/.daedalus/workspace`, created automatically), with a native approval dialog per
+  command (Allow / Always allow prefix / Deny; dangerous patterns always ask). The
+  first-run setup page configures everything on one card — server URL, local-execution
+  toggle, free-rein toggle, workspace — and reopening it (**Server → Change Server…**)
+  prefills the saved values. Auth is borrowed from the window (login cookie or the
   web UI's token), so the executor is always the same user as your chats — and the
   allowlist/audit files are shared with `dae remote` (`~/.daedalus/`).
 - **Native notifications** — the UI's existing 🔔 opt-in maps to real macOS/Linux

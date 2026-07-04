@@ -13,6 +13,15 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Desktop setup, on one page.** The first-run screen now explains and configures
+  everything at once — server URL, a **Local execution** toggle (on by default), a
+  **Free rein** toggle, and the workspace (editable field + native folder picker) —
+  replacing the context-free folder dialog that used to appear after first connect.
+  Reopening setup prefills the saved values instead of starting over.
+- **Default workspace is `~/.daedalus/workspace`** everywhere (desktop app, `dae`
+  wizard, profile fallback) — created automatically by the executor; no more
+  guessing what the folder picker was for.
+
 - **Desktop-only UI mode.** `channels.web.ui: desktop-only` retires the browser as a
   chat surface: the shell + login page are served only to the Daedalus desktop app
   (which stamps every request with `X-Dae-Desktop`); browsers get a download page
