@@ -374,6 +374,7 @@ export const fetchers = {
   activity: (s: RemoteSession) => getJson<{ turns: Array<Record<string, unknown>> }>(s, "/activity"),
   skills: (s: RemoteSession) => getJson<{ skills: Array<Record<string, unknown>>; pending: Array<Record<string, unknown>> }>(s, "/skills"),
   status: (s: RemoteSession) => getJson<Record<string, unknown>>(s, "/status"),
+  commands: (s: RemoteSession) => getJson<{ commands: Array<{ name: string; description?: string }> }>(s, "/commands"),
   conversations: (s: RemoteSession) => getJson<{ conversations: Array<Record<string, unknown>>; defaultId: string }>(s, "/conversations"),
 };
 

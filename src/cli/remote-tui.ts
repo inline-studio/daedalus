@@ -56,6 +56,43 @@ export function blockArt(name: string): [string, string] | null {
   return [top.join(" "), bottom.join(" ")];
 }
 
+// --- Command palette ---------------------------------------------------------------------
+// Typing "/" opens a live-filtered menu under the input (the Hermes/Claude-CLI pattern):
+// ↑/↓ select, Tab completes, Enter runs, Esc dismisses. Client commands are listed here;
+// the server's slash-commands (GET /commands) are merged in and, when run, are sent to
+// the agent like any message.
+
+export interface PaletteEntry {
+  name: string; // includes the leading "/"
+  desc: string;
+  usage?: string; // shown instead of desc when present, Hermes-style "(usage: …)"
+  takesArgs?: boolean; // Tab-completion appends a space
+  server?: boolean; // an agent command — submit() sends it to the server
+}
+
+export const CLIENT_COMMANDS: PaletteEntry[] = [
+  { name: "/help", desc: "Show commands and keys" },
+  { name: "/new", desc: "Start a new session (fresh conversation)" },
+  { name: "/sessions", desc: "List sessions, or switch (usage: /sessions [n])", takesArgs: true },
+  { name: "/agents", desc: "List the brain's agents" },
+  { name: "/activity", desc: "What every agent is doing right now" },
+  { name: "/skills", desc: "List skills (library + pending)" },
+  { name: "/crons", desc: "List schedules (brain + agent-armed)" },
+  { name: "/status", desc: "Backend version, dispatcher, executor state" },
+  { name: "/local", desc: "Execute commands on THIS machine (usage: /local on|off)", takesArgs: true },
+  { name: "/yolo", desc: "Skip per-command approval — dangerous ones still ask (usage: /yolo on|off)", takesArgs: true },
+  { name: "/stop", desc: "Stop the in-flight turn (also: Esc)" },
+  { name: "/quit", desc: "Exit (also: Ctrl-C twice)" },
+];
+
+// The palette is open exactly while the buffer is a bare "/word" (no space yet).
+export function filterPalette(entries: PaletteEntry[], buffer: string): PaletteEntry[] {
+  const m = buffer.match(/^\/([A-Za-z0-9_-]*)$/);
+  if (!m) return [];
+  const prefix = (m[1] ?? "").toLowerCase();
+  return entries.filter((e) => e.name.slice(1).toLowerCase().startsWith(prefix));
+}
+
 function fmtClock(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
   const m = Math.floor((totalSeconds % 3600) / 60);
@@ -130,8 +167,39 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
     return pendingLines.length ? "… " : "> ";
   }
 
+  // --- Command palette state ---
+  let palette: PaletteEntry[] = [...CLIENT_COMMANDS];
+  let paletteMatches: PaletteEntry[] = [];
+  let paletteIdx = 0;
+  let paletteDismissed = ""; // the exact buffer Esc was pressed on (reopens when it changes)
+  const PALETTE_ROWS = 10;
+
+  function renderPalette(): void {
+    const matches = paletteDismissed === editor.buffer ? [] : filterPalette(palette, editor.buffer);
+    if (matches.length !== paletteMatches.length || !matches.every((m, i) => m === paletteMatches[i])) {
+      paletteIdx = 0;
+    }
+    paletteMatches = matches;
+    if (!matches.length) {
+      screen.setMenu([]);
+      return;
+    }
+    if (paletteIdx >= matches.length) paletteIdx = matches.length - 1;
+    const shown = matches.slice(0, PALETTE_ROWS);
+    const width = Math.max(...shown.map((e) => e.name.length)) + 3;
+    const rows = shown.map((e, i) => {
+      const sel = i === paletteIdx;
+      const label = (sel ? "▸ " : "  ") + e.name.padEnd(width);
+      const line = label + DIM + e.desc + (e.server ? " (agent)" : "") + RESET;
+      return sel ? "\x1b[36m" + line.replace(DIM, "\x1b[0;36m") + RESET : line;
+    });
+    if (matches.length > PALETTE_ROWS) rows.push(DIM + `  … ${matches.length - PALETTE_ROWS} more — keep typing` + RESET);
+    screen.setMenu(rows);
+  }
+
   function refreshInput(): void {
     screen.setInput(promptStr(), editor.buffer, editor.cursor);
+    renderPalette();
   }
 
   function out(line: string): void {
@@ -302,9 +370,10 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
     const [cmd, ...rest] = text.split(/\s+/);
     switch (cmd) {
       case "/help":
-        dim("/stop · /new · /sessions [n] · /agents · /crons · /activity · /skills · /status");
-        dim("/local on|off · /yolo on|off · /quit — anything else goes to the agent");
-        dim("keys: Esc stops the turn · Ctrl-C twice quits · ↑/↓ history");
+        for (const c of palette) dim(`${c.name.padEnd(12)} ${c.desc}${c.server ? " (agent)" : ""}`);
+        dim("");
+        dim("type / for the command menu — ↑/↓ select · Tab completes · Enter runs · Esc closes");
+        dim("keys: Esc stops the turn · Ctrl-C twice quits · ↑/↓ history · \\ at line end continues");
         return true;
       case "/quit":
       case "/exit":
@@ -457,6 +526,40 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
       refreshInput();
       return;
     }
+    // The palette captures navigation keys while open: ↑/↓ select, Tab completes,
+    // Enter runs the selection, Esc dismisses (Esc's stop-the-turn meaning returns
+    // once the palette is closed).
+    if (paletteMatches.length > 0) {
+      const shown = Math.min(paletteMatches.length, PALETTE_ROWS);
+      const sel = paletteMatches[Math.min(paletteIdx, paletteMatches.length - 1)]!;
+      if (key.name === "up") {
+        paletteIdx = (paletteIdx - 1 + shown) % shown;
+        renderPalette();
+        return;
+      }
+      if (key.name === "down") {
+        paletteIdx = (paletteIdx + 1) % shown;
+        renderPalette();
+        return;
+      }
+      if (key.name === "tab") {
+        editor.buffer = sel.name + (sel.takesArgs ? " " : "");
+        editor.cursor = editor.buffer.length;
+        refreshInput();
+        return;
+      }
+      if (key.name === "escape") {
+        paletteDismissed = editor.buffer;
+        renderPalette();
+        return;
+      }
+      if (key.name === "return" || key.name === "enter") {
+        // Run the SELECTED command (what the highlight promises), then let the
+        // editor's own Enter handling submit it (history included).
+        editor.buffer = sel.name;
+        editor.cursor = sel.name.length;
+      }
+    }
     if (key.name === "escape") {
       void abortTurn(session, conversationId ?? defaultConvId).then((stopped) => {
         dim(stopped ? "[stopping…]" : "[nothing to stop]");
@@ -491,6 +594,25 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
   }
   dim(`dae v${cliVersion()} · ${host} · workspace ${profile.workspace}`);
   dim(`execution ${execMode} · approval ${profile.approval} · /help for commands`);
+  // Agent slash-commands (the brain's + the channel built-ins) join the palette; running
+  // one sends it to the agent like any message. Client names win on collision.
+  void fetchers
+    .commands(session)
+    .then((j) => {
+      const mine = new Set(CLIENT_COMMANDS.map((c) => c.name));
+      const extra = (j?.commands ?? [])
+        .map((c) => ({
+          name: "/" + String(c.name).replace(/^\//, ""),
+          desc: String(c.description ?? "agent command"),
+          server: true,
+        }))
+        .filter((c) => !mine.has(c.name));
+      if (extra.length) {
+        palette = [...CLIENT_COMMANDS, ...extra];
+        renderPalette();
+      }
+    })
+    .catch(() => {});
   void Promise.all([
     fetchers.status(session).catch(() => null),
     fetchers.skills(session).catch(() => null),
