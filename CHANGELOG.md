@@ -13,6 +13,13 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Terminal command palette.** Typing `/` in the `dae` interface opens a live
+  menu under the composer, Hermes-style: every client command with its
+  description, filtered as you type — ↑/↓ select, Tab completes, Enter runs the
+  selection, Esc dismisses. The server's agent slash-commands (`GET /commands`)
+  are merged in and marked "(agent)"; running one sends it to the agent like any
+  message. `/help` now lists the full palette.
+
 - **Desktop app icon.** The app now uses the daedalus labyrinth (the web UI's
   favicon) as its icon — teal square-spiral on the dark tile, macOS icon geometry.
   `build/icon.svg` is the source; electron-builder derives the mac/win/linux icon

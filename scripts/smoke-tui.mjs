@@ -78,8 +78,20 @@ const type = (ed, text) => { for (const ch of text) ed.handle({ sequence: ch, na
 
   outBuf = "";
   screen.setInput("> ", "hello", 3);
-  const backIdx = outBuf.lastIndexOf("\x1b[2D");
-  expect("input cursor positions via backward moves", backIdx !== -1 && outBuf.includes("> hello"));
+  // prompt (2) + cursor (3) + 1 → absolute column 6.
+  expect("input cursor parks at the absolute edit column", outBuf.includes("\x1b[6G") && outBuf.includes("> hello"));
+
+  // Command palette rows paint below the input; the cursor climbs back over them.
+  outBuf = "";
+  screen.setMenu(["▸ /new    start a session", "  /help   commands"]);
+  expect(
+    "palette rows paint below the input and the cursor climbs back",
+    outBuf.includes("/new") && outBuf.includes("/help") && outBuf.includes("\x1b[2A") && outBuf.endsWith("\x1b[6G"),
+    JSON.stringify(outBuf.slice(-40)),
+  );
+  outBuf = "";
+  screen.setMenu([]);
+  expect("closing the palette repaints without menu rows", !outBuf.includes("/new"));
 
   outBuf = "";
   screen.setInput("> ", "x".repeat(100), 100);
@@ -89,6 +101,21 @@ const type = (ed, text) => { for (const ch of text) ed.handle({ sequence: ch, na
   screen.setConfirm("run: rm -rf /tmp/x  [y]es / [n]o");
   expect("confirm mode replaces the input row", outBuf.includes("run: rm -rf") && !outBuf.includes("> x"));
   screen.setConfirm(null);
+}
+
+// --- 3b. Command palette filtering ---
+{
+  const { filterPalette, CLIENT_COMMANDS } = await import("../dist/cli/remote-tui.js");
+  expect("bare '/' lists every command", filterPalette(CLIENT_COMMANDS, "/").length === CLIENT_COMMANDS.length);
+  const s = filterPalette(CLIENT_COMMANDS, "/s");
+  expect(
+    "'/s' filters by prefix",
+    s.length >= 3 && s.every((e) => e.name.startsWith("/s")),
+    JSON.stringify(s.map((e) => e.name)),
+  );
+  expect("plain text keeps the palette closed", filterPalette(CLIENT_COMMANDS, "hello").length === 0);
+  expect("a command with arguments closes the palette", filterPalette(CLIENT_COMMANDS, "/sessions 2").length === 0);
+  expect("unknown prefix matches nothing", filterPalette(CLIENT_COMMANDS, "/zzz").length === 0);
 }
 
 // --- 4. Profile roundtrip (HOME-scoped) ---

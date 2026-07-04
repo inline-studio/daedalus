@@ -169,6 +169,8 @@ export class Screen {
   private inputView = { text: "", cursor: 0 };
   // Confirm mode replaces the input row with a question until answered.
   private confirmText: string | null = null;
+  // Command-palette rows rendered BELOW the input (pre-styled; one terminal row each).
+  private menu: string[] = [];
   private started = false;
 
   constructor(private opts: ScreenOptions) {}
@@ -209,8 +211,16 @@ export class Screen {
     this.redraw();
   }
 
-  // Full repaint of the three reserved rows (cursor is parked at the input row's end,
-  // i.e. 2 rows below the partial row).
+  // Replace the palette rows (empty array = closed). The cursor stays parked on the
+  // input row; the rows paint below it.
+  setMenu(lines: string[]): void {
+    this.menu = lines;
+    this.redraw();
+  }
+
+  // Full repaint of the reserved rows (cursor is parked on the input row, which is
+  // always 2 rows below the partial row — palette rows live BELOW the input, so the
+  // upward anchor never moves and `0J` wipes them along with everything else).
   redraw(): void {
     if (!this.started) return;
     this.opts.write(`${ESC}2A\r${ESC}0J`);
@@ -222,9 +232,10 @@ export class Screen {
     const partial = visibleTruncate(this.partial, cols - 1);
     const status = visibleTruncate(this.status, cols - 1);
     let inputRow: string;
-    let backspaces = 0;
+    let cursorCol: number; // 1-based terminal column to park the cursor at
     if (this.confirmText !== null) {
       inputRow = visibleTruncate(this.confirmText, cols - 1);
+      cursorCol = Math.min(this.confirmText.length, cols - 1) + 1;
     } else {
       // Show the tail of the buffer when it exceeds the width (simple horizontal scroll).
       const avail = cols - 1 - this.prompt.length;
@@ -236,10 +247,15 @@ export class Screen {
         cursor = cursor - start;
       }
       inputRow = this.prompt + text;
-      backspaces = Math.max(0, text.length - cursor);
+      cursorCol = this.prompt.length + cursor + 1;
     }
-    this.opts.write(partial + "\n" + status + "\n" + inputRow);
-    if (backspaces > 0) this.opts.write(`${ESC}${backspaces}D`);
+    let out = partial + "\n" + status + "\n" + inputRow;
+    for (const row of this.menu) out += "\n" + visibleTruncate(row, cols - 1);
+    this.opts.write(out);
+    // Park the cursor back on the input row at the edit position: up over the palette
+    // rows (if any), then absolute column.
+    if (this.menu.length > 0) this.opts.write(`${ESC}${this.menu.length}A`);
+    this.opts.write(`${ESC}${cursorCol}G`);
   }
 }
 
