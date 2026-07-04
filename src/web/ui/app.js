@@ -1174,16 +1174,20 @@
   // --- Execution placement (WS6e): local (the connected executor) vs server. The toggle
   // only shows when /status reports an executor for this user; preference persists.
   var executorConnected = false;
+  var executorHost = ""; // hostname of the connected executor machine (from /status)
   var execMode = LS.getItem("dae_exec") === "server" ? "server" : "local";
   function renderExecToggle() {
     var b = $("exec-toggle");
     if (!b) return;
     b.style.display = executorConnected ? "" : "none";
-    b.textContent = execMode === "local" ? "⌁ local" : "☁ server";
+    // "Local" means the user's connected executor machine (dae remote / desktop app) —
+    // name it, so it never reads as "this browser".
+    var shortHost = (executorHost || "").split(".")[0];
+    b.textContent = execMode === "local" ? "⌁ " + (shortHost ? shortHost.slice(0, 18) : "local") : "☁ server";
     b.classList.toggle("local", execMode === "local");
     b.title = execMode === "local"
-      ? "Commands run on YOUR machine (via dae remote). Click to run on the server instead."
-      : "Commands run on the server. Click to run on your machine.";
+      ? "Commands run on " + (executorHost || "your machine") + " (your connected dae remote / desktop app). Click to run on the server instead."
+      : "Commands run on the server. Click to run on " + (executorHost || "your machine") + ".";
   }
   $("exec-toggle").addEventListener("click", function () {
     execMode = execMode === "local" ? "server" : "local";
@@ -1687,6 +1691,7 @@
         if (s.version) $("st-backend").textContent = "backend v" + s.version;
         // Executor state drives the composer's local/server toggle.
         executorConnected = Boolean(s.remoteExec && s.remoteExec.connected);
+        executorHost = (s.remoteExec && s.remoteExec.env && s.remoteExec.env.hostname) || "";
         renderExecToggle();
         // Dictation mic only when the stack can transcribe (whisper configured).
         micAvailable(Boolean(s.dictation));
@@ -1722,7 +1727,9 @@
   }
   setGateway("warn");
   loadStatus();
-  setInterval(loadStatus, 60000);
+  // 20s (was 60): the exec toggle must disappear promptly when the user's executor
+  // dies, or "⌁ local" offers a machine that can no longer run anything.
+  setInterval(loadStatus, 20000);
 
   // --- Status-bar popovers: agents (+ live activity) and cron. The status-bar items are
   // the buttons — clicking toggles an anchored panel, like the reference app. ---------------
