@@ -139,6 +139,38 @@ const rpcExec = (body) =>
   expect("RemoteRuntime.readFile throws on executor error", threw);
 }
 
+// --- 2b. The bridge call bypasses the global undici dispatcher ---
+// The worker / agent containers install OneCLI's MITM ProxyAgent process-wide; the
+// /rpc/exec fetch must not ride it (casa, 2026-07: every local-exec tool call died with
+// "bridge unreachable" and never reached the executor). Point the global dispatcher at a
+// dead proxy and prove RemoteRuntime's POST still reaches a bridge server. (A canned
+// bridge, not the live one — the scripted executor above shares this process, so the
+// hostile dispatcher would break IT, not just the code under test.)
+{
+  const http = await import("node:http");
+  const { ProxyAgent, Agent, setGlobalDispatcher } = await import("undici");
+  const hits = [];
+  const bridge = http.createServer((req, res) => {
+    hits.push(req.url);
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ id: "x", ok: true, stdout: "direct", exitCode: 0 }));
+  });
+  await new Promise((r) => bridge.listen(18797, r));
+  setGlobalDispatcher(new ProxyAgent("http://127.0.0.1:1"));
+  try {
+    const runtime = new RemoteRuntime({ url: "http://127.0.0.1:18797", token: "t", userId: "u" });
+    const res = await runtime.exec("echo hi", { timeoutMs: 3_000 });
+    expect(
+      "RemoteRuntime bypasses a hostile global dispatcher (OneCLI MITM)",
+      res.exitCode === 0 && res.stdout === "direct" && hits.length === 1,
+      JSON.stringify({ res, hits }),
+    );
+  } finally {
+    setGlobalDispatcher(new Agent());
+    bridge.close();
+  }
+}
+
 // --- 3. Command policy (the client's confirm gate) ---
 {
   expect("plain command prompts by default", evaluateCommand("git status", [], false) === "prompt");

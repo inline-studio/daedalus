@@ -13,6 +13,18 @@ Each entry references the PR that introduced the change.
 
 ### Fixed
 
+- **Local execution from the web/desktop never reached the executor.** The
+  `/rpc/exec` bridge call inside the worker / agent containers rode OneCLI's
+  process-wide MITM proxy dispatcher and died before reaching the supervisor —
+  every ⌁ local tool call failed with "remote-exec bridge unreachable" while the
+  connected `dae remote` client sat idle. `RemoteRuntime` now uses a direct undici
+  Agent (the same bypass as the whisper transcriber and the MCP client), with a
+  hostile-dispatcher regression test.
+- **Exec toggle honesty.** The ⌁ local toggle now names the machine it executes on
+  (the connected executor's hostname, e.g. `⌁ Scott-Davids-MacBook-Air`) so
+  "local" can't be read as "this browser", and the status poll runs every 20s
+  (was 60s) so the toggle disappears promptly when the executor dies.
+
 - **`dae remote` booted with a dead keyboard.** The wizard / password prompt
   (`prompts`) pauses stdin when it closes, and a `keypress` listener doesn't
   un-pause an explicitly-paused stream — the terminal interface started deaf (raw

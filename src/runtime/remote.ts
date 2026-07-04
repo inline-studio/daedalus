@@ -1,5 +1,14 @@
+import { Agent } from "undici";
 import type { Runtime, ExecOptions, ExecResult } from "./base.js";
 import type { RemoteExecResult } from "../channels/remote-exec.js";
+
+// The bridge call must BYPASS the global undici dispatcher. The worker / agent
+// containers install OneCLI's MITM ProxyAgent process-wide (credential injection for
+// provider calls) — routing this fetch through it breaks the request before it ever
+// reaches the supervisor ("remote-exec bridge unreachable: fetch failed"), which is
+// invisible server-side. The bridge is the in-stack supervisor and carries its own
+// token; it never needs credential injection. Same fix as transcribe.ts / mcp/client.ts.
+const bridgeDirectDispatcher = new Agent();
 
 // RemoteRuntime — tool execution on the USER'S machine via the supervisor's remote-exec
 // bridge. The agent turn (running in its container or the warm worker) POSTs each
@@ -36,7 +45,9 @@ export class RemoteRuntime implements Runtime {
         },
         body: JSON.stringify({ userId: this.opts.userId, ...body }),
         signal: controller.signal,
-      });
+        // bypass the OneCLI MITM proxy (see note above)
+        dispatcher: bridgeDirectDispatcher,
+      } as unknown as RequestInit);
       if (!res.ok) {
         return { id: "", ok: false, error: `remote-exec bridge returned ${res.status}` };
       }
