@@ -10,6 +10,11 @@
 
 const { dialog } = require("electron");
 const { exec: childExec } = require("node:child_process");
+const { randomUUID } = require("node:crypto");
+
+// This app instance's executor identity — turns sent from THIS window run on THIS
+// machine; executors on the user's other machines coexist. (Mirrors remote-shared.ts.)
+const EXECUTOR_ID = randomUUID();
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -121,12 +126,17 @@ function isRunning() {
 
 async function runLoop(opts, me) {
   const base = opts.serverUrl.replace(/\/$/, "");
+  // Executors coexist across machines (each connection carries EXECUTOR_ID), so a
+  // `replaced` event can only mean a newer connection claimed THIS app's id — back off
+  // briefly instead of fighting. Mirrors remote-shared.ts.
+  let replaced = false;
   while (!me.stopped) {
     try {
       const auth = await opts.getAuth();
       const qs = new URLSearchParams();
       if (auth.externalUserId) qs.set("externalUserId", auth.externalUserId);
       qs.set("workspace", opts.workspace);
+      qs.set("executorId", EXECUTOR_ID);
       // Machine description for the turn's execution-environment context line.
       qs.set("hostname", os.hostname().split(".")[0] || "");
       qs.set("platform", os.platform());
@@ -150,6 +160,10 @@ async function runLoop(opts, me) {
         while ((sep = buf.indexOf("\n\n")) !== -1) {
           const block = buf.slice(0, sep);
           buf = buf.slice(sep + 2);
+          if (block.includes("event: replaced")) {
+            replaced = true;
+            continue;
+          }
           if (!block.includes("event: request")) continue;
           const dataLine = block.split("\n").find((l) => l.startsWith("data:"));
           if (!dataLine) continue;
@@ -171,6 +185,12 @@ async function runLoop(opts, me) {
       throw new Error("stream ended");
     } catch (err) {
       if (me.stopped) break;
+      if (replaced) {
+        replaced = false;
+        opts.onState("standby");
+        await new Promise((r) => setTimeout(r, 30_000));
+        continue;
+      }
       opts.onState("reconnecting");
       await new Promise((r) => setTimeout(r, 3000));
     }
@@ -263,4 +283,4 @@ async function handleRequest(opts, reqObj) {
   });
 }
 
-module.exports = { start, stop, isRunning, evaluateCommand, allowPrefixFor, confineToWorkspace };
+module.exports = { start, stop, isRunning, evaluateCommand, allowPrefixFor, confineToWorkspace, EXECUTOR_ID };

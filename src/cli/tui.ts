@@ -212,7 +212,7 @@ export class Screen {
   // A finished scrollback line (may wrap freely). Clears the reserved rows, prints the
   // line where the partial row was, then repaints the bottom.
   appendLine(text: string): void {
-    this.opts.write(`${ESC}2A\r${ESC}0J` + text + "\n");
+    this.opts.write(`${ESC}${2 + this.paintedMenuLen}A\r${ESC}0J` + text + "\n");
     this.paintBottomTail();
   }
 
@@ -244,6 +244,14 @@ export class Screen {
     this.redraw();
   }
 
+  // Wipe the terminal and re-anchor the reserved block at the top — the /clear
+  // command. Purely visual: the conversation (and its context) is untouched.
+  clear(): void {
+    this.opts.write("\x1b[2J\x1b[H\n\n");
+    this.paintedMenuLen = 0;
+    this.redraw();
+  }
+
   // Full repaint of the reserved block. Row order (top → bottom):
   //   [ partial   ]  the streaming reply's in-progress line
   //   [ ╭────────╮]  composer top border (teal, Claude-Code style)
@@ -253,9 +261,14 @@ export class Screen {
   //   [ palette…  ]  command-palette rows while open
   // The cursor sits on the input row, always 2 rows below the partial row, so the
   // upward anchor is a constant `2A` and `0J` wipes everything below in one go.
+  // Rows painted ABOVE the input row in the last block (palette + top border + partial)
+  // — the upward anchor for the next repaint. The palette sits between the transcript
+  // and the composer ("pops up above the chat bar").
+  private paintedMenuLen = 0;
+
   redraw(): void {
     if (!this.started) return;
-    this.opts.write(`${ESC}2A\r${ESC}0J`);
+    this.opts.write(`${ESC}${2 + this.paintedMenuLen}A\r${ESC}0J`);
     this.paintBottomTail();
   }
 
@@ -286,12 +299,14 @@ export class Screen {
     }
     const pad = " ".repeat(Math.max(0, inner - visibleLength(content)));
     const inputRow = TEAL + "│ " + RESET + content + pad + TEAL + " │" + RESET;
-    let out = partial + "\n" + boxTop + "\n" + inputRow + "\n" + boxBottom + "\n" + status;
+    let out = partial;
     for (const row of this.menu) out += "\n" + visibleTruncate(row, cols - 1);
+    out += "\n" + boxTop + "\n" + inputRow + "\n" + boxBottom + "\n" + status;
     this.opts.write(out);
-    // Park the cursor back on the input row: up over the palette rows, the status
-    // line, and the bottom border, then absolute column.
-    this.opts.write(`${ESC}${2 + this.menu.length}A${ESC}${cursorCol}G`);
+    // Park the cursor back on the input row: up over the bottom border + status line,
+    // then absolute column. Remember the palette height for the next upward anchor.
+    this.opts.write(`${ESC}2A${ESC}${cursorCol}G`);
+    this.paintedMenuLen = this.menu.length;
   }
 }
 

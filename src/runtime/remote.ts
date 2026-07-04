@@ -26,6 +26,9 @@ export interface RemoteRuntimeOptions {
   token: string;
   // The daedalus-internal user id whose executor should run our requests.
   userId: string;
+  // Which of the user's machines to target (the sending client's executor). Unset or
+  // gone → the supervisor picks the most recently connected one.
+  executorId?: string;
 }
 
 export class RemoteRuntime implements Runtime {
@@ -43,7 +46,11 @@ export class RemoteRuntime implements Runtime {
           "content-type": "application/json",
           "x-dae-rpc-token": this.opts.token,
         },
-        body: JSON.stringify({ userId: this.opts.userId, ...body }),
+        body: JSON.stringify({
+          userId: this.opts.userId,
+          ...(this.opts.executorId ? { executorId: this.opts.executorId } : {}),
+          ...body,
+        }),
         signal: controller.signal,
         // bypass the OneCLI MITM proxy (see note above)
         dispatcher: bridgeDirectDispatcher,

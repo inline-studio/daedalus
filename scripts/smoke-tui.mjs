@@ -84,18 +84,24 @@ const type = (ed, text) => { for (const ch of text) ed.handle({ sequence: ch, na
     outBuf.includes("\x1b[8G") && outBuf.includes("> hello") && outBuf.includes("╭") && outBuf.includes("╰"),
   );
 
-  // Command palette rows paint below the box + status; the cursor climbs back over
-  // bottom border + status + menu rows (2 + 2 = 4).
+  // Command palette rows paint ABOVE the composer box (between transcript and input);
+  // the cursor climb stays a constant 2 (bottom border + status), and the NEXT repaint's
+  // upward anchor accounts for the palette height (2 + 2 rows).
   outBuf = "";
   screen.setMenu(["▸ /new    start a session", "  /help   commands"]);
+  const boxTopIdx = outBuf.indexOf("╭");
   expect(
-    "palette rows paint below the composer and the cursor climbs back",
-    outBuf.includes("/new") && outBuf.includes("/help") && outBuf.includes("\x1b[4A") && outBuf.endsWith("\x1b[8G"),
+    "palette rows paint above the composer, cursor climbs 2",
+    outBuf.indexOf("/new") < boxTopIdx && outBuf.indexOf("/help") < boxTopIdx && outBuf.endsWith("\x1b[2A\x1b[8G"),
     JSON.stringify(outBuf.slice(-40)),
   );
   outBuf = "";
   screen.setMenu([]);
-  expect("closing the palette repaints without menu rows", !outBuf.includes("/new"));
+  expect(
+    "closing the palette anchors over the old palette rows and repaints without them",
+    outBuf.startsWith("\x1b[4A") && !outBuf.includes("/new"),
+    JSON.stringify(outBuf.slice(0, 12)),
+  );
 
   outBuf = "";
   screen.setInput("> ", "x".repeat(100), 100);
@@ -105,6 +111,15 @@ const type = (ed, text) => { for (const ch of text) ed.handle({ sequence: ch, na
   screen.setConfirm("run: rm -rf /tmp/x  [y]es / [n]o");
   expect("confirm mode replaces the input row", outBuf.includes("run: rm -rf") && !outBuf.includes("> x"));
   screen.setConfirm(null);
+
+  // /clear: wipe + home + re-anchored repaint of the composer block.
+  outBuf = "";
+  screen.clear();
+  expect(
+    "clear() wipes the screen and repaints the composer block",
+    outBuf.startsWith("\x1b[2J\x1b[H") && outBuf.includes("╭") && outBuf.includes("╰"),
+    JSON.stringify(outBuf.slice(0, 16)),
+  );
 }
 
 // --- 3a. boxify: the welcome-card / composer frame helper ---

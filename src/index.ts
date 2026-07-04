@@ -107,6 +107,7 @@ program
               userId: opts.remoteExecUser,
               url: process.env.DAE_RPC_URL,
               token: process.env.DAE_RPC_TOKEN,
+              ...(process.env.DAE_RPC_EXECUTOR_ID ? { executorId: process.env.DAE_RPC_EXECUTOR_ID } : {}),
               ...(remoteExecEnv ? { env: remoteExecEnv } : {}),
             }
           : undefined;

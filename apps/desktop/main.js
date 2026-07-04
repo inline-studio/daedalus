@@ -142,6 +142,14 @@ ipcMain.on("dae:badge", (_ev, count) => {
   app.setBadgeCount(Math.max(0, Number(count) || 0));
 });
 
+// The page targets ⌁ local turns at THIS app's executor (multi-machine: the user may
+// have executors on several machines; each client pins its own). Null when local
+// execution is off, so the page omits the target and the server picks.
+ipcMain.handle("dae:executor-id", () => {
+  const s = readSettings();
+  return s.executor?.enabled ? executor.EXECUTOR_ID : null;
+});
+
 // --- Local execution (the embedded executor) ------------------------------------------
 
 // Executor auth is BORROWED from the window, so it is always the same user as the chat:
@@ -266,7 +274,9 @@ function buildMenu() {
       ? "Local Execution: On"
       : executorState === "reconnecting"
         ? "Local Execution: Reconnecting…"
-        : "Local Execution: Off";
+        : executorState === "standby"
+          ? "Local Execution: Standing by (another client is executing)"
+          : "Local Execution: Off";
   const template = [
     ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
     { role: "fileMenu" },

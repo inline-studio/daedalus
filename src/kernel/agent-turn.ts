@@ -80,7 +80,7 @@ export interface RunAgentTurnInput {
   // Set for top-level turns whose user has a connected executor, and threaded into
   // sub-agents that declare `execution: executor`. `env` describes the machine for the
   // execution-environment context line.
-  remoteExec?: { userId: string; url: string; token: string; env?: Record<string, string> };
+  remoteExec?: { userId: string; url: string; token: string; executorId?: string; env?: Record<string, string> };
   // Abort signal for the whole turn (the user's Stop button). In-process path only — a
   // signal can't cross the container/worker hop; those get aborted at their own layer.
   signal?: AbortSignal;

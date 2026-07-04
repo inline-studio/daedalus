@@ -317,6 +317,9 @@ export function buildContainerArgs(input: {
   if (dispatchArgs.remoteExec) {
     a.push("-e", `DAE_RPC_URL=${dispatchArgs.remoteExec.url}`);
     a.push("-e", "DAE_RPC_TOKEN");
+    if (dispatchArgs.remoteExec.executorId) {
+      a.push("-e", `DAE_RPC_EXECUTOR_ID=${dispatchArgs.remoteExec.executorId}`);
+    }
     if (dispatchArgs.remoteExec.env) {
       a.push("-e", `DAE_RPC_ENV=${JSON.stringify(dispatchArgs.remoteExec.env)}`);
     }

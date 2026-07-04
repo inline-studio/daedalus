@@ -24,6 +24,9 @@ export interface IncomingMessage {
   // the user's machine; "server" opts a message out and keeps everything server-side.
   // Ignored when no executor is connected.
   execution?: "local" | "server";
+  // Which of the user's connected machines runs the local execution: the SENDING
+  // client's executor (dae TUI / desktop app). Unset → the most recent machine.
+  executorId?: string;
   text?: string;
   attachments?: IncomingAttachment[];
   receivedAt: string; // ISO

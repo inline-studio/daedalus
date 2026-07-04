@@ -262,7 +262,9 @@ export async function serve(config: ArtemisConfig): Promise<void> {
       // (web channel only), the turn's tools run on THEIR machine. The bridge URL defaults
       // by dispatch topology: in-process turns reach the supervisor on loopback; container/
       // worker turns reach it by compose service name on the daedalus network.
-      let remoteExec: { userId: string; url: string; token: string; env?: Record<string, string> } | undefined;
+      let remoteExec:
+        | { userId: string; url: string; token: string; executorId?: string; env?: Record<string, string> }
+        | undefined;
       const webCfg = config.channels.web;
       if (
         webCfg?.remoteExec.enabled &&
@@ -274,9 +276,19 @@ export async function serve(config: ArtemisConfig): Promise<void> {
         const url =
           webCfg.remoteExec.internalUrl ??
           (dispatcher.id === "in-process" ? `http://127.0.0.1:${port}` : `http://daedalus:${port}`);
-        const env = ch.executorInfo(ingested.userId) ?? undefined;
-        remoteExec = { userId: ingested.userId, url, token: getRpcToken(), ...(env ? { env } : {}) };
-        log.info({ user: ingested.userId, ...env }, "remote executor connected — turn will execute locally on it");
+        // Pin the turn to the SENDING client's machine (msg.executorId) when that
+        // executor is alive, else the most recently connected one — resolved up front
+        // so mid-turn connects/disconnects don't move the target.
+        const executorId = ch.resolveExecutorId(ingested.userId, msg.executorId);
+        const env = ch.executorInfo(ingested.userId, executorId) ?? undefined;
+        remoteExec = {
+          userId: ingested.userId,
+          url,
+          token: getRpcToken(),
+          ...(executorId ? { executorId } : {}),
+          ...(env ? { env } : {}),
+        };
+        log.info({ user: ingested.userId, executorId, ...env }, "remote executor connected — turn will execute locally on it");
       }
       const result = await dispatcher.dispatch({
         agentName,
