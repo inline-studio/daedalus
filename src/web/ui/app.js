@@ -1174,7 +1174,14 @@
   // --- Execution placement (WS6e): local (the connected executor) vs server. The toggle
   // only shows when /status reports an executor for this user; preference persists.
   var executorConnected = false;
-  var executorHost = ""; // hostname of the connected executor machine (from /status)
+  var executorHost = ""; // hostname of the machine ⌁ local turns will run on (from /status)
+  // Inside the desktop shell, this window has its OWN executor — pin turns to it.
+  // (Multi-machine: the user may have executors on several machines; without a pin the
+  // server routes to the most recently connected one.)
+  var myExecutorId = null;
+  if (window.daedalusDesktop && window.daedalusDesktop.executorId) {
+    window.daedalusDesktop.executorId().then(function (id) { myExecutorId = id || null; }).catch(function () {});
+  }
   var execMode = LS.getItem("dae_exec") === "server" ? "server" : "local";
   function renderExecToggle() {
     var b = $("exec-toggle");
@@ -1204,6 +1211,7 @@
     var body = { externalUserId: uid };
     if (convId) body.conversationId = convId;
     if (executorConnected) body.execution = execMode;
+    if (executorConnected && execMode === "local" && myExecutorId) body.executorId = myExecutorId;
     if (text) body.text = text;
     if (atts.length) body.attachments = atts;
     // Optimistically name a still-unnamed conversation from its first message, mirroring the
@@ -1279,6 +1287,26 @@
   });
   $("text").addEventListener("input", updateCmdMenu);
   $("text").addEventListener("blur", function () { cmdMatches = []; renderCmdMenu(); });
+  // Message recall (terminal-style history): ↑ in an EMPTY composer refills it with
+  // your last sent message — stop a turn, ↑, tweak, Enter to redo. Repeated ↑ walks
+  // further back through this conversation's user messages; ↓ walks forward and
+  // finally restores whatever draft was being typed. Typing anything ends recall.
+  var recallIdx = null; // index into the recall list (0 = newest), null = not recalling
+  var recallDraft = "";
+  function recallList() {
+    var seen = [];
+    for (var i = convo.length - 1; i >= 0; i--) {
+      if (convo[i].role === "user" && convo[i].text && convo[i].text.trim()) seen.push(convo[i].text);
+    }
+    return seen;
+  }
+  function setComposer(text) {
+    var t = $("text");
+    t.value = text;
+    autosize();
+    t.setSelectionRange(t.value.length, t.value.length);
+  }
+
   $("text").addEventListener("keydown", function (e) {
     if (cmdMatches.length) {
       if (e.key === "ArrowDown") { e.preventDefault(); cmdIndex = (cmdIndex + 1) % cmdMatches.length; renderCmdMenu(); return; }
@@ -1291,6 +1319,23 @@
         e.preventDefault(); pickCmd(cmdMatches[cmdIndex].name); return;
       }
     }
+    if (e.key === "ArrowUp" && (this.value === "" || recallIdx !== null)) {
+      var list = recallList();
+      if (list.length) {
+        e.preventDefault();
+        if (recallIdx === null) { recallDraft = this.value; recallIdx = 0; }
+        else if (recallIdx < list.length - 1) recallIdx++;
+        setComposer(list[recallIdx]);
+      }
+      return;
+    }
+    if (e.key === "ArrowDown" && recallIdx !== null) {
+      e.preventDefault();
+      if (recallIdx > 0) { recallIdx--; setComposer(recallList()[recallIdx]); }
+      else { recallIdx = null; setComposer(recallDraft); }
+      return;
+    }
+    if (e.key !== "ArrowUp" && e.key !== "ArrowDown" && e.key !== "Shift") recallIdx = null;
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   });
 
@@ -1689,9 +1734,15 @@
           $("st-cron-n").textContent = String((s.schedules.static || 0) + (s.schedules.dynamic || 0));
         }
         if (s.version) $("st-backend").textContent = "backend v" + s.version;
-        // Executor state drives the composer's local/server toggle.
+        // Executor state drives the composer's local/server toggle. Name the machine
+        // OUR turns would target: this window's own executor (desktop shell) when
+        // connected, else the server's fallback (the most recent machine).
         executorConnected = Boolean(s.remoteExec && s.remoteExec.connected);
-        executorHost = (s.remoteExec && s.remoteExec.env && s.remoteExec.env.hostname) || "";
+        var mine = myExecutorId && s.remoteExec
+          ? (s.remoteExec.executors || []).filter(function (e) { return e.id === myExecutorId; })[0]
+          : null;
+        executorHost = (mine && mine.env && mine.env.hostname) ||
+          (s.remoteExec && s.remoteExec.env && s.remoteExec.env.hostname) || "";
         renderExecToggle();
         // Dictation mic only when the stack can transcribe (whisper configured).
         micAvailable(Boolean(s.dictation));
@@ -2170,13 +2221,22 @@
 
   // Continuous light poll: pulses the agents button while anything is in flight, shows
   // the active count, and live-refreshes the agents popover when it's open.
+  // A turn counts as "active agent work" only if the agents modal would show it:
+  // a non-orchestrator top-level turn, or an orchestrator turn with DELEGATED steps
+  // (chain-prefixed labels / spawns). The orchestrator merely chatting is the
+  // conversation itself — the dot still pulses, but "· N active" stays honest.
+  function hasDelegatedWork(t) {
+    var steps = (t.log || []).concat(t.activity ? [{ label: t.activity }] : []);
+    return steps.some(function (s) { return /^(spawning |\S+ [·›] )/.test(s.label || ""); });
+  }
   function pollActivity() {
     fetch("/activity?externalUserId=" + encodeURIComponent(uid), { headers: authHeaders() })
       .then(function (r) { if (on401(r)) return null; return r.ok ? r.json() : null; })
       .then(function (j) {
         if (!j) return;
-        var n = (j.turns || []).length;
-        $("activity-dot").classList.toggle("on", n > 0);
+        var turns = j.turns || [];
+        var n = turns.filter(function (t) { return !t.orchestrator || hasDelegatedWork(t); }).length;
+        $("activity-dot").classList.toggle("on", turns.length > 0);
         $("st-active-n").textContent = n ? " · " + n + " active" : "";
         // The agents modal runs its own 2.5s refresh while open — no extra render here.
       })

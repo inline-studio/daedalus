@@ -140,10 +140,13 @@ server-side with `channels.web.remoteExec.enabled: true`.
 Scope and safety:
 
 - Only turns started by **your user with a connected executor** execute on your machine.
-  In login mode the executor is keyed to the logged-in user, so the web UI and desktop
-  app share it too — a `⌁ local / ☁ server` toggle in the composer (and `/local on|off`
-  in the CLI) opts individual conversations out per message. Schedules run server-side
-  as always. **Sub-agents** run server-side unless their manifest declares
+  **Several machines can be connected at once** (a CLI on each box, the desktop app on
+  another): each client registers its own executor id and turns run on the machine of
+  the client that SENT them; clients without a local executor (phone, plain page) fall
+  back to the most recently connected machine. `GET /status` lists every connected
+  machine under `remoteExec.executors`. A `⌁ local / ☁ server` toggle in the composer
+  (and `/local on|off` in the CLI) opts individual conversations out per message.
+  Schedules run server-side as always. **Sub-agents** run server-side unless their manifest declares
   `execution: executor` — those are for host-only tooling and run through your executor
   too (failing fast, with guidance, when none is connected).
 - Turns that execute remotely get an ephemeral **execution-environment** context line —

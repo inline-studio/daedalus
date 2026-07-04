@@ -1,4 +1,5 @@
 import http from "node:http";
+import crypto from "node:crypto";
 import type { Channel, ChannelContext, IncomingAttachment, OutgoingMessage } from "./base.js";
 import type { ContentPart, TurnEventSink } from "../types.js";
 import { COMPACTION_CHANNEL, type SessionStore, type PersistedSession } from "../sessions/store.js";
@@ -173,18 +174,25 @@ export class WebChannel implements Channel {
     this.uiMode = opts.uiMode ?? "browser";
   }
 
-  // Whether this user currently has a `dae remote` executor connected — serve uses it to
-  // decide whether a turn's tools should execute on the user's machine.
-  remoteConnected(userId: string): boolean {
-    return this.executors?.connected(userId) ?? false;
+  // Whether this user currently has an executor connected (optionally a specific one) —
+  // serve uses it to decide whether a turn's tools should execute on a user machine.
+  remoteConnected(userId: string, executorId?: string): boolean {
+    return this.executors?.connected(userId, executorId) ?? false;
   }
 
-  // The connected executor's machine description (workspace/hostname/platform/arch) —
-  // feeds the turn's execution-environment context line.
-  executorInfo(userId: string): Record<string, string> | null {
-    const info = this.executors?.info(userId);
+  // The targeted executor's machine description (workspace/hostname/platform/arch) —
+  // feeds the turn's execution-environment context line. Falls back to the most
+  // recently connected machine when no id is given (or the id is gone).
+  executorInfo(userId: string, executorId?: string): Record<string, string> | null {
+    const info = this.executors?.info(userId, executorId);
     if (!info) return null;
     return { workspace: info.workspace, ...info.env };
+  }
+
+  // The executor id serve should pin the turn to (the named one when alive, else the
+  // newest) — resolved up front so mid-turn reconnects don't change the target.
+  resolveExecutorId(userId: string, executorId?: string): string | undefined {
+    return this.executors?.info(userId, executorId)?.id;
   }
 
   async start(ctx: ChannelContext): Promise<void> {
@@ -295,6 +303,7 @@ export class WebChannel implements Channel {
               typeof body.timeoutMs === "number" ? body.timeoutMs + 10_000 : this.remoteExecTimeoutMs,
               this.remoteExecTimeoutMs,
             ),
+            typeof body.executorId === "string" && body.executorId ? body.executorId : undefined,
           );
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(result));
@@ -446,14 +455,20 @@ export class WebChannel implements Channel {
         }
         if (req.method === "GET" && pathname === "/activity") {
           // What the caller's agents are doing right now (in-flight turns, live labels).
+          // Turns run by the channel's own orchestrator are flagged: the UI's agents view
+          // shows sub-agents only, so its "active" count must be able to tell an
+          // orchestrator merely chatting apart from real delegated work.
           const actUser = loginUser ?? url.searchParams.get("externalUserId");
           let turns: Array<Record<string, unknown>> = [];
           if (actUser && this.listActivity && this.sessions) {
             const userId = this.sessions.resolveUser(this.id, actUser);
             turns = await this.listActivity(userId).catch(() => []);
           }
+          const marked = turns.map((t) =>
+            t.agent === this.defaultAgent ? { ...t, orchestrator: true } : t,
+          );
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ turns }));
+          res.end(JSON.stringify({ turns: marked }));
           return;
         }
         if (req.method === "GET" && pathname === "/agents") {
@@ -487,7 +502,10 @@ export class WebChannel implements Channel {
             (body as Record<string, unknown>).remoteExec = {
               enabled: true,
               connected: this.executors.connected(userId),
+              // Convenience: the most recently connected machine (what an untargeted
+              // turn would use) — plus the full roster of connected machines.
               ...(this.executors.info(userId) ?? {}),
+              executors: this.executors.list(userId),
             };
           }
           // Dictation: the composer shows its mic only when the stack can transcribe.
@@ -578,6 +596,10 @@ export class WebChannel implements Channel {
     }
     const userId = this.sessions.resolveUser(this.id, externalUserId);
     const workspace = url.searchParams.get("workspace") ?? "";
+    // Client-generated executor identity — stable per client process, so a machine
+    // reconnects over its own zombie while OTHER machines' executors coexist. Older
+    // clients that don't send one get a per-connection id (coexistence, no self-replace).
+    const executorId = (url.searchParams.get("executorId") || crypto.randomUUID()).slice(0, 64);
     // Optional machine description (hostname/platform/arch) for the turn's
     // execution-environment context line. Length-capped defensively.
     const env: Record<string, string> = {};
@@ -592,7 +614,7 @@ export class WebChannel implements Channel {
       "X-Accel-Buffering": "no",
     });
     res.write(`: executor registered\n\n`);
-    this.executors.register(userId, res, workspace, env);
+    this.executors.register(userId, executorId, res, workspace, env);
     const heartbeat = setInterval(() => {
       try {
         res.write(`event: heartbeat\ndata: {}\n\n`);
@@ -603,7 +625,7 @@ export class WebChannel implements Channel {
     if (typeof heartbeat.unref === "function") heartbeat.unref();
     const cleanup = () => {
       clearInterval(heartbeat);
-      this.executors?.unregister(userId, res);
+      this.executors?.unregister(userId, executorId, res);
     };
     req.on("close", cleanup);
     res.on("close", cleanup);
@@ -930,6 +952,12 @@ export class WebChannel implements Channel {
       ...(typeof body.addressedTo === "string" ? { addressedTo: body.addressedTo } : {}),
       ...(body.execution === "local" || body.execution === "server"
         ? { execution: body.execution }
+        : {}),
+      // Which of the user's machines should run this turn's local execution — the
+      // sending client's own executor (dae TUI, desktop app). Untargeted messages
+      // (phone, plain page) fall back to the most recently connected machine.
+      ...(typeof body.executorId === "string" && body.executorId
+        ? { executorId: body.executorId.slice(0, 64) }
         : {}),
       ...(typeof body.externalMessageId === "string" ? { externalMessageId: body.externalMessageId } : {}),
       ...(attachments.length ? { attachments } : {}),

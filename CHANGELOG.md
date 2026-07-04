@@ -13,6 +13,50 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **`/clear` in the terminal.** Wipes the screen and repaints the welcome card +
+  composer frame. Visual only — the conversation and the agent's context are
+  untouched (`/new` remains the fresh-session command).
+- **Message recall in the composer (web/desktop).** ↑ in an empty composer refills
+  it with your last sent message — stop a turn, ↑, tweak, Enter to resend. Repeated
+  ↑ walks back through the conversation's messages, ↓ walks forward and restores
+  the draft; typing ends recall. The slash-command menu keeps priority on ↑/↓ while
+  open, and a non-empty composer keeps normal cursor behaviour.
+
+### Changed
+
+- **Multiple executors per user.** The one-executor-per-user rule is gone — the
+  normal topology is a CLI on several machines plus a desktop app on another, all
+  one user. Every client registers with its own executor id; **turns route to the
+  machine of the client that sent them** (`executorId` rides the message), falling
+  back to the most recently connected machine for clients without a local executor
+  (phone, plain page). `GET /status` lists every connected machine
+  (`remoteExec.executors`), and `/rpc/exec` targets by id. Reconnecting with the
+  same id still replaces that client's own zombie stream (told via
+  `event: replaced`; the client backs off briefly) — distinct clients never touch
+  each other.
+- **Terminal layout.** `dae` now clears the screen on login and owns the terminal:
+  full-width welcome card, and the command palette pops up **above** the composer
+  box (between transcript and input), Claude-CLI style. The composer/status block
+  stays pinned as conversations stream; the transcript scrolls natively.
+
+### Fixed
+
+- **Two executor clients no longer fight.** With the desktop app AND the `dae`
+  terminal open for the same user, each new executor connection replaced the
+  other in an endless kick/reconnect ping-pong (the desktop menu sat on
+  "Reconnecting…"). The server now tells the replaced stream it was superseded
+  (`event: replaced`), and clients go to **standby** — turns keep executing on
+  the active client — polling /status and reclaiming the role automatically when
+  the other client disconnects. The desktop menu shows "Standing by (another
+  client is executing)".
+- **Honest "· N active" count.** The status bar counted the orchestrator's own
+  chat turn as an active agent while the (sub-agents-only) modal showed none.
+  `/activity` turns now flag the orchestrator, and the bar counts only what the
+  modal shows: non-orchestrator turns plus orchestrator turns with delegated
+  steps. The activity dot still pulses whenever anything runs.
+
+### Added
+
 - **Terminal chrome.** The `dae` interface now frames itself like a full-screen
   app: a rounded teal welcome card (block-art wordmark + connection facts, CLI
   version in the border title) and a bordered composer at the bottom with the

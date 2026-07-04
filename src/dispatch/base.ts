@@ -58,7 +58,7 @@ export interface DispatchArgs {
   // (hostname/platform/arch/workspace) for the turn's execution-environment context
   // line. Threaded into subagent spawns ONLY when the sub-agent declares
   // `execution: executor` (see kernel/orchestrator.ts).
-  remoteExec?: { userId: string; url: string; token: string; env?: Record<string, string> };
+  remoteExec?: { userId: string; url: string; token: string; executorId?: string; env?: Record<string, string> };
 }
 
 // A file the agent attached to its reply (via the `attach_to_reply` tool). Carried as a

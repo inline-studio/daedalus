@@ -153,8 +153,14 @@ const expect = (label, ok, detail = "") => {
 
   const mine = await fetch(`${base}/activity?externalUserId=user-one`).then((r) => r.json());
   expect("GET /activity returns only the caller's turns", mine.turns?.length === 1 && mine.turns[0].activity === "tool: bash", JSON.stringify(mine));
+  expect("the channel's own orchestrator turn is flagged", mine.turns[0].orchestrator === true);
   const theirs = await fetch(`${base}/activity?externalUserId=user-two`).then((r) => r.json());
   expect("other users see their own", theirs.turns?.length === 1 && theirs.turns[0].channel === "telegram");
+
+  reg.start({ conversationId: "c", userId: uid1, agent: "vector", channel: "cron", startedAt: new Date().toISOString(), activity: "tool: write" });
+  const both = await fetch(`${base}/activity?externalUserId=user-one`).then((r) => r.json());
+  const vec = both.turns.find((t) => t.agent === "vector");
+  expect("non-orchestrator turns carry no flag", vec && vec.orchestrator === undefined, JSON.stringify(both.turns));
 
   await chan.stop();
   sessions.close();

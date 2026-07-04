@@ -8,6 +8,9 @@ contextBridge.exposeInMainWorld("daedalusDesktop", {
   platform: process.platform,
   // Dock/taskbar unread badge. The shell clears it automatically on window focus.
   setBadge: (count) => ipcRenderer.send("dae:badge", count),
+  // This app's executor id (null when local execution is off) — the page sends it with
+  // messages so ⌁ local turns run on THIS machine, not whichever connected last.
+  executorId: () => ipcRenderer.invoke("dae:executor-id"),
 });
 
 // Only used by setup.html (the first-run setup page); harmless to expose everywhere

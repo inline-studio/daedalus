@@ -1,8 +1,14 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { exec as childExec } from "node:child_process";
 import { log } from "../log.js";
+
+// This client process's executor identity. Stable for the process lifetime: reconnects
+// replace our own zombie stream server-side, while executors on OTHER machines (or
+// other processes on this one) coexist — turns sent from here run HERE.
+export const EXECUTOR_ID = crypto.randomUUID();
 
 // Shared plumbing for the `dae remote` client, used by BOTH renderers — the plain
 // line-mode (remote-client.ts, also the no-TTY executor-only mode) and the full
@@ -169,7 +175,10 @@ export async function consumeSse(
   session: RemoteSession,
   pathAndQuery: string,
   onEvent: (event: string, data: string) => void,
-  onState: (state: "connected" | "reconnecting", detail?: string) => void,
+  onState: (state: "connected" | "reconnecting" | "standby", detail?: string) => void,
+  // Awaited before each reconnect attempt — lets a consumer hold the loop in standby
+  // (e.g. an executor superseded by another client) instead of hammering the server.
+  beforeReconnect?: () => Promise<void>,
 ): Promise<never> {
   for (;;) {
     try {
@@ -199,6 +208,7 @@ export async function consumeSse(
       }
       throw new Error("stream ended");
     } catch (err) {
+      if (beforeReconnect) await beforeReconnect();
       onState("reconnecting", (err as Error).message);
       await new Promise((r) => setTimeout(r, 2000));
     }
@@ -229,7 +239,7 @@ export interface ExecutorOptions {
   workspace: string;
   yolo: boolean;
   callbacks: ExecutorCallbacks;
-  onState?: (state: "connected" | "reconnecting", detail?: string) => void;
+  onState?: (state: "connected" | "reconnecting" | "standby", detail?: string) => void;
 }
 
 // Runs forever: consumes /rpc/stream, executes requests in the workspace, POSTs results.
@@ -331,10 +341,26 @@ export function startExecutor(opts: ExecutorOptions): void {
     `&hostname=${encodeURIComponent(os.hostname().split(".")[0] ?? "")}` +
     `&platform=${encodeURIComponent(os.platform())}` +
     `&arch=${encodeURIComponent(os.arch())}`;
+  // Executors coexist across machines/processes (each has its own EXECUTOR_ID), so a
+  // `replaced` event can only mean a NEWER connection claimed THIS client's id — our own
+  // reconnect racing a zombie, or (pathologically) a cloned id. Back off briefly instead
+  // of fighting; the normal multi-client case never lands here.
+  let replaced = false;
+  const standByWhileReplaced = async (): Promise<void> => {
+    if (!replaced) return;
+    replaced = false;
+    opts.onState?.("standby");
+    callbacks.output("[executor] a newer connection claimed this client's executor id — pausing before reconnecting");
+    await new Promise((r) => setTimeout(r, 30_000));
+  };
   void consumeSse(
     session,
-    `/rpc/stream?externalUserId=${encodeURIComponent(session.externalUserId)}&workspace=${encodeURIComponent(workspace)}${envQs}${session.authQuery}`,
+    `/rpc/stream?externalUserId=${encodeURIComponent(session.externalUserId)}&workspace=${encodeURIComponent(workspace)}&executorId=${EXECUTOR_ID}${envQs}${session.authQuery}`,
     (event, data) => {
+      if (event === "replaced") {
+        replaced = true;
+        return;
+      }
       if (event !== "request") return;
       let reqObj: RpcRequest;
       try {
@@ -351,6 +377,7 @@ export function startExecutor(opts: ExecutorOptions): void {
       );
     },
     opts.onState ?? (() => {}),
+    standByWhileReplaced,
   );
 }
 
@@ -391,6 +418,8 @@ export async function sendMessage(
       externalUserId: session.externalUserId,
       text,
       execution,
+      // Local turns sent from this client run on THIS machine's executor.
+      executorId: EXECUTOR_ID,
       ...(conversationId ? { conversationId } : {}),
     }),
   });

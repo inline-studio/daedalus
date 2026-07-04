@@ -82,6 +82,7 @@ export const CLIENT_COMMANDS: PaletteEntry[] = [
   { name: "/local", desc: "Execute commands on THIS machine (usage: /local on|off)", takesArgs: true },
   { name: "/yolo", desc: "Skip per-command approval — dangerous ones still ask (usage: /yolo on|off)", takesArgs: true },
   { name: "/stop", desc: "Stop the in-flight turn (also: Esc)" },
+  { name: "/clear", desc: "Clear the screen (keeps the conversation)" },
   { name: "/quit", desc: "Exit (also: Ctrl-C twice)" },
 ];
 
@@ -382,6 +383,11 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
       case "/stop":
         dim((await abortTurn(session, conversationId ?? defaultConvId)) ? "[stopping…]" : "[nothing to stop]");
         return true;
+      case "/clear":
+        // Visual only — the conversation (and the agent's context) is untouched.
+        screen.clear();
+        printBanner();
+        return true;
       case "/new": {
         const res = await fetch(`${session.base}/conversations?externalUserId=${encodeURIComponent(session.externalUserId)}`, {
           method: "POST",
@@ -578,24 +584,29 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
     pc?.resolve(a);
   }
 
-  // --- Boot ---
-  screen.start();
-  // Welcome card (the Claude-Code look): block-art wordmark + connection facts inside
-  // a rounded teal frame. The live roster line (backend version · agents · skills)
-  // prints under the card when the fetches land.
-  const art = blockArt("DAEDALUS");
-  const cols = process.stdout.columns || 100; // `||`: some PTYs report 0 columns
-  const cardLines: string[] = [];
-  if (art && art[0].length <= cols - 6) {
-    cardLines.push(TEAL + art[0] + RESET, TEAL + art[1] + RESET, "");
-  } else {
-    cardLines.push(TEAL + "DAEDALUS" + RESET, "");
+  // Welcome card (the Claude-Code look): a FULL-WIDTH rounded teal frame with the
+  // block-art wordmark + connection facts. Printed at boot and again by /clear.
+  function printBanner(): void {
+    const art = blockArt("DAEDALUS");
+    const cols = process.stdout.columns || 100; // `||`: some PTYs report 0 columns
+    const cardLines: string[] = [];
+    if (art && art[0].length <= cols - 6) {
+      cardLines.push(TEAL + art[0] + RESET, TEAL + art[1] + RESET, "");
+    } else {
+      cardLines.push(TEAL + "DAEDALUS" + RESET, "");
+    }
+    cardLines.push(DIM + `${host} · workspace ${profile.workspace}` + RESET);
+    cardLines.push(DIM + `execution ${execMode} · approval ${profile.approval} · /help for commands` + RESET);
+    for (const line of boxify(cardLines, cols - 1, `dae v${cliVersion()}`)) out(line);
   }
-  cardLines.push(DIM + `${host} · workspace ${profile.workspace}` + RESET);
-  cardLines.push(DIM + `execution ${execMode} · approval ${profile.approval} · /help for commands` + RESET);
-  const cardWidth = Math.min(cols - 1, Math.max(...cardLines.map(visibleLength), 44) + 4);
-  out("");
-  for (const line of boxify(cardLines, cardWidth, `dae v${cliVersion()}`)) out(line);
+
+  // --- Boot ---
+  // Fresh screen: the app owns the terminal from here (history above scrolls naturally
+  // as the session grows — same behaviour as the Claude-Code CLI). The live roster line
+  // (backend version · agents · skills) prints under the card when the fetches land.
+  process.stdout.write("\x1b[2J\x1b[H");
+  screen.start();
+  printBanner();
   // Agent slash-commands (the brain's + the channel built-ins) join the palette; running
   // one sends it to the agent like any message. Client names win on collision.
   void fetchers

@@ -44,6 +44,7 @@ export interface RemoteExecResult {
 }
 
 interface Executor {
+  id: string; // client-generated, stable per client process — lets a machine reconnect over its own zombie
   res: http.ServerResponse;
   workspace: string;
   connectedAt: string;
@@ -54,61 +55,112 @@ interface Executor {
 }
 
 export class ExecutorRegistry {
-  private byUser = new Map<string, Executor>();
+  // Many executors per user — the normal topology is a CLI on several machines plus a
+  // desktop app on another, all one user. Each connection carries a client-generated
+  // executorId; turns route to the executor of the client that SENT them, falling back
+  // to the most recently connected machine (phone/Telegram turns have no local client).
+  private byUser = new Map<string, Map<string, Executor>>();
 
-  // Register a freshly-connected executor stream. One executor per user: a new
-  // connection replaces the old one (a reconnecting laptop must not be locked out by
-  // its own half-dead predecessor), whose pending requests are failed fast.
-  register(userId: string, res: http.ServerResponse, workspace: string, env: Record<string, string> = {}): void {
-    const prev = this.byUser.get(userId);
+  // Register a freshly-connected executor stream. Same executorId = the same client
+  // process reconnecting: replace its predecessor (a laptop must not be locked out by
+  // its own half-dead stream) and tell it, so a genuinely-alive duplicate stands down
+  // instead of ping-ponging. Different ids coexist.
+  register(
+    userId: string,
+    executorId: string,
+    res: http.ServerResponse,
+    workspace: string,
+    env: Record<string, string> = {},
+  ): void {
+    let all = this.byUser.get(userId);
+    if (!all) {
+      all = new Map();
+      this.byUser.set(userId, all);
+    }
+    const prev = all.get(executorId);
     if (prev) {
       this.failAll(prev, "executor replaced by a new connection");
       try {
+        prev.res.write(`event: replaced\ndata: {}\n\n`);
         prev.res.end();
       } catch {
         /* already gone */
       }
     }
-    this.byUser.set(userId, {
+    all.set(executorId, {
+      id: executorId,
       res,
       workspace,
       connectedAt: new Date().toISOString(),
       env,
       pending: new Map(),
     });
-    log.info({ userId, workspace, ...env }, "remote-exec: executor connected");
+    log.info({ userId, executorId, workspace, ...env }, "remote-exec: executor connected");
   }
 
-  unregister(userId: string, res: http.ServerResponse): void {
-    const ex = this.byUser.get(userId);
-    if (!ex || ex.res !== res) return; // a newer connection already took over
+  unregister(userId: string, executorId: string, res: http.ServerResponse): void {
+    const all = this.byUser.get(userId);
+    const ex = all?.get(executorId);
+    if (!all || !ex || ex.res !== res) return; // a newer connection already took over
     this.failAll(ex, "executor disconnected");
-    this.byUser.delete(userId);
-    log.info({ userId }, "remote-exec: executor disconnected");
+    all.delete(executorId);
+    if (all.size === 0) this.byUser.delete(userId);
+    log.info({ userId, executorId }, "remote-exec: executor disconnected");
   }
 
-  connected(userId: string): boolean {
-    return this.byUser.has(userId);
+  // The executor a request should target: the named one when alive, else the most
+  // recently connected (turns from clients without an executor — phone, plain web).
+  private pick(userId: string, executorId?: string): Executor | null {
+    const all = this.byUser.get(userId);
+    if (!all || all.size === 0) return null;
+    if (executorId) {
+      const named = all.get(executorId);
+      if (named) return named;
+    }
+    let newest: Executor | null = null;
+    for (const ex of all.values()) {
+      if (!newest || ex.connectedAt > newest.connectedAt) newest = ex;
+    }
+    return newest;
   }
 
-  info(userId: string): { workspace: string; connectedAt: string; env: Record<string, string> } | null {
-    const ex = this.byUser.get(userId);
-    return ex ? { workspace: ex.workspace, connectedAt: ex.connectedAt, env: ex.env } : null;
+  connected(userId: string, executorId?: string): boolean {
+    if (!executorId) return (this.byUser.get(userId)?.size ?? 0) > 0;
+    return Boolean(this.byUser.get(userId)?.has(executorId));
   }
 
-  // Submit a request to the user's executor and await the result. Rejects fast when no
-  // executor is connected; resolves with an error result on timeout.
+  info(
+    userId: string,
+    executorId?: string,
+  ): { id: string; workspace: string; connectedAt: string; env: Record<string, string> } | null {
+    const ex = this.pick(userId, executorId);
+    return ex ? { id: ex.id, workspace: ex.workspace, connectedAt: ex.connectedAt, env: ex.env } : null;
+  }
+
+  // Every connected machine for this user (the /status executors listing).
+  list(userId: string): Array<{ id: string; workspace: string; connectedAt: string; env: Record<string, string> }> {
+    return [...(this.byUser.get(userId)?.values() ?? [])].map((ex) => ({
+      id: ex.id,
+      workspace: ex.workspace,
+      connectedAt: ex.connectedAt,
+      env: ex.env,
+    }));
+  }
+
+  // Submit a request to one of the user's executors and await the result. Rejects fast
+  // when none is connected; resolves with an error result on timeout.
   submit(
     userId: string,
     req: Omit<RemoteExecRequest, "id">,
     waitMs: number,
+    executorId?: string,
   ): Promise<RemoteExecResult> {
-    const ex = this.byUser.get(userId);
+    const ex = this.pick(userId, executorId);
     if (!ex) {
       return Promise.resolve({
         id: "",
         ok: false,
-        error: "no executor connected — is `dae remote` running on the target machine?",
+        error: "no executor connected — is `dae` or the desktop app running on the target machine?",
       });
     }
     const id = crypto.randomUUID();
@@ -130,34 +182,41 @@ export class ExecutorRegistry {
     });
   }
 
-  // A result arrived from the client. Returns false for unknown/expired ids.
+  // A result arrived from the client. Request ids are unique per submission, so search
+  // every executor the user has. Returns false for unknown/expired ids.
   deliver(userId: string, result: RemoteExecResult): boolean {
-    const ex = this.byUser.get(userId);
-    const entry = ex?.pending.get(result.id);
-    if (!ex || !entry) return false;
-    ex.pending.delete(result.id);
-    clearTimeout(entry.timer);
-    entry.resolve(result);
-    return true;
+    for (const ex of this.byUser.get(userId)?.values() ?? []) {
+      const entry = ex.pending.get(result.id);
+      if (!entry) continue;
+      ex.pending.delete(result.id);
+      clearTimeout(entry.timer);
+      entry.resolve(result);
+      return true;
+    }
+    return false;
   }
 
   heartbeatAll(): void {
-    for (const ex of this.byUser.values()) {
-      try {
-        ex.res.write(`event: heartbeat\ndata: {}\n\n`);
-      } catch {
-        /* close handler cleans up */
+    for (const all of this.byUser.values()) {
+      for (const ex of all.values()) {
+        try {
+          ex.res.write(`event: heartbeat\ndata: {}\n\n`);
+        } catch {
+          /* close handler cleans up */
+        }
       }
     }
   }
 
   closeAll(): void {
-    for (const [userId, ex] of this.byUser) {
-      this.failAll(ex, "server shutting down");
-      try {
-        ex.res.end();
-      } catch {
-        /* already gone */
+    for (const [userId, all] of this.byUser) {
+      for (const ex of all.values()) {
+        this.failAll(ex, "server shutting down");
+        try {
+          ex.res.end();
+        } catch {
+          /* already gone */
+        }
       }
       this.byUser.delete(userId);
     }

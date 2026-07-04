@@ -296,6 +296,77 @@ const rpcExec = (body) =>
   expect("remoteConnected flips false after disconnect", chan.remoteConnected(userId) === false);
 }
 
+// --- 7b. Multi-executor: machines coexist; only a SAME-ID reconnect replaces ---
+// The normal topology is several machines (CLI ×N + desktop) for one user. Distinct
+// executorIds coexist and requests route to the targeted machine; reconnecting with
+// the SAME id replaces the zombie predecessor, which is told via `event: replaced`.
+{
+  const openStream = (executorId, hostname, onEvent) => {
+    const abort = new AbortController();
+    const done = fetch(
+      `${base}/rpc/stream?externalUserId=${UID}&workspace=/tmp/ws-${hostname}&executorId=${executorId}&hostname=${hostname}`,
+      { signal: abort.signal },
+    )
+      .then(async (res) => {
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+        for (;;) {
+          const { done: d, value } = await reader.read();
+          if (d) break;
+          buf += dec.decode(value, { stream: true });
+          let sep;
+          while ((sep = buf.indexOf("\n\n")) !== -1) {
+            onEvent(buf.slice(0, sep));
+            buf = buf.slice(sep + 2);
+          }
+        }
+      })
+      .catch(() => {});
+    return { abort, done };
+  };
+
+  // Two machines, distinct ids → both connected, both listed, requests route by id.
+  const aBlocks = [];
+  const bBlocks = [];
+  const a = openStream("exec-aaa", "mac-one", (b) => aBlocks.push(b));
+  const b = openStream("exec-bbb", "mac-two", (ize) => bBlocks.push(ize));
+  await new Promise((r) => setTimeout(r, 300));
+  const userId = sessions.resolveUser("web", UID);
+  expect("two machines coexist (both connected)", chan.remoteConnected(userId, "exec-aaa") && chan.remoteConnected(userId, "exec-bbb"));
+
+  const answer = (blocks, marker) => {
+    const reqBlock = blocks.find((x) => x.includes("event: request"));
+    if (!reqBlock) return null;
+    const req = JSON.parse(reqBlock.split("\n").find((l) => l.startsWith("data:")).slice(5));
+    return fetch(`${base}/rpc/result?externalUserId=${UID}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: req.id, ok: true, stdout: marker, exitCode: 0 }),
+    });
+  };
+  const rtA = new RemoteRuntime({ url: base, token, userId, executorId: "exec-aaa" });
+  const resAP = rtA.exec("hostname", { timeoutMs: 3_000 });
+  await new Promise((r) => setTimeout(r, 250));
+  await answer(aBlocks, "ran-on-mac-one");
+  const resA = await resAP;
+  expect("requests route to the TARGETED machine", resA.stdout === "ran-on-mac-one" && bBlocks.every((x) => !x.includes("event: request")), JSON.stringify(resA));
+
+  // Same id reconnects → the old stream is told it was replaced; the other machine is untouched.
+  let aSawReplaced = false;
+  const a2 = openStream("exec-aaa", "mac-one", (blk) => { if (blk.includes("event: replaced")) aSawReplaced = true; });
+  await new Promise((r) => setTimeout(r, 300));
+  // aBlocks' stream got the replaced event (check both captures — either listener may have seen it)
+  aSawReplaced = aSawReplaced || aBlocks.some((x) => x.includes("event: replaced"));
+  expect("a same-id reconnect replaces the zombie (event: replaced)", aSawReplaced);
+  expect("the other machine is untouched by the replacement", chan.remoteConnected(userId, "exec-bbb"));
+
+  a2.abort.abort();
+  b.abort.abort();
+  a.abort.abort();
+  await new Promise((r) => setTimeout(r, 200));
+}
+
 // --- 8. The REAL startExecutor: creates a missing workspace; spawn failures speak ---
 // The wizard only records the workspace path — casa UAT 2026-07: a never-created
 // workspace made child_process.exec fail at spawn for EVERY command, as a bare exit 1
