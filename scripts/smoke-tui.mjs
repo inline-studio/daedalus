@@ -78,15 +78,19 @@ const type = (ed, text) => { for (const ch of text) ed.handle({ sequence: ch, na
 
   outBuf = "";
   screen.setInput("> ", "hello", 3);
-  // prompt (2) + cursor (3) + 1 → absolute column 6.
-  expect("input cursor parks at the absolute edit column", outBuf.includes("\x1b[6G") && outBuf.includes("> hello"));
+  // border "│ " (2) + prompt (2) + cursor (3) + 1 → absolute column 8, inside the box.
+  expect(
+    "input renders inside the composer box, cursor at the edit column",
+    outBuf.includes("\x1b[8G") && outBuf.includes("> hello") && outBuf.includes("╭") && outBuf.includes("╰"),
+  );
 
-  // Command palette rows paint below the input; the cursor climbs back over them.
+  // Command palette rows paint below the box + status; the cursor climbs back over
+  // bottom border + status + menu rows (2 + 2 = 4).
   outBuf = "";
   screen.setMenu(["▸ /new    start a session", "  /help   commands"]);
   expect(
-    "palette rows paint below the input and the cursor climbs back",
-    outBuf.includes("/new") && outBuf.includes("/help") && outBuf.includes("\x1b[2A") && outBuf.endsWith("\x1b[6G"),
+    "palette rows paint below the composer and the cursor climbs back",
+    outBuf.includes("/new") && outBuf.includes("/help") && outBuf.includes("\x1b[4A") && outBuf.endsWith("\x1b[8G"),
     JSON.stringify(outBuf.slice(-40)),
   );
   outBuf = "";
@@ -101,6 +105,15 @@ const type = (ed, text) => { for (const ch of text) ed.handle({ sequence: ch, na
   screen.setConfirm("run: rm -rf /tmp/x  [y]es / [n]o");
   expect("confirm mode replaces the input row", outBuf.includes("run: rm -rf") && !outBuf.includes("> x"));
   screen.setConfirm(null);
+}
+
+// --- 3a. boxify: the welcome-card / composer frame helper ---
+{
+  const { boxify, visibleLength } = await import("../dist/cli/tui.js");
+  const box = boxify(["hello", "\x1b[2mdim line\x1b[0m"], 30, "dae v1");
+  expect("boxify draws a rounded titled frame", box[0].includes("╭─ dae v1 ─") && box[box.length - 1].includes("╰"), box[0]);
+  expect("boxify pads every row to one width", new Set(box.map((l) => visibleLength(l))).size === 1, JSON.stringify(box.map(visibleLength)));
+  expect("styled content keeps its reset inside the frame", box[2].includes("dim line") && box[2].includes("\x1b[0m"));
 }
 
 // --- 3b. Command palette filtering ---

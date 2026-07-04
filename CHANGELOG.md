@@ -13,6 +13,12 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Terminal chrome.** The `dae` interface now frames itself like a full-screen
+  app: a rounded teal welcome card (block-art wordmark + connection facts, CLI
+  version in the border title) and a bordered composer at the bottom with the
+  input inside the box and the status line beneath it — the command palette
+  drops below the frame. Still hand-rolled ANSI, zero dependencies.
+
 - **Terminal command palette.** Typing `/` in the `dae` interface opens a live
   menu under the composer, Hermes-style: every client command with its
   description, filtered as you type — ↑/↓ select, Tab completes, Enter runs the

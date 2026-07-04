@@ -13,7 +13,7 @@ import {
   sendMessage,
   abortTurn,
 } from "./remote-shared.js";
-import { LineEditor, Screen, DIM, RESET, type Key } from "./tui.js";
+import { LineEditor, Screen, boxify, visibleLength, DIM, RESET, type Key } from "./tui.js";
 
 // The `dae remote` terminal interface — a persistent, full-duplex terminal app in the
 // Claude-Code/Hermes-CLI shape: streaming scrollback, a live status line, slash
@@ -580,20 +580,22 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
 
   // --- Boot ---
   screen.start();
-  // Hermes-style banner: block-art wordmark, then the connection facts. The live
-  // roster line (backend version · agents · skills) fills in when the fetches land.
+  // Welcome card (the Claude-Code look): block-art wordmark + connection facts inside
+  // a rounded teal frame. The live roster line (backend version · agents · skills)
+  // prints under the card when the fetches land.
   const art = blockArt("DAEDALUS");
   const cols = process.stdout.columns || 100; // `||`: some PTYs report 0 columns
-  if (art && art[0].length <= cols) {
-    out("");
-    out(TEAL + art[0] + RESET);
-    out(TEAL + art[1] + RESET);
-    out("");
+  const cardLines: string[] = [];
+  if (art && art[0].length <= cols - 6) {
+    cardLines.push(TEAL + art[0] + RESET, TEAL + art[1] + RESET, "");
   } else {
-    out(TEAL + "DAEDALUS" + RESET);
+    cardLines.push(TEAL + "DAEDALUS" + RESET, "");
   }
-  dim(`dae v${cliVersion()} · ${host} · workspace ${profile.workspace}`);
-  dim(`execution ${execMode} · approval ${profile.approval} · /help for commands`);
+  cardLines.push(DIM + `${host} · workspace ${profile.workspace}` + RESET);
+  cardLines.push(DIM + `execution ${execMode} · approval ${profile.approval} · /help for commands` + RESET);
+  const cardWidth = Math.min(cols - 1, Math.max(...cardLines.map(visibleLength), 44) + 4);
+  out("");
+  for (const line of boxify(cardLines, cardWidth, `dae v${cliVersion()}`)) out(line);
   // Agent slash-commands (the brain's + the channel built-ins) join the palette; running
   // one sends it to the agent like any message. Client names win on collision.
   void fetchers
