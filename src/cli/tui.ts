@@ -132,6 +132,32 @@ export class LineEditor {
 const ESC = "\x1b[";
 const DIM = "\x1b[2m";
 const RESET = "\x1b[0m";
+const TEAL = "\x1b[36m";
+
+// Visible length ignoring ANSI colour sequences (for box padding).
+export function visibleLength(s: string): number {
+  return s.replace(/\x1b\[[0-9;]*m/g, "").length;
+}
+
+// A rounded teal box around pre-styled content lines (the Claude-Code welcome-card
+// look). `title` renders into the top border. Content is padded to the box's inner
+// width; overlong lines are truncated.
+export function boxify(lines: string[], width: number, title?: string): string[] {
+  const inner = Math.max(10, width - 4); // "│ " + " │"
+  const top =
+    TEAL +
+    "╭" +
+    (title ? "─ " + title + " " + "─".repeat(Math.max(0, inner - title.length - 1)) : "─".repeat(inner + 2)) +
+    "╮" +
+    RESET;
+  const bottom = TEAL + "╰" + "─".repeat(inner + 2) + "╯" + RESET;
+  const body = lines.map((l) => {
+    const cut = visibleTruncate(l, inner);
+    const pad = " ".repeat(Math.max(0, inner - visibleLength(cut)));
+    return TEAL + "│ " + RESET + cut + pad + TEAL + " │" + RESET;
+  });
+  return [top, ...body, bottom];
+}
 
 export interface ScreenOptions {
   write: (s: string) => void;
@@ -218,9 +244,15 @@ export class Screen {
     this.redraw();
   }
 
-  // Full repaint of the reserved rows (cursor is parked on the input row, which is
-  // always 2 rows below the partial row — palette rows live BELOW the input, so the
-  // upward anchor never moves and `0J` wipes them along with everything else).
+  // Full repaint of the reserved block. Row order (top → bottom):
+  //   [ partial   ]  the streaming reply's in-progress line
+  //   [ ╭────────╮]  composer top border (teal, Claude-Code style)
+  //   [ │ > input│]  the edit row — the cursor parks HERE
+  //   [ ╰────────╯]  composer bottom border
+  //   [ status    ]  the persistent status line (under the box, like the reference)
+  //   [ palette…  ]  command-palette rows while open
+  // The cursor sits on the input row, always 2 rows below the partial row, so the
+  // upward anchor is a constant `2A` and `0J` wipes everything below in one go.
   redraw(): void {
     if (!this.started) return;
     this.opts.write(`${ESC}2A\r${ESC}0J`);
@@ -231,14 +263,17 @@ export class Screen {
     const cols = Math.max(20, this.opts.columns());
     const partial = visibleTruncate(this.partial, cols - 1);
     const status = visibleTruncate(this.status, cols - 1);
-    let inputRow: string;
+    const inner = cols - 4; // box interior: "│ " + " │"
+    const boxTop = TEAL + "╭" + "─".repeat(inner + 2) + "╮" + RESET;
+    const boxBottom = TEAL + "╰" + "─".repeat(inner + 2) + "╯" + RESET;
+    let content: string;
     let cursorCol: number; // 1-based terminal column to park the cursor at
     if (this.confirmText !== null) {
-      inputRow = visibleTruncate(this.confirmText, cols - 1);
-      cursorCol = Math.min(this.confirmText.length, cols - 1) + 1;
+      content = visibleTruncate(this.confirmText, inner);
+      cursorCol = 2 + visibleLength(content) + 1;
     } else {
       // Show the tail of the buffer when it exceeds the width (simple horizontal scroll).
-      const avail = cols - 1 - this.prompt.length;
+      const avail = inner - this.prompt.length;
       let text = this.inputView.text;
       let cursor = this.inputView.cursor;
       if (text.length > avail) {
@@ -246,16 +281,17 @@ export class Screen {
         text = text.slice(start, start + avail);
         cursor = cursor - start;
       }
-      inputRow = this.prompt + text;
-      cursorCol = this.prompt.length + cursor + 1;
+      content = this.prompt + text;
+      cursorCol = 2 + this.prompt.length + cursor + 1;
     }
-    let out = partial + "\n" + status + "\n" + inputRow;
+    const pad = " ".repeat(Math.max(0, inner - visibleLength(content)));
+    const inputRow = TEAL + "│ " + RESET + content + pad + TEAL + " │" + RESET;
+    let out = partial + "\n" + boxTop + "\n" + inputRow + "\n" + boxBottom + "\n" + status;
     for (const row of this.menu) out += "\n" + visibleTruncate(row, cols - 1);
     this.opts.write(out);
-    // Park the cursor back on the input row at the edit position: up over the palette
-    // rows (if any), then absolute column.
-    if (this.menu.length > 0) this.opts.write(`${ESC}${this.menu.length}A`);
-    this.opts.write(`${ESC}${cursorCol}G`);
+    // Park the cursor back on the input row: up over the palette rows, the status
+    // line, and the bottom border, then absolute column.
+    this.opts.write(`${ESC}${2 + this.menu.length}A${ESC}${cursorCol}G`);
   }
 }
 
