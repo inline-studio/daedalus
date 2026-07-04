@@ -2,25 +2,50 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Connect to Daedalus</title>
+<title>Set up Daedalus</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
   body { margin: 0; height: 100vh; display: flex; align-items: center; justify-content: center;
          background: #0a0c10; color: #dbe4ec;
-         font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         font: 14.5px/1.55 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
          -webkit-app-region: drag; }
-  .card { width: min(440px, 90vw); background: #0d1014; border: 1px solid #1b212a;
-          border-radius: 14px; padding: 28px; -webkit-app-region: no-drag; }
-  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; color: #2dd4bf; }
+  .card { width: min(520px, 92vw); max-height: 92vh; overflow-y: auto;
+          background: #0d1014; border: 1px solid #1b212a;
+          border-radius: 14px; padding: 26px 26px 22px; -webkit-app-region: no-drag; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; color: #2dd4bf; }
   .brand b { color: #dbe4ec; font-size: 13px; letter-spacing: .18em; }
-  p { color: #8b949e; font-size: 13.5px; margin: 6px 0 18px; }
-  input { width: 100%; background: #0a0c10; color: #dbe4ec; border: 1px solid #2a313c;
-          border-radius: 9px; padding: 11px 13px; font: inherit; }
+  .lead { color: #8b949e; font-size: 13px; margin: 4px 0 18px; }
+  label.field { display: block; font-size: 12px; font-weight: 600; letter-spacing: .06em;
+                text-transform: uppercase; color: #6e7681; margin: 16px 0 6px; }
+  input[type=text], input[type=url] { width: 100%; background: #0a0c10; color: #dbe4ec;
+          border: 1px solid #2a313c; border-radius: 9px; padding: 10px 12px; font: inherit; }
   input:focus { outline: none; border-color: #14b8a6; }
-  button { width: 100%; margin-top: 12px; background: #14b8a6; color: #04211d; border: 1px solid #2dd4bf;
-           border-radius: 9px; padding: 11px; font: inherit; font-weight: 600; cursor: pointer; }
-  button:hover { background: #2dd4bf; }
+  .hint { color: #6e7681; font-size: 12px; margin-top: 5px; }
+  .toggles { margin-top: 20px; border: 1px solid #1b212a; border-radius: 12px; }
+  .toggle-row { display: flex; align-items: flex-start; gap: 14px; padding: 13px 14px; }
+  .toggle-row + .toggle-row { border-top: 1px solid #1b212a; }
+  .toggle-row.disabled { opacity: .4; pointer-events: none; }
+  .toggle-copy { flex: 1; min-width: 0; }
+  .toggle-copy b { font-size: 13.5px; }
+  .toggle-copy span { display: block; color: #8b949e; font-size: 12.5px; margin-top: 2px; }
+  /* Switch */
+  .switch { position: relative; flex-shrink: 0; width: 40px; height: 24px; margin-top: 2px; }
+  .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .switch i { position: absolute; inset: 0; background: #2a313c; border-radius: 999px; transition: background .15s; }
+  .switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px;
+                     border-radius: 50%; background: #8b949e; transition: transform .15s, background .15s; }
+  .switch input:checked + i { background: #14b8a6; }
+  .switch input:checked + i::after { transform: translateX(16px); background: #04211d; }
+  /* Workspace row (inside the toggles group, below local execution) */
+  .ws-row { padding: 0 14px 14px 14px; display: flex; gap: 8px; }
+  .ws-row input { flex: 1; font-size: 13px; }
+  .ws-row button { flex-shrink: 0; background: transparent; color: #c9d1d9; border: 1px solid #2a313c;
+                   border-radius: 9px; padding: 0 14px; font: inherit; font-size: 13px; cursor: pointer; }
+  .ws-row button:hover { border-color: #14b8a6; color: #2dd4bf; }
+  #go { width: 100%; margin-top: 20px; background: #14b8a6; color: #04211d; border: 1px solid #2dd4bf;
+        border-radius: 9px; padding: 11px; font: inherit; font-weight: 600; cursor: pointer; }
+  #go:hover { background: #2dd4bf; }
   .err { color: #f85149; font-size: 13px; min-height: 18px; margin-top: 10px; }
 </style>
 </head>
@@ -30,23 +55,94 @@
       <svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><path d="M5 27V5H27V27H10V10H22V22H16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <b>DAEDALUS</b>
     </div>
-    <p>Where does your daedalus web channel live? Use the same URL you'd open in a
-       browser — your proxy address (e.g. <code>https://chat.example.com</code>) or a
-       local port (e.g. <code>http://127.0.0.1:8765</code>). Login happens in the app.</p>
+    <p class="lead">Your daedalus runs on a server; this app is its interface. Chat and agents
+    stay server-side — commands and file edits can run here on this machine, under your control.</p>
+
+    <label class="field" for="url">Server URL</label>
     <input id="url" type="url" placeholder="https://chat.example.com" autofocus />
+    <div class="hint">The web channel address — your proxy (e.g. <code>https://chat.example.com</code>)
+    or a local port (e.g. <code>http://127.0.0.1:8765</code>). You'll log in on the next screen.</div>
+
+    <div class="toggles">
+      <div class="toggle-row">
+        <div class="toggle-copy">
+          <b>Local execution</b>
+          <span>Conversations started here run their commands and file edits on THIS machine
+          (inside the workspace below) instead of on the server. You can switch per
+          conversation later.</span>
+        </div>
+        <span class="switch"><input id="exec" type="checkbox" checked /><i></i></span>
+      </div>
+      <div class="toggle-row" id="yolo-row">
+        <div class="toggle-copy">
+          <b>Free rein</b>
+          <span>Skip the per-command approval prompt. Dangerous commands
+          (<code>rm&nbsp;-rf</code>, <code>sudo</code>, …) always ask regardless.</span>
+        </div>
+        <span class="switch"><input id="yolo" type="checkbox" /><i></i></span>
+      </div>
+      <div class="toggle-row" id="ws-copy" style="padding-bottom:8px">
+        <div class="toggle-copy">
+          <b>Workspace</b>
+          <span>Commands run in this folder; file operations are confined to it. Created
+          automatically if it doesn't exist.</span>
+        </div>
+      </div>
+      <div class="ws-row" id="ws-row">
+        <input id="workspace" type="text" spellcheck="false" />
+        <button id="pick" type="button">Choose…</button>
+      </div>
+    </div>
+
     <button id="go">Connect</button>
     <div class="err" id="err"></div>
   </div>
 <script>
+  const $ = (id) => document.getElementById(id);
+
+  // Prefill from saved settings (re-opening setup = change settings, not start over).
+  // Guarded so the page still renders outside the shell (e.g. a design preview).
+  if (window.daedalusSetup) {
+    window.daedalusSetup.state().then((s) => {
+      $("url").value = s.serverUrl || "";
+      $("exec").checked = s.executor.enabled;
+      $("yolo").checked = s.executor.approval === "yolo";
+      $("workspace").value = s.executor.workspace || s.defaultWorkspace;
+      reflectExec();
+    });
+  } else {
+    $("workspace").value = "~/.daedalus/workspace";
+  }
+
+  // Free rein + workspace only mean something while local execution is on.
+  function reflectExec() {
+    const on = $("exec").checked;
+    for (const id of ["yolo-row", "ws-copy", "ws-row"]) $(id).classList.toggle("disabled", !on);
+  }
+  $("exec").addEventListener("change", reflectExec);
+
+  $("pick").addEventListener("click", () => {
+    window.daedalusSetup.pickWorkspace($("workspace").value.trim()).then((p) => {
+      if (p) $("workspace").value = p;
+    });
+  });
+
   const go = () => {
-    const url = document.getElementById("url").value.trim();
-    if (!url) return;
-    window.daedalusSetup.connect(url).then((r) => {
-      if (!r.ok) document.getElementById("err").textContent = r.error || "Couldn't connect.";
+    const url = $("url").value.trim();
+    if (!url) { $("err").textContent = "Server URL is required."; return; }
+    window.daedalusSetup.connect({
+      url,
+      executor: {
+        enabled: $("exec").checked,
+        approval: $("yolo").checked ? "yolo" : "ask",
+        workspace: $("workspace").value.trim(),
+      },
+    }).then((r) => {
+      if (!r.ok) $("err").textContent = r.error || "Couldn't connect.";
     });
   };
-  document.getElementById("go").addEventListener("click", go);
-  document.getElementById("url").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
+  $("go").addEventListener("click", go);
+  $("url").addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
 </script>
 </body>
 </html>

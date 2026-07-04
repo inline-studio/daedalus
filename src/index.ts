@@ -349,7 +349,8 @@ async function runRemoteFlow(
         url: url ?? saved.url ?? "",
         token: opts.token ?? saved.token,
         username: opts.user ?? saved.username,
-        workspace: opts.workspace ?? saved.workspace ?? process.cwd(),
+        // Default workspace: ~/.daedalus/workspace (created by the executor on startup).
+        workspace: opts.workspace ?? saved.workspace ?? path.join(process.env.HOME ?? process.cwd(), ".daedalus", "workspace"),
         execution: saved.execution ?? ("local" as const),
         approval: opts.yolo ? ("yolo" as const) : (saved.approval ?? ("ask" as const)),
         externalUserId: opts.id ?? saved.externalUserId,
@@ -421,7 +422,7 @@ async function runRemoteFlow(
             type: "text",
             name: "workspace",
             message: "Workspace (commands + file ops run here):",
-            initial: path.join(process.env.HOME ?? process.cwd(), "dae-workspace"),
+            initial: path.join(process.env.HOME ?? process.cwd(), ".daedalus", "workspace"),
           },
           {
             type: "select",

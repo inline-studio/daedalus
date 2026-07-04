@@ -1,0 +1,10 @@
+<!-- Daedalus app icon: the web UI's square-spiral labyrinth favicon, at macOS icon
+     geometry (1024 canvas, ~824px rounded square with transparent margin — Big Sur
+     style). rsvg-convert renders icon.png (committed); electron-builder derives
+     icns/ico/AppImage sets from that. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="#0a0c10"/>
+  <g transform="translate(272,272) scale(15)">
+    <path d="M5 27V5H27V27H10V10H22V22H16" fill="none" stroke="#2dd4bf" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

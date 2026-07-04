@@ -10,8 +10,13 @@ contextBridge.exposeInMainWorld("daedalusDesktop", {
   setBadge: (count) => ipcRenderer.send("dae:badge", count),
 });
 
-// Only used by setup.html (the first-run "where is your server?" page); harmless to
-// expose everywhere since it just round-trips to the settings file + loads the URL.
+// Only used by setup.html (the first-run setup page); harmless to expose everywhere
+// since it just round-trips to the settings file + loads the URL.
 contextBridge.exposeInMainWorld("daedalusSetup", {
-  connect: (url) => ipcRenderer.invoke("dae:connect", url),
+  // Current settings + defaults, so re-opening setup prefills instead of starting over.
+  state: () => ipcRenderer.invoke("dae:setup-state"),
+  // Native directory picker for the workspace field.
+  pickWorkspace: (current) => ipcRenderer.invoke("dae:pick-workspace", current),
+  // Submit everything at once: { url, executor: { enabled, approval, workspace } }.
+  connect: (payload) => ipcRenderer.invoke("dae:connect", payload),
 });

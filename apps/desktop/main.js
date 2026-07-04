@@ -80,19 +80,59 @@ function createWindow() {
 }
 
 function openSetup() {
-  writeSettings({ serverUrl: "" });
+  // Keep the saved settings — the setup page prefills from them, so reopening it is
+  // "change settings", not "start over".
   win?.loadFile(path.join(__dirname, "setup.html"));
 }
 
+const defaultWorkspace = () => path.join(app.getPath("home"), ".daedalus", "workspace");
+
 // --- IPC from the preload bridge ---
-ipcMain.handle("dae:connect", (_ev, rawUrl) => {
+
+// Everything the setup page needs to render: current settings (prefill on re-open)
+// and the default workspace path.
+ipcMain.handle("dae:setup-state", () => {
+  const s = readSettings();
+  return {
+    serverUrl: s.serverUrl || "",
+    executor: {
+      enabled: s.executor ? Boolean(s.executor.enabled) : true, // default ON for new setups
+      approval: s.executor?.approval === "yolo" ? "yolo" : "ask",
+      workspace: s.executor?.workspace || defaultWorkspace(),
+    },
+    defaultWorkspace: defaultWorkspace(),
+  };
+});
+
+// Native directory picker for the workspace field.
+ipcMain.handle("dae:pick-workspace", async (_ev, current) => {
+  const picked = await dialog.showOpenDialog(win, {
+    title: "Choose the workspace commands will run in",
+    defaultPath: current || defaultWorkspace(),
+    properties: ["openDirectory", "createDirectory"],
+  });
+  return picked.canceled ? null : picked.filePaths[0];
+});
+
+// The setup page submits everything at once: server URL + local-execution settings.
+ipcMain.handle("dae:connect", (_ev, payload) => {
+  const raw = typeof payload === "string" ? { url: payload } : payload || {};
   let url;
   try {
-    url = new URL(String(rawUrl)).toString().replace(/\/$/, "");
+    url = new URL(String(raw.url)).toString().replace(/\/$/, "");
   } catch {
     return { ok: false, error: "That doesn't look like a URL." };
   }
-  writeSettings({ serverUrl: url });
+  const ex = raw.executor || {};
+  writeSettings({
+    serverUrl: url,
+    executor: {
+      enabled: Boolean(ex.enabled),
+      approval: ex.approval === "yolo" ? "yolo" : "ask",
+      workspace: String(ex.workspace || defaultWorkspace()),
+    },
+    executorPrompted: true, // the setup page IS the wizard — no follow-up dialog
+  });
   win?.loadURL(url);
   return { ok: true };
 });
@@ -176,7 +216,7 @@ async function configureLocalExecution() {
   }
   const picked = await dialog.showOpenDialog(win, {
     title: "Choose the workspace commands will run in",
-    defaultPath: s.executor?.workspace || app.getPath("home"),
+    defaultPath: s.executor?.workspace || defaultWorkspace(),
     properties: ["openDirectory", "createDirectory"],
   });
   if (picked.canceled || !picked.filePaths[0]) return;
@@ -258,6 +298,16 @@ function buildMenu() {
 }
 
 app.whenReady().then(() => {
+  // Packaged builds carry the icon in the bundle (electron-builder derives icns/ico/
+  // AppImage sets from build/icon.png). In dev the dock would show stock Electron —
+  // set it from the repo file so dev looks like the product.
+  if (!app.isPackaged && process.platform === "darwin" && app.dock) {
+    try {
+      app.dock.setIcon(path.join(__dirname, "build", "icon.png"));
+    } catch {
+      /* cosmetic only */
+    }
+  }
   // Belt-and-braces: the web UI asks for Notification permission via the standard API;
   // grant it for the configured server so the opt-in flow works exactly like a browser.
   // "media" covers the composer's dictation mic (macOS still shows its own system
