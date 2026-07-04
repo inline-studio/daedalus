@@ -235,6 +235,14 @@ export interface ExecutorOptions {
 // Runs forever: consumes /rpc/stream, executes requests in the workspace, POSTs results.
 export function startExecutor(opts: ExecutorOptions): void {
   const { session, workspace, callbacks } = opts;
+  // The wizard only RECORDS the workspace path — nothing guaranteed it existed. A missing
+  // cwd makes child_process.exec fail at SPAWN for every command, surfacing as a bare
+  // exit 1 with empty stderr (casa UAT, 2026-07). Create it up front.
+  try {
+    fs.mkdirSync(workspace, { recursive: true });
+  } catch (err) {
+    callbacks.output(`[executor] cannot create workspace ${workspace}: ${(err as Error).message}`);
+  }
   let allowlist = loadAllowlist();
 
   async function handleRequest(reqObj: RpcRequest): Promise<Record<string, unknown>> {
@@ -276,19 +284,44 @@ export function startExecutor(opts: ExecutorOptions): void {
     const timeoutMs = Math.min(reqObj.timeoutMs ?? 120_000, 10 * 60_000);
     const started = Date.now();
     return new Promise((resolve) => {
-      childExec(cmd, { cwd: workspace, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-        const timedOut = Boolean(err && (err as { killed?: boolean }).killed);
-        const exitCode = err ? ((err as { code?: number }).code ?? 1) : 0;
-        audit({ kind: "exec", cmd, exitCode, timedOut, durationMs: Date.now() - started });
+      const fail = (message: string): void => {
+        audit({ kind: "exec", cmd, exitCode: 1, timedOut: false, durationMs: Date.now() - started });
         resolve({
           id: reqObj.id,
-          ok: exitCode === 0,
-          stdout: String(stdout).slice(0, OUTPUT_CAP),
-          stderr: String(stderr).slice(0, OUTPUT_CAP),
-          exitCode: typeof exitCode === "number" ? exitCode : 1,
-          timedOut,
+          ok: false,
+          stdout: "",
+          stderr: `[executor] ${message}`.slice(0, OUTPUT_CAP),
+          exitCode: 1,
+          timedOut: false,
         });
-      });
+      };
+      // Some spawn failures (e.g. cwd exists but isn't a directory → ENOTDIR) THROW
+      // synchronously instead of reaching the callback — without this catch they'd
+      // crash the whole client.
+      try {
+        childExec(cmd, { cwd: workspace, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+          const timedOut = Boolean(err && (err as { killed?: boolean }).killed);
+          // err.code is a NUMBER for a command that ran and failed, but a STRING
+          // ("ENOENT", …) for a spawn-level failure (missing cwd, no shell). The latter
+          // produces no stderr — surface err.message so the agent sees WHY, not a mute
+          // exit 1.
+          const rawCode = err ? (err as { code?: number | string }).code : 0;
+          const exitCode = typeof rawCode === "number" ? rawCode : 1;
+          const spawnFailure = Boolean(err && !timedOut && typeof rawCode !== "number");
+          const errText = String(stderr) || (spawnFailure ? `[executor] ${(err as Error).message}` : "");
+          audit({ kind: "exec", cmd, exitCode, timedOut, durationMs: Date.now() - started });
+          resolve({
+            id: reqObj.id,
+            ok: !err,
+            stdout: String(stdout).slice(0, OUTPUT_CAP),
+            stderr: errText.slice(0, OUTPUT_CAP),
+            exitCode: err ? exitCode || 1 : 0,
+            timedOut,
+          });
+        });
+      } catch (err) {
+        fail((err as Error).message);
+      }
     });
   }
 

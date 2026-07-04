@@ -93,6 +93,13 @@ let current = null;
  */
 function start(opts) {
   stop();
+  // Ensure the workspace exists — a missing cwd fails every exec at spawn with a mute
+  // exit 1 (mirrors remote-shared.ts startExecutor).
+  try {
+    fs.mkdirSync(opts.workspace, { recursive: true });
+  } catch {
+    /* surfaced per-command via the spawn-failure stderr path */
+  }
   const controller = new AbortController();
   const me = { controller, stopped: false };
   current = me;
@@ -218,19 +225,41 @@ async function handleRequest(opts, reqObj) {
   const timeoutMs = Math.min(reqObj.timeoutMs ?? 120_000, 10 * 60_000);
   const started = Date.now();
   return new Promise((resolve) => {
-    childExec(cmd, { cwd: opts.workspace, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const timedOut = Boolean(err && err.killed);
-      const exitCode = err ? (typeof err.code === "number" ? err.code : 1) : 0;
-      audit({ kind: "exec", cmd, exitCode, timedOut, durationMs: Date.now() - started });
+    const fail = (message) => {
+      audit({ kind: "exec", cmd, exitCode: 1, timedOut: false, durationMs: Date.now() - started });
       resolve({
         id: reqObj.id,
-        ok: exitCode === 0,
-        stdout: String(stdout).slice(0, OUTPUT_CAP),
-        stderr: String(stderr).slice(0, OUTPUT_CAP),
-        exitCode,
-        timedOut,
+        ok: false,
+        stdout: "",
+        stderr: `[executor] ${message}`.slice(0, OUTPUT_CAP),
+        exitCode: 1,
+        timedOut: false,
       });
-    });
+    };
+    // Some spawn failures (cwd not a directory → ENOTDIR) THROW synchronously instead of
+    // reaching the callback. (Mirrors remote-shared.ts.)
+    try {
+      childExec(cmd, { cwd: opts.workspace, timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+        const timedOut = Boolean(err && err.killed);
+        // err.code is a NUMBER when the command ran and failed, a STRING ("ENOENT") on a
+        // spawn-level failure (missing cwd, no shell) — those produce no stderr, so
+        // surface err.message instead of a mute exit 1.
+        const spawnFailure = Boolean(err && !timedOut && typeof err.code !== "number");
+        const exitCode = err ? (typeof err.code === "number" ? err.code : 1) : 0;
+        const errText = String(stderr) || (spawnFailure ? `[executor] ${err.message}` : "");
+        audit({ kind: "exec", cmd, exitCode, timedOut, durationMs: Date.now() - started });
+        resolve({
+          id: reqObj.id,
+          ok: !err,
+          stdout: String(stdout).slice(0, OUTPUT_CAP),
+          stderr: errText.slice(0, OUTPUT_CAP),
+          exitCode: err ? exitCode || 1 : 0,
+          timedOut,
+        });
+      });
+    } catch (err) {
+      fail(err.message);
+    }
   });
 }
 

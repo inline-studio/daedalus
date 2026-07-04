@@ -73,6 +73,19 @@ don't start anything by hand. Talk to your agent through whichever surface you w
 Watch it work with `docker compose logs -f daedalus`. Keep it current with `dae update`.
 Full walkthrough, prerequisites, and provider setup: [docs/install.md](docs/install.md).
 
+### Clients
+
+- **Terminal**: `dae` on any machine (the terminal interface; first run walks through
+  local/remote setup). Chat runs on the server; commands and file ops run on YOUR
+  machine, gated by your approval settings.
+- **Desktop app**: **[⬇ download from the `desktop-latest` release](https://github.com/inline-studio/daedalus/releases/tag/desktop-latest)**
+  — macOS (`Daedalus-<v>-arm64.dmg` for Apple silicon, `Daedalus-<v>.dmg` for Intel),
+  Windows (`Daedalus.Setup.<v>.exe`), Linux (`Daedalus-<v>.AppImage`). Signed +
+  notarised on macOS; auto-updates from that same release. Don't be misled by the
+  repo's "Latest" release badge — that's always a *server* release
+  (`v0.1.0-<run>`, what `dae update` consumes); the desktop builds live under the
+  `desktop-v*` / `desktop-latest` tags.
+
 ---
 
 ## How it runs

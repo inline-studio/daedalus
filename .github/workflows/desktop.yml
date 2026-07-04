@@ -179,6 +179,16 @@ jobs:
         run: |
           V="${{ needs.gate.outputs.version }}"
           if gh release view desktop-latest >/dev/null 2>&1; then
+            # Prune assets from PREVIOUS versions first — --clobber only replaces
+            # same-named files, and the installers carry the version in their filename,
+            # so without this the rolling release accumulates every build ever made.
+            # The updater ymls keep their names and are clobbered in place, so the feed
+            # never has a gap.
+            for a in $(gh release view desktop-latest --json assets --jq '.assets[].name'); do
+              if [ ! -e "assets/$a" ]; then
+                gh release delete-asset desktop-latest "$a" --yes
+              fi
+            done
             # Replace assets in place; the tag itself stays.
             for f in assets/*; do gh release upload desktop-latest "$f" --clobber; done
             gh release edit desktop-latest \
