@@ -296,6 +296,55 @@ const rpcExec = (body) =>
   expect("remoteConnected flips false after disconnect", chan.remoteConnected(userId) === false);
 }
 
+// --- 8. The REAL startExecutor: creates a missing workspace; spawn failures speak ---
+// The wizard only records the workspace path — casa UAT 2026-07: a never-created
+// workspace made child_process.exec fail at spawn for EVERY command, as a bare exit 1
+// with empty stderr (err.code is the STRING "ENOENT", not a number).
+{
+  const { startExecutor } = await import("../dist/cli/remote-shared.js");
+  const mkSession = (id) => ({
+    base,
+    externalUserId: id,
+    authQuery: "",
+    headers: () => ({ "content-type": "application/json" }),
+  });
+
+  // (a) Missing workspace → created at startup, commands succeed.
+  const missingWs = join(workspace, "nested", "never-made");
+  startExecutor({
+    session: mkSession("ws-user-a"),
+    workspace: missingWs,
+    yolo: true,
+    callbacks: { output: () => {}, confirm: async () => "yes" },
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  const rtA = new RemoteRuntime({ url: base, token, userId: sessions.resolveUser("web", "ws-user-a") });
+  const okRes = await rtA.exec("pwd", { timeoutMs: 3_000 });
+  expect(
+    "startExecutor creates a missing workspace (exec runs, cwd is the workspace)",
+    okRes.exitCode === 0 && okRes.stdout.includes("never-made"),
+    JSON.stringify(okRes),
+  );
+
+  // (b) Unusable workspace (path is a FILE) → spawn failure surfaces err.message.
+  const fileWs = join(workspace, "ws-as-file");
+  writeFileSync(fileWs, "not a directory");
+  startExecutor({
+    session: mkSession("ws-user-b"),
+    workspace: fileWs,
+    yolo: true,
+    callbacks: { output: () => {}, confirm: async () => "yes" },
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  const rtB = new RemoteRuntime({ url: base, token, userId: sessions.resolveUser("web", "ws-user-b") });
+  const badRes = await rtB.exec("pwd", { timeoutMs: 3_000 });
+  expect(
+    "spawn-level failures carry the reason in stderr (not a mute exit 1)",
+    badRes.exitCode !== 0 && badRes.stderr.includes("[executor]"),
+    JSON.stringify(badRes),
+  );
+}
+
 await chan.stop();
 sessions.close();
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);

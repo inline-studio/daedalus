@@ -13,6 +13,21 @@ Each entry references the PR that introduced the change.
 
 ### Fixed
 
+- **Desktop downloads are now findable.** The README's Quick start links the
+  `desktop-latest` release directly with per-platform filenames (the repo's
+  "Latest" badge always points at a *server* release — that's what `dae update`
+  consumes — so the desktop builds were effectively invisible). The rolling
+  `desktop-latest` release also prunes previous versions' installers on publish
+  (`--clobber` only replaces same-named files, so versioned dmg/exe/AppImage
+  builds were accumulating forever).
+- **Executor: every command failed with a mute exit 1 when the workspace didn't
+  exist.** The wizard records the workspace path but never created it, and a
+  missing `cwd` makes `child_process.exec` fail at spawn — with `err.code` a
+  STRING ("ENOENT"), no stderr, and nothing for the agent to explain. The
+  executor (CLI + desktop) now creates the workspace at startup, surfaces
+  spawn-level failures as `[executor] <reason>` in stderr, and catches the
+  synchronously-thrown variants (ENOTDIR) that would have crashed the client.
+
 - **Local execution from the web/desktop never reached the executor.** The
   `/rpc/exec` bridge call inside the worker / agent containers rode OneCLI's
   process-wide MITM proxy dispatcher and died before reaching the supervisor —
