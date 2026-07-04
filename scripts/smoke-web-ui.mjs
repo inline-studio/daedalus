@@ -130,6 +130,27 @@ async function makeMd() {
   await ch.stop();
 }
 
+// Desktop-only UI mode: browsers get a download page; the desktop app (X-Dae-Desktop
+// header) gets the real shell; the API is untouched either way.
+{
+  const ch = new WebChannel({ defaultAgent: "orchestrator", port: 8794, sessions: fakeSessions, uiMode: "desktop-only" });
+  await ch.start(ctx);
+  const b = "http://127.0.0.1:8794";
+
+  const browser = await fetch(b + "/");
+  const browserHtml = await browser.text();
+  ok(
+    "desktop-only: a browser gets the download page, not the shell",
+    browser.status === 200 && browserHtml.includes("Download the desktop app") && !browserHtml.includes("/events"),
+  );
+  const app = await fetch(b + "/", { headers: { "x-dae-desktop": "1" } });
+  const appHtml = await app.text();
+  ok("desktop-only: the desktop app gets the real shell", app.status === 200 && appHtml.includes("/events"));
+  const api = await fetch(b + "/history?externalUserId=u1");
+  ok("desktop-only: the API is unaffected for browsers", api.status === 200);
+  await ch.stop();
+}
+
 // 2. Token-gated channel: shell open, API gated.
 {
   const { ch, base } = await run(8792, "secret");

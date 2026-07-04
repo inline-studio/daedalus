@@ -11,6 +11,15 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Added
+
+- **Desktop-only UI mode.** `channels.web.ui: desktop-only` retires the browser as a
+  chat surface: the shell + login page are served only to the Daedalus desktop app
+  (which stamps every request with `X-Dae-Desktop`); browsers get a download page
+  pointing at the desktop app and the `dae` terminal client. The API is identical in
+  both modes and auth is unchanged — a UI-surface gate, not a security boundary.
+  Default remains `browser`.
+
 ### Fixed
 
 - **Desktop downloads are now findable.** The README's Quick start links the

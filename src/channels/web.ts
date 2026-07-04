@@ -98,6 +98,7 @@ export class WebChannel implements Channel {
       }
     | undefined;
   private transcribe: ((audio: Buffer, mediaType: string) => Promise<string | null>) | undefined;
+  private uiMode: "browser" | "desktop-only" = "browser";
 
   constructor(opts: {
     defaultAgent: string;
@@ -144,6 +145,9 @@ export class WebChannel implements Channel {
     // Composer dictation (POST /transcribe): audio → text via the stack's transcriber.
     // Absent (no whisper configured) the endpoint 404s and the UI hides its mic.
     transcribe?: (audio: Buffer, mediaType: string) => Promise<string | null>;
+    // "desktop-only": the UI shell is served only to the desktop app (browsers get a
+    // download page); the API is unaffected. Default "browser".
+    uiMode?: "browser" | "desktop-only";
   }) {
     this.defaultAgent = opts.defaultAgent;
     this.port = opts.port ?? 8765;
@@ -166,6 +170,7 @@ export class WebChannel implements Channel {
     this.skillsProvider = opts.skillsProvider;
     this.artifactsProvider = opts.artifactsProvider;
     this.transcribe = opts.transcribe;
+    this.uiMode = opts.uiMode ?? "browser";
   }
 
   // Whether this user currently has a `dae remote` executor connected — serve uses it to
@@ -202,9 +207,21 @@ export class WebChannel implements Channel {
           return;
         }
 
+        // Desktop-only UI mode: the chat shell (and login page) load only inside the
+        // Daedalus desktop app, which stamps every request with X-Dae-Desktop. Browsers
+        // get a download page. A UI-surface gate, NOT a security boundary — the header is
+        // trivially forgeable, but everything sensitive still sits behind the normal auth;
+        // this only retires the browser as a user-facing surface. The API is untouched.
+        const uiAllowed = this.uiMode !== "desktop-only" || req.headers["x-dae-desktop"] === "1";
+
         // --- Login mode: unauthenticated login routes, served before the gate ---
         if (loginMode) {
           if (req.method === "GET" && (pathname === "/login" || pathname === "/login.html")) {
+            if (!uiAllowed) {
+              res.writeHead(200, htmlHeaders());
+              res.end(desktopOnlyLanding());
+              return;
+            }
             res.writeHead(200, htmlHeaders());
             res.end(WEB_LOGIN_HTML);
             return;
@@ -227,6 +244,11 @@ export class WebChannel implements Channel {
         // /login otherwise); in token/open mode it's served unauthenticated so the page can
         // load and then authenticate its own API calls.
         if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
+          if (!uiAllowed) {
+            res.writeHead(200, htmlHeaders());
+            res.end(desktopOnlyLanding());
+            return;
+          }
           if (loginMode && !loginUser) {
             res.writeHead(302, { Location: "/login" });
             res.end();
@@ -1275,6 +1297,42 @@ function jsStringLiteral(s: string): string {
 // stream carries attachments; history is text-only).
 function partsToText(content: ContentPart[]): string {
   return content.map((p) => (p.type === "text" ? p.text : "")).join("");
+}
+
+// What a browser sees in desktop-only UI mode: where to get the real clients. Inline
+// styles, no scripts — this page must stay boring.
+function desktopOnlyLanding(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Daedalus</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; font: 15px/1.6 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background: #0a0c10; color: #dbe4ec; min-height: 100dvh;
+         display: flex; align-items: center; justify-content: center; }
+  main { max-width: 460px; padding: 32px; text-align: center; }
+  h1 { font-size: 15px; font-weight: 700; letter-spacing: 0.2em; color: #2dd4bf; }
+  p { color: #8b949e; }
+  a.btn { display: inline-block; margin-top: 14px; padding: 10px 18px; border-radius: 10px;
+          background: #14b8a6; color: #04211d; font-weight: 600; text-decoration: none; }
+  code { background: #12161c; border: 1px solid #2a313c; border-radius: 6px; padding: 2px 7px;
+         font-size: 13px; color: #c9d1d9; }
+</style>
+</head>
+<body>
+  <main>
+    <h1>DAEDALUS</h1>
+    <p>This server's chat interface runs in the <b>Daedalus desktop app</b> — it isn't served
+    to browsers.</p>
+    <a class="btn" href="https://github.com/inline-studio/daedalus/releases/tag/desktop-latest">Download the desktop app</a>
+    <p>Or use the terminal: <code>dae</code> — and messaging channels (Telegram) keep working
+    as configured.</p>
+  </main>
+</body>
+</html>`;
 }
 
 async function readJson(req: http.IncomingMessage, maxBytes?: number): Promise<Record<string, unknown>> {
