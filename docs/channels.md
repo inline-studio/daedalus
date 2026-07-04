@@ -165,7 +165,12 @@ Scope and safety:
 
 - **CLI** — an interactive REPL (`dae serve` with the cli channel enabled): each stdin
   line is a message; replies and attachment notes print to stdout. Good for local dev.
-- **Web** — a minimal HTTP + SSE surface. `POST /messages` to send (optionally with
+- **Web** — a minimal HTTP + SSE surface. `channels.web.ui: desktop-only` retires the
+  browser as a chat surface: the shell (and login page) are served only to the Daedalus
+  desktop app (which stamps its requests), while browsers get a download page. The API
+  (`/messages`, `/events`, `/rpc/*`, …) — what the desktop app, `dae`, and executors
+  speak — is identical in both modes, and auth is unchanged (this is a UI-surface gate,
+  not a security boundary). Default is `browser`. `POST /messages` to send (optionally with
   base64 attachments), `GET /events?externalUserId=…` for the reply stream. A bearer
   token (`web.token`) guards it when set. The built-in chat UI (served at `GET /`) is a
   full session workspace: a sidebar with **Skills & Tools** (the library with lifecycle

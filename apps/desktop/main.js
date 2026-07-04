@@ -265,6 +265,13 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
     cb(permission === "notifications" || permission === "media");
   });
+  // Identify as the desktop app on every request. Servers running the UI in
+  // desktop-only mode (channels.web.ui) serve the chat shell only to requests carrying
+  // this header; browsers get a download page instead.
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, cb) => {
+    details.requestHeaders["X-Dae-Desktop"] = "1";
+    cb({ requestHeaders: details.requestHeaders });
+  });
   buildMenu();
   createWindow();
   // Executor lifecycle: once the server page is up (auth cookies + localStorage exist),

@@ -355,6 +355,13 @@ export const ChannelsConfigSchema = z.object({
       // Telegram-style `[date] Name: …` export). Falls back to the logged-in username
       // (login mode) or "You". Set this to e.g. your full name for nicer debug pastes.
       userName: z.string().optional(),
+      // Which clients get the chat UI shell. "browser" (default): anyone who can reach
+      // the port. "desktop-only": browsers get a download page instead — the UI loads
+      // only inside the Daedalus desktop app (which identifies itself per request).
+      // The API surface (/messages, /events, /rpc/*, …) is identical in both modes and
+      // is what the desktop app, `dae`, and executors speak; auth is unchanged. This is
+      // a UI-surface gate, not a security boundary.
+      ui: z.enum(["browser", "desktop-only"]).default("browser"),
       // Remote execution (the `dae remote` CLI): a laptop-side client connects an
       // outbound SSE stream and becomes the EXECUTOR for its user's turns — bash and
       // read/write/edit run on the laptop instead of the agent container. Off by

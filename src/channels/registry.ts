@@ -123,6 +123,7 @@ export function buildChannels(
         ...(w.remoteExec?.enabled
           ? { remoteExec: { enabled: true, timeoutMs: w.remoteExec.timeoutMs } }
           : {}),
+        ...(w.ui ? { uiMode: w.ui } : {}),
       }),
     );
   }
