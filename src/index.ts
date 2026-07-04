@@ -326,18 +326,21 @@ program
   .option("--yolo", "skip per-command confirmation (dangerous commands still prompt)")
   .option("--id <externalUserId>", "override the client identity (default: remote-<hostname>)")
   .option("--plain", "line-mode output instead of the full terminal interface", false)
-  .action(
-    async (
-      url: string | undefined,
-      opts: {
-        token?: string;
-        user?: string;
-        workspace?: string;
-        yolo?: boolean;
-        id?: string;
-        plain: boolean;
-      },
-    ) => {
+  .action(async (url, opts) => runRemoteFlow(url, opts));
+
+// The terminal-interface flow behind both `dae` (no arguments) and `dae remote`.
+async function runRemoteFlow(
+  url: string | undefined,
+  opts: {
+    token?: string;
+    user?: string;
+    workspace?: string;
+    yolo?: boolean;
+    id?: string;
+    plain: boolean;
+  },
+): Promise<void> {
+  {
       const shared = await import("./cli/remote-shared.js");
       const saved = shared.loadProfile() ?? {};
 
@@ -358,11 +361,42 @@ program
           process.exit(2);
         }
         console.log("First run — let's connect this machine to your daedalus.\n");
+        // Local shortcut: if this machine hosts a daedalus stack, offer it — prefill the
+        // loopback URL (and the web login username when the config carries one).
+        let localUrl = "";
+        let localUsername = "";
+        try {
+          const cfg = loadConfig(program.opts<{ config?: string }>().config);
+          const web = cfg.channels?.web;
+          if (web?.enabled) {
+            localUrl = `http://127.0.0.1:${web.port ?? 8765}`;
+            if (web.username) localUsername = web.username;
+          }
+        } catch {
+          /* no local install — remote-only wizard */
+        }
+        const where = localUrl
+          ? await prompts({
+              type: "select",
+              name: "where",
+              message: "Where does your daedalus run?",
+              choices: [
+                { title: `On this machine (${localUrl})`, value: "local" },
+                { title: "On a remote server", value: "remote" },
+              ],
+            })
+          : { where: "remote" };
+        if (where.where === undefined) {
+          console.log("Cancelled.");
+          process.exit(2);
+        }
+        const isLocal = where.where === "local";
         const answers = await prompts([
           {
             type: "text",
             name: "url",
             message: "Server URL (the address the web UI uses):",
+            initial: isLocal ? localUrl : "",
             validate: (v: string) => (/^https?:\/\//.test(v.trim()) ? true : "http(s):// URL required"),
           },
           {
@@ -374,8 +408,14 @@ program
               { title: "Bearer token", value: "token" },
               { title: "None / handled by my proxy", value: "open" },
             ],
+            initial: isLocal && localUsername ? 0 : undefined,
           },
-          { type: (prev: string) => (prev === "login" ? "text" : null), name: "username", message: "Username:" },
+          {
+            type: (prev: string) => (prev === "login" ? "text" : null),
+            name: "username",
+            message: "Username:",
+            initial: localUsername || undefined,
+          },
           { type: (_p: string, v: { auth?: string }) => (v.auth === "token" ? "password" : null), name: "token", message: "Token:" },
           {
             type: "text",
@@ -447,8 +487,8 @@ program
           ...(profile.externalUserId ? { externalUserId: profile.externalUserId } : {}),
         });
       }
-    },
-  );
+  }
+}
 
 program
   .command("serve")
@@ -830,7 +870,17 @@ program
     console.log(JSON.stringify(config, null, 2));
   });
 
-program.parseAsync().catch((err) => {
-  log.error({ err }, "command failed");
-  process.exit(1);
-});
+// Bare `dae` in a terminal IS the interface (Hermes/Claude-CLI shape): launch the
+// terminal client — the first run walks through local/remote setup. Anything else
+// (flags, subcommands, pipes) goes through commander as usual.
+if (process.argv.length <= 2 && process.stdin.isTTY && process.stdout.isTTY) {
+  runRemoteFlow(undefined, { plain: false }).catch((err) => {
+    log.error({ err }, "command failed");
+    process.exit(1);
+  });
+} else {
+  program.parseAsync().catch((err) => {
+    log.error({ err }, "command failed");
+    process.exit(1);
+  });
+}

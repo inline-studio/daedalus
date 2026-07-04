@@ -11,7 +11,23 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Fixed
+
+- **`dae remote` booted with a dead keyboard.** The wizard / password prompt
+  (`prompts`) pauses stdin when it closes, and a `keypress` listener doesn't
+  un-pause an explicitly-paused stream — the terminal interface started deaf (raw
+  mode, so not even Ctrl-C worked). It now resumes stdin explicitly.
+
 ### Added
+
+- **Bare `dae` is the interface.** Running `dae` with no arguments in a terminal
+  launches the terminal client (first run walks through setup; subcommands, flags
+  and pipes still go to the normal CLI). The first-run wizard now starts with
+  "Where does your daedalus run?" when this machine hosts a stack — picking local
+  prefills the loopback URL (and web-login username) from the local config.
+- **Terminal boot banner.** The client greets Hermes-style: block-art DAEDALUS
+  wordmark, CLI version · server · workspace, execution/approval line, and a live
+  roster line (backend version · agents · skills · cron) once the fetches land.
 
 - **Live turn feed in the Agents · Activity modal.** The detail pane now streams the
   selected agent's inner life: coalesced thinking snippets ("thinking — array_filter

@@ -390,6 +390,7 @@ the credential model and the manual injection form: [docs/install.md](docs/insta
 
 | Command | What it does |
 |---|---|
+| `dae` | The terminal interface (same as `dae remote`) — chat with your daedalus, tools run on this machine. First run walks through local/remote setup |
 | `dae init` | Bootstrap `~/.daedalus/` from the shipped example |
 | `dae install` | Turnkey: ensure config, then `docker compose up -d` the stack |
 | `dae update` | Check for a newer release, install it, re-apply your configuration (CLI-only on machines without an installed stack, e.g. `dae remote` clients) |

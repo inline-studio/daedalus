@@ -2,6 +2,7 @@ import readline from "node:readline";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import {
   type RemoteProfile,
   type RemoteSession,
@@ -20,6 +21,40 @@ import { LineEditor, Screen, DIM, RESET, type Key } from "./tui.js";
 // line-mode (remote-client.ts) remains for --plain / pipes / no-TTY.
 
 const HISTORY_FILE = path.join(os.homedir(), ".daedalus", "remote-history");
+
+const TEAL = "\x1b[36m";
+
+function cliVersion(): string {
+  try {
+    const req = createRequire(import.meta.url);
+    return (req("../../package.json") as { version: string }).version;
+  } catch {
+    return "?";
+  }
+}
+
+// Two-row Unicode block font (same face as the web UI's empty-chat splash) for the
+// boot banner. Unknown characters abort the art — the caller falls back to plain text.
+const BLOCK_FONT: Record<string, [string, string]> = {
+  A: ["▄▀█", "█▀█"], B: ["█▀▄", "█▄█"], C: ["█▀▀", "█▄▄"], D: ["█▀▄", "█▄▀"],
+  E: ["█▀▀", "██▄"], F: ["█▀▀", "█  "], G: ["█▀▀", "█▄█"], H: ["█ █", "█▀█"],
+  I: ["█", "█"], J: ["  █", "█▄█"], K: ["█▄▀", "█ █"], L: ["█  ", "█▄▄"],
+  M: ["█▀▄▀█", "█ ▀ █"], N: ["█▄ █", "█ ▀█"], O: ["█▀█", "█▄█"], P: ["█▀█", "█▀▀"],
+  Q: ["█▀█", "█▄▀"], R: ["█▀█", "█▀▄"], S: ["█▀", "▄█"], T: ["▀█▀", " █ "],
+  U: ["█ █", "█▄█"], V: ["█ █", "▀▄▀"], W: ["█ █ █", "▀▄▀▄▀"], X: ["▀▄▀", "▄▀▄"],
+  Y: ["█ █", " █ "], Z: ["▀▀█", "█▄▄"], " ": ["  ", "  "],
+};
+export function blockArt(name: string): [string, string] | null {
+  const top: string[] = [];
+  const bottom: string[] = [];
+  for (const ch of name) {
+    const g = BLOCK_FONT[ch];
+    if (!g) return null;
+    top.push(g[0]);
+    bottom.push(g[1]);
+  }
+  return [top.join(" "), bottom.join(" ")];
+}
 
 function fmtClock(totalSeconds: number): string {
   const h = Math.floor(totalSeconds / 3600);
@@ -397,6 +432,10 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
   // --- Keyboard ---
   readline.emitKeypressEvents(process.stdin);
   process.stdin.setRawMode(true);
+  // CRITICAL: prompts()/readline (the wizard, the password prompt) PAUSE stdin when they
+  // close. A 'keypress' listener does not un-pause an explicitly-paused stream, so without
+  // this resume the TUI boots deaf — no typing, and (raw mode) not even Ctrl-C.
+  process.stdin.resume();
   process.stdin.on("keypress", (_str: string, key: Key) => {
     if (!key) return;
     // Confirm prompts capture the keyboard until answered.
@@ -438,8 +477,35 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
 
   // --- Boot ---
   screen.start();
-  dim(`dae remote — ${session.base} · workspace ${profile.workspace}`);
+  // Hermes-style banner: block-art wordmark, then the connection facts. The live
+  // roster line (backend version · agents · skills) fills in when the fetches land.
+  const art = blockArt("DAEDALUS");
+  const cols = process.stdout.columns || 100; // `||`: some PTYs report 0 columns
+  if (art && art[0].length <= cols) {
+    out("");
+    out(TEAL + art[0] + RESET);
+    out(TEAL + art[1] + RESET);
+    out("");
+  } else {
+    out(TEAL + "DAEDALUS" + RESET);
+  }
+  dim(`dae v${cliVersion()} · ${host} · workspace ${profile.workspace}`);
   dim(`execution ${execMode} · approval ${profile.approval} · /help for commands`);
+  void Promise.all([
+    fetchers.status(session).catch(() => null),
+    fetchers.skills(session).catch(() => null),
+  ]).then(([st, sk]) => {
+    const bits: string[] = [];
+    const stAgents = st && (st.agents as { count?: number } | undefined);
+    if (st?.version) bits.push(`backend v${String(st.version)}`);
+    if (stAgents?.count != null) bits.push(`${stAgents.count} agents`);
+    if (sk) bits.push(`${(sk.skills ?? []).length} skills${(sk.pending ?? []).length ? ` (+${sk.pending.length} pending)` : ""}`);
+    if (st && (st.schedules as { static?: number } | undefined)) {
+      const sch = st.schedules as { static?: number; dynamic?: number };
+      bits.push(`${(sch.static ?? 0) + (sch.dynamic ?? 0)} cron`);
+    }
+    if (bits.length) dim(bits.join(" · "));
+  });
   screen.setStatus(status());
   refreshInput();
   setInterval(() => screen.setStatus(status()), 1000);
