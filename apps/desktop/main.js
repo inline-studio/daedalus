@@ -298,6 +298,16 @@ function buildMenu() {
 }
 
 app.whenReady().then(() => {
+  // Packaged builds carry the icon in the bundle (electron-builder derives icns/ico/
+  // AppImage sets from build/icon.png). In dev the dock would show stock Electron —
+  // set it from the repo file so dev looks like the product.
+  if (!app.isPackaged && process.platform === "darwin" && app.dock) {
+    try {
+      app.dock.setIcon(path.join(__dirname, "build", "icon.png"));
+    } catch {
+      /* cosmetic only */
+    }
+  }
   // Belt-and-braces: the web UI asks for Notification permission via the standard API;
   // grant it for the configured server so the opt-in flow works exactly like a browser.
   // "media" covers the composer's dictation mic (macOS still shows its own system

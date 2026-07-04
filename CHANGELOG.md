@@ -13,6 +13,12 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Desktop app icon.** The app now uses the daedalus labyrinth (the web UI's
+  favicon) as its icon — teal square-spiral on the dark tile, macOS icon geometry.
+  `build/icon.svg` is the source; electron-builder derives the mac/win/linux icon
+  sets from the committed 1024px `build/icon.png`. Dev-mode (unpackaged) sets the
+  dock icon from the same file.
+
 - **Desktop setup, on one page.** The first-run screen now explains and configures
   everything at once — server URL, a **Local execution** toggle (on by default), a
   **Free rein** toggle, and the workspace (editable field + native folder picker) —
