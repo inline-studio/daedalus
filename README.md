@@ -11,41 +11,9 @@ character that performs on it.
 > **Status:** pre-alpha (v0.1). Single-operator deployments work; the API and brain
 > layout are still moving. Pin to a specific release if you embed it.
 
----
-
-## Why
-
-Most agent frameworks today are tightly coupled — one LLM provider, one channel, one
-persona — with config scattered across whatever directory happened to be convenient.
-Daedalus inverts all of that:
-
-- **Provider-agnostic.** Anthropic, OpenAI, Ollama, vLLM, llama.cpp, LiteLLM gateway,
-  anything OpenAI-shaped. Change the agent manifest, not the runner.
-- **Brain-repo driven.** Your agents, personas, souls, standards, operations, skills,
-  MCP servers, and schedules live in a separate git repo. Sym-link it into Claude
-  Code, VS Code, OpenCode — same files, same vault, multiple frontends.
-- **Persona / runtime separation.** Your assistant is whatever name you set
-  (`dae identity Claudia`). Subagents stay invisible behind it — when they need
-  information they bubble a question up through the orchestrator, which phrases it
-  in the persona's voice.
-- **Channel-unified.** Talk to your assistant from CLI, web (HTTP + SSE), Telegram, or
-  WhatsApp. All channels share one session per user; the conversation continues across
-  surfaces.
-- **Per-agent containers.** Give a coder agent `node:24-alpine`, a php agent
-  `php:8-cli`. Tool execution runs in the right runtime; the brain repo auto-mounts
-  read-only into every agent. Each container is **resource-limited and hardened by
-  default** (see below).
-- **Real memory.** A [Graphiti](https://github.com/getzep/graphiti) temporal
-  knowledge-graph MCP. Entities, relationships, and decisions are extracted from each
-  turn, with validity tracked over time. Fully local + leak-free — extraction LLM
-  and embeddings run on *your* OpenAI-compatible endpoint, routed through the OneCLI
-  proxy so no key ever lands on disk.
-- **Persistent attachments.** Files you upload are catalogued per-user, so the assistant can
-  re-reference a document you shared in an earlier session — or another channel — via the
-  `find_attachment` tool, without you re-uploading it. Local-only, on by default. See
-  [`docs/channels.md`](docs/channels.md#re-referencing-earlier-uploads-the-attachment-catalogue).
-- **Reversible setup.** Every `dae setup <thing>` has a matching `dae disable <thing>`,
-  idempotent by default and `--purge` for a clean slate.
+> **📖 New here?** The friendly, illustrated guide — quick start, setup, and tours of the
+> desktop app and terminal — lives at **[the docs site](https://inline-studio.github.io/daedalus/)**.
+> This README is the technical reference.
 
 ---
 
@@ -85,6 +53,42 @@ Full walkthrough, prerequisites, and provider setup: [docs/install.md](docs/inst
   repo's "Latest" release badge — that's always a *server* release
   (`v0.1.0-<run>`, what `dae update` consumes); the desktop builds live under the
   `desktop-v*` / `desktop-latest` tags.
+
+---
+
+## Why
+
+Most agent frameworks today are tightly coupled — one LLM provider, one channel, one
+persona — with config scattered across whatever directory happened to be convenient.
+Daedalus inverts all of that:
+
+- **Provider-agnostic.** Anthropic, OpenAI, Ollama, vLLM, llama.cpp, LiteLLM gateway,
+  anything OpenAI-shaped. Change the agent manifest, not the runner.
+- **Brain-repo driven.** Your agents, personas, souls, standards, operations, skills,
+  MCP servers, and schedules live in a separate git repo. Sym-link it into Claude
+  Code, VS Code, OpenCode — same files, same vault, multiple frontends.
+- **Persona / runtime separation.** Your assistant is whatever name you set
+  (`dae identity Claudia`). Subagents stay invisible behind it — when they need
+  information they bubble a question up through the orchestrator, which phrases it
+  in the persona's voice.
+- **Channel-unified.** Talk to your assistant from CLI, web (HTTP + SSE), Telegram, or
+  WhatsApp. All channels share one session per user; the conversation continues across
+  surfaces.
+- **Per-agent containers.** Give a coder agent `node:24-alpine`, a php agent
+  `php:8-cli`. Tool execution runs in the right runtime; the brain repo auto-mounts
+  read-only into every agent. Each container is **resource-limited and hardened by
+  default** (see below).
+- **Real memory.** A [Graphiti](https://github.com/getzep/graphiti) temporal
+  knowledge-graph MCP. Entities, relationships, and decisions are extracted from each
+  turn, with validity tracked over time. Fully local + leak-free — extraction LLM
+  and embeddings run on *your* OpenAI-compatible endpoint, routed through the OneCLI
+  proxy so no key ever lands on disk.
+- **Persistent attachments.** Files you upload are catalogued per-user, so the assistant can
+  re-reference a document you shared in an earlier session — or another channel — via the
+  `find_attachment` tool, without you re-uploading it. Local-only, on by default. See
+  [`docs/channels.md`](docs/channels.md#re-referencing-earlier-uploads-the-attachment-catalogue).
+- **Reversible setup.** Every `dae setup <thing>` has a matching `dae disable <thing>`,
+  idempotent by default and `--purge` for a clean slate.
 
 ---
 
@@ -482,7 +486,9 @@ Docker daemon starts.
 
 ## Documentation
 
-The [`docs/`](docs/README.md) tree has the full detail behind every section above:
+The **[docs site](https://inline-studio.github.io/daedalus/)** is the friendly, illustrated
+front door (quick start, setup, desktop + terminal tours, the execution model). For the full
+technical detail, the [`docs/`](docs/README.md) tree backs every section above:
 
 - [`docs/install.md`](docs/install.md) — installation, providers, embeddings, Brave, memory, OneCLI, the Docker choice
 - [`docs/agents.md`](docs/agents.md) — agent manifests, full frontmatter reference, container settings, prompt composition
