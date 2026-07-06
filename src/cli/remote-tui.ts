@@ -372,6 +372,10 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
   // Full-screen dashboard on the alternate buffer — the transcript is restored
   // untouched when the user returns (q / Esc). Nothing is dumped into the chat.
   async function openDashboard(view: DashboardView): Promise<void> {
+    // Silence the chat screen first: its 1s status tick / streamed lines would paint
+    // straight into the alternate buffer and corrupt the dashboard frame. Lines that
+    // arrive meanwhile are held and flushed on resume.
+    screen.suspend();
     process.stdout.write("\x1b[?1049h\x1b[?25l");
     try {
       await runDashboard(
@@ -390,7 +394,7 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
     } finally {
       dashboardKeys = null;
       process.stdout.write("\x1b[?25h\x1b[?1049l");
-      screen.redraw();
+      screen.resume(); // flushes anything that streamed in while the dashboard was up
       refreshInput();
     }
   }

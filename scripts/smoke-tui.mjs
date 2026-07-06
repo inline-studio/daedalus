@@ -112,6 +112,19 @@ const type = (ed, text) => { for (const ch of text) ed.handle({ sequence: ch, na
   expect("confirm mode replaces the input row", outBuf.includes("run: rm -rf") && !outBuf.includes("> x"));
   screen.setConfirm(null);
 
+  // suspend(): every paint suppressed (a stray status tick must not corrupt a
+  // dashboard on the alternate screen); scrollback lines HELD and flushed on resume.
+  outBuf = "";
+  screen.suspend();
+  screen.setStatus("TICK WHILE SUSPENDED");
+  screen.appendLine("line that arrived mid-dashboard");
+  expect("suspended screen paints nothing", outBuf === "", JSON.stringify(outBuf.slice(0, 30)));
+  screen.resume();
+  expect(
+    "resume flushes held lines and repaints (with the suspended status)",
+    outBuf.includes("line that arrived mid-dashboard") && outBuf.includes("TICK WHILE SUSPENDED"),
+  );
+
   // /clear: wipe + home + re-anchored repaint of the composer block.
   outBuf = "";
   screen.clear();

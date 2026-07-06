@@ -11,6 +11,40 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Fixed
+
+- **Terminal dashboards no longer fight the chat screen.** The chat's 1-second
+  status tick (and any lines streaming in) kept painting into the alternate
+  buffer while a dashboard was open — the frame corrupted and "jumped" between
+  the dashboard and the chat bar. The screen engine now SUSPENDS while a
+  dashboard owns the terminal: paints are suppressed, and transcript lines that
+  arrive meanwhile are held and flushed on return, so nothing is lost.
+- **Turn duration formatting.** The reply footer (and live turn timer) now
+  bumps to minutes: `3.4s` → `42s` → `5m 57s` → `1h 2m 3s`, never a raw `357s`.
+
+- **Sub-agents died persisting their results in docker mode.** Agent containers run
+  as root with `--cap-drop ALL`, which strips `CAP_DAC_OVERRIDE` — so capless root
+  couldn't write the supervisor-owned sessions sqlite (mode 644, compose UID) and
+  every containerised sub-agent turn crashed at the end with "attempt to write a
+  readonly database" (cypher booted, worked three turns, then failed — and the
+  orchestrator did the job itself). Containers now get `--cap-add DAC_OVERRIDE`
+  back: it only bypasses permission bits on paths already mounted; ro mounts
+  (/brain, /etc/daedalus, /dae-runtime) are VFS-level and stay read-only.
+- **Desktop: the select-messages Copy button failed.** The shell's permission
+  handler denied `clipboard-sanitized-write` (needed by
+  `navigator.clipboard.writeText`); it's now granted, and the web UI falls back to
+  the legacy copy path when the async clipboard API is refused anywhere else.
+
+### Changed
+
+- **Sub-agent panels are out of the chat.** Delegated work renders in the agents
+  view (web modal / CLI dashboard), not inline — the transcript gets a single dim
+  "→ delegated to cypher" note per spawn instead of a growing panel of tool rows.
+- **Thinking blocks are quiet.** No 💭 icon, collapsed by default (including while
+  streaming — expand mid-stream if you want to watch), with an animated
+  "Thinking." → ".." → "…" header as the working indicator that goes static when
+  the segment ends.
+
 ### Added
 
 - **Full-screen dashboards in the terminal: `/agents`, `/skills`, `/crons`.**

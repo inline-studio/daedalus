@@ -273,9 +273,19 @@ export function buildContainerArgs(input: {
   a.push("--network", opts.network);
 
   // SEC-03: hardening + resource limits on every agent container. cap-drop=ALL +
-  // no-new-privileges close residual escalation paths (the container is non-root uid 1000);
-  // memory/cpu/pids are conservative by default (runtime.limits) unless the manifest raises them.
+  // no-new-privileges close residual escalation paths; memory/cpu/pids are conservative
+  // by default (runtime.limits) unless the manifest raises them.
+  //
+  // DAC_OVERRIDE is added back deliberately: the default image runs as root, but the
+  // supervisor/worker create the shared state (sessions sqlite, attachments) as the
+  // compose UID (e.g. 999:987, mode 644) — and capless root is subject to normal
+  // permission checks, so every sub-agent turn died persisting its result with
+  // "attempt to write a readonly database" (casa UAT: cypher booted, worked 3 turns,
+  // then crashed — and the orchestrator did the job itself). DAC_OVERRIDE only bypasses
+  // permission BITS on paths the container can already reach; ro MOUNTS (/brain,
+  // /etc/daedalus, /dae-runtime) are VFS-level and stay read-only regardless.
   a.push("--cap-drop", "ALL");
+  a.push("--cap-add", "DAC_OVERRIDE");
   a.push("--security-opt", "no-new-privileges");
   a.push("--pids-limit", String(limits.pidsLimit));
   a.push("--memory", limits.memory);
