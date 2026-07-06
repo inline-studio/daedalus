@@ -13,6 +13,19 @@ Each entry references the PR that introduced the change.
 
 ### Fixed
 
+- **Image build could install a stranger's package.** When the local CLI tarball
+  wasn't in the build context (e.g. `npm pack` failed during `dae install`), the
+  Dockerfile fell back to `npm install -g daedalus@<version>` — but `daedalus` on
+  the **public npm registry is an unrelated package** (0.6.0, no `dae` binary), and
+  that install *succeeded*, so the intended GitHub-release fallback never fired. The
+  resulting image's worker died with `exec: dae: not found` → container unhealthy →
+  `dae install` aborted (casa). The Dockerfile now installs **only** from the local
+  tarball or the GitHub **release** tarball, and a `command -v dae` guard turns any
+  future mismatch into a clear build failure instead of a broken image. A
+  materialize smoke asserts the Dockerfile never touches public npm.
+
+### Fixed
+
 - **Terminal dashboards no longer fight the chat screen.** The chat's 1-second
   status tick (and any lines streaming in) kept painting into the alternate
   buffer while a dashboard was open — the frame corrupted and "jumped" between

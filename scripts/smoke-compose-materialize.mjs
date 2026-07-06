@@ -70,6 +70,26 @@ try {
     ok(`${sh} materialised`, !!s && s.isFile());
     if (s) ok(`${sh} is executable (mode & 0o100)`, (s.mode & 0o100) !== 0);
   }
+
+  // 5. The CLI must NEVER be installed from the public npm registry — `daedalus` there
+  //    is an unrelated package with no `dae` bin (casa, 2026-07: the image built with it
+  //    and the worker died `exec: dae: not found`). The image installs the local tarball
+  //    or the GitHub RELEASE tarball only, and guards that a `dae` binary results.
+  const dockerfile = await fs.readFile(path.join(tmp, "Dockerfile"), "utf8");
+  const dfCode = dockerfile
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("#")) // ignore comments (which may cite the old bug)
+    .join("\n");
+  ok(
+    "Dockerfile never installs daedalus from public npm",
+    !/npm install -g ["']?daedalus@/.test(dfCode),
+    dfCode.split("\n").filter((l) => /daedalus@/.test(l)).join(" | "),
+  );
+  ok(
+    "Dockerfile installs from a GitHub releases tarball",
+    /releases\/(latest\/download|download)\/[^"']*daedalus-/.test(dockerfile),
+  );
+  ok("Dockerfile guards that a 'dae' binary exists after install", /command -v dae/.test(dockerfile));
 } finally {
   await fs.rm(tmp, { recursive: true, force: true });
 }
