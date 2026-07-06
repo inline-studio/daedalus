@@ -1809,8 +1809,9 @@
 
   function fmtSince(iso) {
     var s = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
-    var m = Math.floor(s / 60);
-    return m ? m + "m" + (s % 60) + "s" : s + "s";
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    if (h) return h + "h " + m + "m " + (s % 60) + "s";
+    return m ? m + "m " + (s % 60) + "s" : s + "s";
   }
 
   // Agents · Activity modal (the status-bar agents button): fills 90% of the viewport.
