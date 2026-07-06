@@ -240,6 +240,9 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
       // The executor grant, for sub-agents that declare `execution: executor`.
       ...(input.remoteExec ? { remoteExec: input.remoteExec } : {}),
+      // The turn's abort signal, so a Stop that lands while a sub-agent is running is
+      // forwarded into that sub-agent's dispatch (see OrchestratorContext.signal).
+      ...(input.signal ? { signal: input.signal } : {}),
     });
     if (orchestratorTool) builtinTools.push(orchestratorTool);
 

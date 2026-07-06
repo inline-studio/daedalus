@@ -35,6 +35,15 @@ Each entry references the PR that introduced the change.
 
 ### Fixed
 
+- **Stop now cancels a running sub-agent, not just the top-level turn.** Hitting Stop
+  while the agent had delegated to a sub-agent (`spawn_subagent`) left the sub-agent
+  running to completion — the orchestrator was blocked awaiting it, and each dispatcher
+  tracks in-flight turns by session id, so aborting the top turn's session never reached
+  the sub-agent (which runs under its own session). The parent turn's `AbortSignal` is
+  now forwarded into the sub-agent's dispatch (firing its own signal in-process /
+  force-removing its container), and the kernel unwinds a stop that lands *while* a tool
+  is running — not only between tools — so a delegated, runaway loop (e.g. a sub-agent
+  stuck retrying a failing call) stops promptly. Nested spawns propagate the same way.
 - **Image build could install a stranger's package.** When the local CLI tarball
   wasn't in the build context (e.g. `npm pack` failed during `dae install`), the
   Dockerfile fell back to `npm install -g daedalus@<version>` — but `daedalus` on
