@@ -15,6 +15,10 @@ export interface OpenAIAdapterOptions {
   baseUrl?: string;
   // Used so the same adapter can talk to ollama, vLLM, llama.cpp, lm-studio, etc.
   flavor?: "openai" | "ollama" | "vllm" | "llama-cpp" | "lm-studio";
+  // Abort a stream after this many ms of NO tokens (a genuinely stalled upstream). The timer
+  // resets on every chunk, so a slow-but-progressing generation is never cut off — only true
+  // silence trips it. 0 (default) disables it, leaving the SDK's wall-clock timeout in charge.
+  idleTimeoutMs?: number;
 }
 
 // Covers any OpenAI-compatible endpoint (vLLM, ollama /v1, llama.cpp --api, lm-studio, openrouter…).
@@ -28,9 +32,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
     systemPromptAsField: false, // OpenAI uses a system message
   };
   private client: OpenAI;
+  private idleTimeoutMs: number;
 
   constructor(opts: OpenAIAdapterOptions = {}) {
     this.id = `openai:${opts.flavor ?? "openai"}`;
+    this.idleTimeoutMs = opts.idleTimeoutMs ?? 0;
     this.client = new OpenAI({
       apiKey: opts.apiKey ?? process.env.OPENAI_API_KEY ?? "no-key",
       ...(opts.baseUrl ? { baseURL: opts.baseUrl } : {}),
@@ -133,10 +139,26 @@ export class OpenAICompatibleProvider implements LLMProvider {
     req: CompletionRequest,
     signal?: AbortSignal,
   ): AsyncGenerator<ProviderStreamEvent> {
+    // Stream-inactivity guard: abort only when NO tokens arrive for idleTimeoutMs (a genuine
+    // upstream stall), never on mere slowness. armIdle() is called once before the request (to
+    // cover time-to-first-token / prefill) and again on every chunk received, so a slow-but-
+    // progressing generation resets the timer indefinitely and is waited out.
+    const idleMs = this.idleTimeoutMs;
+    const idleController = idleMs > 0 ? new AbortController() : undefined;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const armIdle = (): void => {
+      if (!idleController) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => idleController.abort(new Error(`stream idle ${idleMs}ms`)), idleMs);
+    };
+    const effectiveSignal = idleController
+      ? AbortSignal.any([idleController.signal, ...(signal ? [signal] : [])])
+      : signal;
     try {
+      armIdle();
       const s = await this.client.chat.completions.create(
         { ...this.buildBody(req), stream: true, stream_options: { include_usage: true } },
-        { signal },
+        { signal: effectiveSignal },
       );
 
       const splitter = createThinkStreamSplitter();
@@ -152,6 +174,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
       let usage: { prompt_tokens: number; completion_tokens: number } | undefined;
 
       for await (const chunk of s) {
+        armIdle(); // a token arrived — reset the inactivity timer
         if (chunk.usage) {
           usage = {
             prompt_tokens: chunk.usage.prompt_tokens,
@@ -218,6 +241,14 @@ export class OpenAICompatibleProvider implements LLMProvider {
         }
       }
 
+      // If the idle guard fired, surface it as a timeout — even when the SDK ended the
+      // iterator cleanly on abort (rather than throwing), which would otherwise leave us
+      // returning a silently truncated result. Only our own idle abort counts here; a caller
+      // cancellation (signal) is left to propagate as an AbortError.
+      if (idleController?.signal.aborted && !signal?.aborted) {
+        throw new Error(`stream idle ${idleMs}ms`);
+      }
+
       // Flush any reasoning/text held in the inline-think splitter's tail buffer.
       if (!usedReasoningField) {
         const tail = splitter.end();
@@ -254,11 +285,22 @@ export class OpenAICompatibleProvider implements LLMProvider {
       };
       yield { type: "result", result };
     } catch (err) {
+      // An idle-timer abort (upstream stalled) is surfaced as a timeout so the kernel classifies
+      // it correctly — but only when it wasn't the caller's own cancellation coming through.
+      if (idleController?.signal.aborted && !signal?.aborted) {
+        throw new ProviderError(
+          `model stream timed out after ${idleMs}ms with no output — upstream stalled`,
+          this.id,
+          err,
+        );
+      }
       throw new ProviderError(
         `OpenAI-compatible stream failed: ${(err as Error).message}`,
         this.id,
         err,
       );
+    } finally {
+      if (idleTimer) clearTimeout(idleTimer);
     }
   }
 }

@@ -67,6 +67,7 @@ const CI_SAFE = [
   "smoke-skills-artifacts",
   "smoke-store-reopen",
   "smoke-stream",
+  "smoke-stream-idle",
   "smoke-subagent-events",
   "smoke-secret-prompt",
   "smoke-secrets",
