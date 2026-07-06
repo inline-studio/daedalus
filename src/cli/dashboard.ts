@@ -33,8 +33,10 @@ export interface DashboardView {
 
 function fmtSince(iso: string): string {
   const s = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
-  const m = Math.floor(s / 60);
-  return m ? `${m}m${s % 60}s` : `${s}s`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h) return `${h}h ${m}m ${s % 60}s`;
+  return m ? `${m}m ${s % 60}s` : `${s}s`;
 }
 
 function pad(line: string, width: number): string {

@@ -144,6 +144,14 @@ const type = (ed, text) => { for (const ch of text) ed.handle({ sequence: ch, na
   expect("styled content keeps its reset inside the frame", box[2].includes("dim line") && box[2].includes("\x1b[0m"));
 }
 
+// --- 3b0. fmtDuration: h/m/s (never a raw "156s") ---
+{
+  const { fmtDuration } = await import("../dist/cli/remote-tui.js");
+  expect("fmtDuration sub-minute stays seconds", fmtDuration(45) === "45s");
+  expect("fmtDuration minutes", fmtDuration(156) === "2m 36s", fmtDuration(156));
+  expect("fmtDuration hours", fmtDuration(3723) === "1h 2m 3s", fmtDuration(3723));
+}
+
 // --- 3b. Command palette filtering ---
 {
   const { filterPalette, CLIENT_COMMANDS } = await import("../dist/cli/remote-tui.js");

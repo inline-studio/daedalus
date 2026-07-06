@@ -11,6 +11,19 @@ Each entry references the PR that introduced the change.
 
 ## Unreleased
 
+### Added
+
+- **Terminal working indicator.** While a turn runs, `dae`'s status line shows an
+  animated spinner + what it's doing + how long it's been going
+  (`⠙ streaming 2m 36s`) — so a slow model reads as clearly working, not a frozen
+  prompt.
+
+### Changed
+
+- **Elapsed times use h/m/s everywhere.** `/activity`, the agents dashboards
+  (CLI + desktop), and the working indicator now format durations as `45s`,
+  `2m 36s`, `1h 2m 3s` — never a raw `156s`.
+
 ### Fixed
 
 - **Image build could install a stranger's package.** When the local CLI tarball

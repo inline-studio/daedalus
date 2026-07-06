@@ -103,6 +103,21 @@ function fmtClock(totalSeconds: number): string {
   return h ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
 }
 
+// Human duration for elapsed times (/activity, the working indicator): 45s, 2m 36s,
+// 1h 2m 3s — never a raw "156s".
+export function fmtDuration(totalSeconds: number): string {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h) return `${h}h ${m}m ${sec}s`;
+  if (m) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+// Braille spinner frames for the "working" indicator.
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 function fmtK(n: number): string {
   return n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n);
 }
@@ -124,6 +139,8 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
   let gateway = "connecting";
   let execMode: "local" | "server" = profile.execution;
   let turnState = "idle"; // idle | waiting | streaming | tool: x | cypher · …
+  let turnStart = 0; // ms; the current turn's start, for the working-elapsed readout
+  let spinIdx = 0; // animated spinner frame
   let context: { inputTokens: number; window?: number } | null = null;
   let conversationId: string | undefined; // undefined = the Main thread
   let conversationLabel = "main";
@@ -158,11 +175,17 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
         : `ctx ${fmtK(context.inputTokens)}`
       : "";
     const clock = fmtClock(Math.floor((Date.now() - startedAt) / 1000));
+    // While a turn runs, show an animated spinner + what it's doing + how long it's
+    // been going — so a slow model reads as "working 2m 36s", not a frozen prompt.
+    // (turnStart is 0 for the first paint before the ticker sets it — omit the elapsed
+    // rather than flash a since-epoch garbage duration.)
+    const working =
+      turnState !== "idle"
+        ? `${SPINNER[spinIdx % SPINNER.length]} ${turnState}${turnStart ? " " + fmtDuration((Date.now() - turnStart) / 1000) : ""}`
+        : "";
     return (
       DIM +
-      [gw, host, `#${conversationLabel}`, exec, turnState !== "idle" ? turnState : "", ctx, clock]
-        .filter(Boolean)
-        .join(" · ") +
+      [gw, host, `#${conversationLabel}`, exec, working, ctx, clock].filter(Boolean).join(" · ") +
       RESET
     );
   }
@@ -449,7 +472,7 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
         const j = await fetchers.activity(session);
         for (const t of j?.turns ?? []) {
           const secs = Math.max(0, Math.floor((Date.now() - Date.parse(String(t.startedAt))) / 1000));
-          dim(`${String(t.agent).padEnd(14)} ${t.activity ?? "working"} · ${t.channel} · ${secs}s`);
+          dim(`${String(t.agent).padEnd(14)} ${t.activity ?? "working"} · ${t.channel} · ${fmtDuration(secs)}`);
         }
         if (!j?.turns?.length) dim("(idle)");
         return true;
@@ -500,6 +523,7 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
     }
     out("");
     out(`${DIM}you:${RESET} ${full.split("\n").join(" ")}`);
+    turnStart = Date.now();
     turnState = "waiting";
     screen.setStatus(status());
     const res = await sendMessage(session, full, execMode, conversationId).catch(() => ({ ok: false, status: 0 }));
@@ -665,7 +689,21 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
   });
   screen.setStatus(status());
   refreshInput();
-  setInterval(() => screen.setStatus(status()), 1000);
+  // Idle heartbeat: keeps the session clock ticking.
+  setInterval(() => {
+    if (turnState === "idle") screen.setStatus(status());
+  }, 1000);
+  // While a turn runs, animate the spinner + elapsed. Self-manages turnStart from the
+  // idle→active edge, so every turnState assignment site doesn't need to touch it.
+  setInterval(() => {
+    if (turnState !== "idle") {
+      if (!turnStart) turnStart = Date.now();
+      spinIdx = (spinIdx + 1) % SPINNER.length;
+      screen.setStatus(status());
+    } else if (turnStart) {
+      turnStart = 0;
+    }
+  }, 130);
 
   await new Promise(() => {});
 }
