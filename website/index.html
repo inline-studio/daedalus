@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Daedalus — your own agent, on your own machines</title>
+<meta name="description" content="Daedalus is a self-hosted agent runner: one core holds your agents, skills and memory; desktop, terminal and messaging clients connect to it, and commands run on your machines under your control." />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230a0c10'/%3E%3Cpath d='M5 27V5H27V27H10V10H22V22H16' fill='none' stroke='%232dd4bf' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<nav>
+  <div class="inner">
+    <span class="brand">
+      <svg viewBox="0 0 32 32" width="20" height="20"><path d="M5 27V5H27V27H10V10H22V22H16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      DAEDALUS
+    </span>
+    <div class="links">
+      <a href="#quick-start">Quick start</a>
+      <a href="#setup">Setup</a>
+      <a href="#desktop">Desktop</a>
+      <a href="#terminal">Terminal</a>
+      <a href="#execution">Execution</a>
+      <a href="#reference">Reference</a>
+      <a href="https://github.com/inline-studio/daedalus">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ============ HERO ============ -->
+<header class="hero">
+  <section style="border:none; padding-top:0;">
+    <pre class="wordmark">█▀▄ ▄▀█ █▀▀ █▀▄ ▄▀█ █   █ █ █▀
+█▄▀ █▀█ ██▄ █▄▀ █▀█ █▄▄ █▄█ ▄█</pre>
+    <h1>Your own agent, on your own machines.</h1>
+    <p class="lead">Daedalus is a self-hosted agent runner. One <strong>core</strong> holds your agents, skills and memory; lightweight <strong>clients</strong> — a desktop app, a terminal, Telegram — connect to it, and the work runs on <strong>your</strong> machines, under your control.</p>
+    <div class="cta">
+      <a class="btn primary" href="#quick-start">Get started</a>
+      <a class="btn ghost" href="https://github.com/inline-studio/daedalus/releases/tag/desktop-latest">Download the desktop app</a>
+    </div>
+  </section>
+</header>
+
+<!-- ============ QUICK START ============ -->
+<section id="quick-start">
+  <p class="eyebrow">Quick start</p>
+  <h2>Up and running in a few minutes</h2>
+  <p class="lead">Daedalus runs the whole stack in Docker. Install the CLI, scaffold a brain, bring it up — then talk to your agent through whichever client you like.</p>
+
+  <ol class="steps">
+    <li>
+      <h3>Install the CLI</h3>
+      <p>Both <code>dae</code> and <code>daedalus</code> go on your <code>PATH</code>.</p>
+      <pre class="code">npm install -g https://github.com/inline-studio/daedalus/releases/latest/download/daedalus-latest.tgz
+dae --version</pre>
+    </li>
+    <li>
+      <h3>Scaffold and start</h3>
+      <p><code>dae install</code> asks only what it can’t infer (an LLM provider key, optional Telegram / memory / search), then starts the container stack. Re-running is idempotent.</p>
+      <pre class="code"><span class="c"># creates ~/.daedalus/ from the shipped example brain</span>
+dae init
+<span class="c"># asks a few skippable questions, then `docker compose up -d --build`</span>
+dae install</pre>
+    </li>
+    <li>
+      <h3>Talk to your agent</h3>
+      <p>The <code>daedalus</code> container serves everything — you don’t start anything by hand. Open a client:</p>
+      <ul>
+        <li><strong>Desktop app</strong> — <a href="https://github.com/inline-studio/daedalus/releases/tag/desktop-latest">download it</a>, point it at your server, sign in.</li>
+        <li><strong>Terminal</strong> — run <code>dae</code> on any machine.</li>
+        <li><strong>Web</strong> — open <code>http://127.0.0.1:8765</code> (loopback-only by default).</li>
+        <li><strong>Telegram</strong> — message your bot, if you gave <code>dae install</code> a token.</li>
+      </ul>
+    </li>
+  </ol>
+
+  <div class="note">
+    <p>Keep it current with <code>dae update</code>. Full walkthrough, prerequisites and provider setup live in the <a href="#reference">technical reference</a>.</p>
+  </div>
+</section>
+
+<!-- ============ WHAT / WHY ============ -->
+<section id="why">
+  <p class="eyebrow">What it is</p>
+  <h2>One core. Many clients. Your hardware.</h2>
+  <p class="lead">Most assistants are a website you rent. Daedalus is a small system you own: the agents, their learned skills, and the memory of your conversations all live in a <strong>brain</strong> you can read, edit and version — and it runs wherever you put it.</p>
+
+  <div class="grid three">
+    <div class="card">
+      <h3>A readable brain</h3>
+      <p>Agents, skills, personas and standards are plain Markdown files with frontmatter. Edit them in your editor; changes show up live.</p>
+    </div>
+    <div class="card">
+      <h3>Runs on your machines</h3>
+      <p>The core lives on a server you choose; a connected desktop app or terminal executes commands and file edits <strong>locally</strong>, with your approval.</p>
+    </div>
+    <div class="card">
+      <h3>Learns and remembers</h3>
+      <p>A knowledge-graph memory keeps what matters across sessions, and agents can propose new skills for you to approve.</p>
+    </div>
+  </div>
+
+  <h3>How it runs</h3>
+  <p>The <strong>core</strong> is a supervisor process: it loads the brain, routes messages, runs the scheduler, and dispatches each turn to an isolated Docker container. Around it sit the <strong>clients</strong> you talk through and the <strong>channels</strong> that reach you.</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 900 380" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, sans-serif">
+      <!-- core -->
+      <rect x="330" y="120" width="240" height="140" rx="12" fill="#0d1014" stroke="#2dd4bf" stroke-width="1.5"/>
+      <text x="450" y="150" fill="#2dd4bf" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="1.5">THE CORE</text>
+      <text x="450" y="176" fill="#c9d1d9" font-size="13" text-anchor="middle">supervisor · scheduler</text>
+      <text x="450" y="198" fill="#8b949e" font-size="12" text-anchor="middle">brain (agents · skills)</text>
+      <text x="450" y="218" fill="#8b949e" font-size="12" text-anchor="middle">memory · gateway</text>
+      <text x="450" y="242" fill="#6e7681" font-size="11" text-anchor="middle">on your server</text>
+
+      <!-- agent containers -->
+      <rect x="640" y="150" width="150" height="80" rx="10" fill="#0d1014" stroke="#2a313c" stroke-width="1.2"/>
+      <text x="715" y="180" fill="#c9d1d9" font-size="12" text-anchor="middle">per-turn agent</text>
+      <text x="715" y="200" fill="#8b949e" font-size="11" text-anchor="middle">Docker container</text>
+      <line x1="570" y1="190" x2="640" y2="190" stroke="#2a313c" stroke-width="1.5"/>
+
+      <!-- clients top -->
+      <g>
+        <rect x="120" y="30" width="150" height="60" rx="10" fill="#0d1014" stroke="#2a313c" stroke-width="1.2"/>
+        <text x="195" y="58" fill="#dbe4ec" font-size="13" text-anchor="middle" font-weight="600">Desktop app</text>
+        <text x="195" y="76" fill="#6e7681" font-size="11" text-anchor="middle">+ local executor</text>
+
+        <rect x="300" y="30" width="150" height="60" rx="10" fill="#0d1014" stroke="#2a313c" stroke-width="1.2"/>
+        <text x="375" y="58" fill="#dbe4ec" font-size="13" text-anchor="middle" font-weight="600">Terminal (dae)</text>
+        <text x="375" y="76" fill="#6e7681" font-size="11" text-anchor="middle">+ local executor</text>
+
+        <rect x="480" y="30" width="150" height="60" rx="10" fill="#0d1014" stroke="#2a313c" stroke-width="1.2"/>
+        <text x="555" y="58" fill="#dbe4ec" font-size="13" text-anchor="middle" font-weight="600">Telegram</text>
+        <text x="555" y="76" fill="#6e7681" font-size="11" text-anchor="middle">on your phone</text>
+      </g>
+      <line x1="195" y1="90" x2="380" y2="120" stroke="#2a313c" stroke-width="1.2"/>
+      <line x1="375" y1="90" x2="440" y2="120" stroke="#2a313c" stroke-width="1.2"/>
+      <line x1="555" y1="90" x2="500" y2="120" stroke="#2a313c" stroke-width="1.2"/>
+
+      <!-- memory bottom -->
+      <rect x="330" y="300" width="240" height="52" rx="10" fill="#0d1014" stroke="#2a313c" stroke-width="1.2"/>
+      <text x="450" y="332" fill="#c9d1d9" font-size="12.5" text-anchor="middle">knowledge-graph memory</text>
+      <line x1="450" y1="260" x2="450" y2="300" stroke="#2a313c" stroke-width="1.5"/>
+    </svg>
+  </div>
+</section>
+
+<!-- ============ SETUP (LOCAL vs REMOTE) ============ -->
+<section id="setup">
+  <p class="eyebrow">Setup</p>
+  <h2>Two ways to run it</h2>
+  <p class="lead">The core can live on the same machine you use, or on a server you reach from anywhere. The install is the same; only <em>where</em> things sit changes.</p>
+
+  <div class="grid two">
+    <div class="card">
+      <span class="tag local">All-in-one</span>
+      <h3>Everything on one machine</h3>
+      <p>The core and the client run on the same computer. Simplest to start — great for a laptop or a home desktop.</p>
+      <ul>
+        <li>Run <code>dae install</code>, then <code>dae</code>.</li>
+        <li>Commands run right here, in your workspace.</li>
+        <li>Nothing leaves the machine unless you wire a channel.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <span class="tag remote">Core + clients</span>
+      <h3>Core on a server, clients anywhere</h3>
+      <p>The core runs 24/7 on a server (a NAS, a VPS, a spare box). Your laptop, desktop app and phone connect to it.</p>
+      <ul>
+        <li><code>dae install</code> on the server; clients point at its URL.</li>
+        <li>Turns run on <em>the machine that started them</em>.</li>
+        <li>Telegram keeps working when your laptop is closed.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, sans-serif">
+      <!-- left: all in one -->
+      <text x="200" y="30" fill="#2dd4bf" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="1">ALL-IN-ONE</text>
+      <rect x="70" y="55" width="260" height="150" rx="12" fill="#0d1014" stroke="#2a313c" stroke-width="1.2" stroke-dasharray="4 4"/>
+      <text x="200" y="80" fill="#6e7681" font-size="11" text-anchor="middle">one machine</text>
+      <rect x="105" y="98" width="190" height="42" rx="8" fill="#0d1014" stroke="#2dd4bf" stroke-width="1.3"/>
+      <text x="200" y="124" fill="#2dd4bf" font-size="12.5" text-anchor="middle" font-weight="600">core + client</text>
+      <rect x="105" y="152" width="190" height="36" rx="8" fill="#0d1014" stroke="#2a313c" stroke-width="1.1"/>
+      <text x="200" y="175" fill="#8b949e" font-size="11.5" text-anchor="middle">your files &amp; commands</text>
+
+      <line x1="410" y1="130" x2="490" y2="130" stroke="#2a313c" stroke-width="1"/>
+
+      <!-- right: core + clients -->
+      <text x="680" y="30" fill="#8b949e" font-size="12" font-weight="700" text-anchor="middle" letter-spacing="1">CORE + CLIENTS</text>
+      <rect x="560" y="150" width="240" height="55" rx="10" fill="#0d1014" stroke="#2dd4bf" stroke-width="1.3"/>
+      <text x="680" y="174" fill="#2dd4bf" font-size="12.5" text-anchor="middle" font-weight="600">core</text>
+      <text x="680" y="192" fill="#6e7681" font-size="11" text-anchor="middle">server, always on</text>
+
+      <rect x="520" y="52" width="110" height="46" rx="8" fill="#0d1014" stroke="#2a313c" stroke-width="1.1"/>
+      <text x="575" y="80" fill="#c9d1d9" font-size="12" text-anchor="middle">desktop</text>
+      <rect x="645" y="52" width="110" height="46" rx="8" fill="#0d1014" stroke="#2a313c" stroke-width="1.1"/>
+      <text x="700" y="80" fill="#c9d1d9" font-size="12" text-anchor="middle">terminal</text>
+      <rect x="770" y="52" width="90" height="46" rx="8" fill="#0d1014" stroke="#2a313c" stroke-width="1.1"/>
+      <text x="815" y="80" fill="#c9d1d9" font-size="12" text-anchor="middle">phone</text>
+      <line x1="575" y1="98" x2="660" y2="150" stroke="#2a313c" stroke-width="1.1"/>
+      <line x1="700" y1="98" x2="685" y2="150" stroke="#2a313c" stroke-width="1.1"/>
+      <line x1="815" y1="98" x2="705" y2="150" stroke="#2a313c" stroke-width="1.1"/>
+    </svg>
+  </div>
+
+  <div class="note">
+    <p><strong>Either way, your data stays yours.</strong> The core is loopback-only until you deliberately expose it (behind a reverse proxy with login, for example). Clients authenticate the same way a browser would.</p>
+  </div>
+</section>
+
+<!-- ============ DESKTOP APP ============ -->
+<section id="desktop">
+  <p class="eyebrow">The desktop app</p>
+  <h2>A native window on your agent</h2>
+  <p class="lead">The desktop app is the full chat experience plus one thing a browser tab can’t give you: it becomes your machine’s <strong>executor</strong>, so commands and file edits run locally — with native approval dialogs — while the agent thinks on the server.</p>
+
+  <h3>First run: one setup card</h3>
+  <figure class="plain">
+    <img src="img/desktop-setup.png" alt="Desktop app setup screen: server URL, local-execution toggle, free-rein toggle, and workspace picker" />
+    <figcaption>Everything on one screen — server URL, whether to run commands locally, how strict approvals are, and where they run.</figcaption>
+  </figure>
+  <div class="anatomy">
+    <div class="item"><span class="n">1</span><div><b>Server URL</b><span>Where your core lives — a proxy address or a local port. You sign in on the next screen.</span></div></div>
+    <div class="item"><span class="n">2</span><div><b>Local execution</b><span>On by default: conversations started here run their commands on <em>this</em> machine.</span></div></div>
+    <div class="item"><span class="n">3</span><div><b>Free rein</b><span>Skip the per-command prompt. Dangerous commands (<code>rm -rf</code>, <code>sudo</code>) always ask anyway.</span></div></div>
+    <div class="item"><span class="n">4</span><div><b>Workspace</b><span>The folder commands run in and file ops are confined to. Defaults to <code>~/.daedalus/workspace</code>.</span></div></div>
+  </div>
+
+  <h3>The chat</h3>
+  <figure>
+    <img src="img/chat-splash.png" alt="Empty chat showing the DAEDALUS block-art splash and a say-hello prompt" />
+    <figcaption>A fresh conversation greets you with your orchestrator’s name. Thinking is quiet and collapsed; the composer keeps a ＋ attach menu, dictation mic, and send button.</figcaption>
+  </figure>
+
+  <h3>Watch the agents work</h3>
+  <p>Your orchestrator can hand tasks to specialist sub-agents. The <strong>Agents · Activity</strong> view (the people icon in the status bar) shows each one’s live, step-by-step feed — thinking, tool calls, failures — without cluttering the chat.</p>
+  <figure>
+    <img src="img/agents-modal.png" alt="Agents Activity modal: sub-agent list on the left, cypher's live step feed on the right" />
+    <figcaption>Sub-agents on the left (busy ones on top); the selected agent’s timestamped activity on the right, refreshing live.</figcaption>
+  </figure>
+
+  <h3>Skills &amp; artifacts</h3>
+  <p>Browse the skills your agents can draw on, approve or reject ones they propose, and find the files they’ve produced — all from the sidebar.</p>
+  <figure>
+    <img src="img/skills-panel.png" alt="Skills and Tools panel listing available skills with badges" />
+    <figcaption>The Skills &amp; Tools panel: the library, pending agent-proposed skills, and lifecycle actions.</figcaption>
+  </figure>
+
+  <h3>Per-conversation controls</h3>
+  <div class="grid two">
+    <figure style="margin:0;">
+      <img src="img/composer-attach.png" alt="Composer attach menu with Files, Images, Paste image and URL options" />
+      <figcaption>Attach files, images, or a URL — or paste an image straight in.</figcaption>
+    </figure>
+    <figure style="margin:0;">
+      <img src="img/view-options.png" alt="Per-session view options: show thinking and stream replies toggles" />
+      <figcaption>Per-session view options: hide thinking, or receive replies whole instead of streamed — handy for a focused session.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============ TERMINAL ============ -->
+<section id="terminal">
+  <p class="eyebrow">The terminal</p>
+  <h2><code>dae</code> — the same power, in your shell</h2>
+  <p class="lead">Run <code>dae</code> on any machine and you get a full terminal interface: a boot banner, a live chat, and a command palette. Like the desktop app, it doubles as that machine’s executor — so a turn started here runs here.</p>
+
+  <figure class="plain">
+    <img src="img/cli-welcome.png" alt="dae terminal interface: DAEDALUS banner card, connection facts, and a bordered composer" />
+    <figcaption>First run walks through connecting; after that <code>dae</code> drops straight into the interface.</figcaption>
+  </figure>
+
+  <h3>Type <kbd>/</kbd> for the command palette</h3>
+  <figure class="plain">
+    <img src="img/cli-palette.png" alt="Command palette filtering as you type a slash command" />
+    <figcaption>Live-filtered commands with descriptions — <kbd>↑</kbd><kbd>↓</kbd> to select, <kbd>Tab</kbd> to complete, <kbd>Enter</kbd> to run. Your agent’s own commands appear here too.</figcaption>
+  </figure>
+
+  <h3>Full-screen dashboards</h3>
+  <p><code>/agents</code>, <code>/skills</code> and <code>/crons</code> open windowed views — the terminal equivalent of the desktop’s panels. Press <kbd>q</kbd> to drop back into the chat, transcript intact.</p>
+  <figure class="plain">
+    <img src="img/cli-dashboard.png" alt="dae /agents dashboard: agent roster on the left, live step feed on the right" />
+    <figcaption>The <code>/agents</code> dashboard — the same live sub-agent feed as the desktop, drawn in your terminal.</figcaption>
+  </figure>
+</section>
+
+<!-- ============ EXECUTION ============ -->
+<section id="execution">
+  <p class="eyebrow">Local &amp; remote execution</p>
+  <h2>Where do commands actually run?</h2>
+  <p class="lead">This is the heart of Daedalus. The agent’s <em>thinking</em> always happens on the core. But when a turn runs a command or edits a file, that can happen either on the <strong>server</strong> or on <strong>your machine</strong> — you choose, per conversation.</p>
+
+  <div class="svg-wrap">
+    <svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, sans-serif">
+      <!-- core -->
+      <rect x="360" y="120" width="180" height="70" rx="10" fill="#0d1014" stroke="#2dd4bf" stroke-width="1.4"/>
+      <text x="450" y="150" fill="#2dd4bf" font-size="13" text-anchor="middle" font-weight="700">CORE</text>
+      <text x="450" y="172" fill="#8b949e" font-size="11.5" text-anchor="middle">agent thinks here</text>
+
+      <!-- server exec -->
+      <text x="150" y="40" fill="#8b949e" font-size="12" font-weight="700" text-anchor="middle">☁ SERVER</text>
+      <rect x="60" y="60" width="180" height="70" rx="10" fill="#0d1014" stroke="#2a313c" stroke-width="1.2"/>
+      <text x="150" y="90" fill="#c9d1d9" font-size="12.5" text-anchor="middle">agent container</text>
+      <text x="150" y="110" fill="#6e7681" font-size="11" text-anchor="middle">isolated, on the server</text>
+      <path d="M360 145 C 300 120, 240 100, 240 95" fill="none" stroke="#2a313c" stroke-width="1.3"/>
+      <text x="300" y="128" fill="#6e7681" font-size="10.5" text-anchor="middle">default</text>
+
+      <!-- local exec -->
+      <text x="750" y="40" fill="#2dd4bf" font-size="12" font-weight="700" text-anchor="middle">⌁ LOCAL</text>
+      <rect x="660" y="60" width="180" height="70" rx="10" fill="#0d1014" stroke="#2dd4bf" stroke-width="1.3"/>
+      <text x="750" y="86" fill="#2dd4bf" font-size="12.5" text-anchor="middle" font-weight="600">your machine</text>
+      <text x="750" y="106" fill="#8b949e" font-size="11" text-anchor="middle">the connected client</text>
+      <path d="M540 145 C 600 120, 660 100, 660 95" fill="none" stroke="#2dd4bf" stroke-width="1.3"/>
+      <text x="600" y="128" fill="#2dd4bf" font-size="10.5" text-anchor="middle">⌁ local turns</text>
+
+      <!-- caption -->
+      <text x="450" y="240" fill="#8b949e" font-size="12.5" text-anchor="middle">A turn started in the desktop app or terminal runs its commands on that machine,</text>
+      <text x="450" y="260" fill="#8b949e" font-size="12.5" text-anchor="middle">in your chosen workspace, with your approval. Everything else runs server-side.</text>
+    </svg>
+  </div>
+
+  <table class="tbl">
+    <tr><th>Question</th><th>Answer</th></tr>
+    <tr><td>Who thinks?</td><td>Always the core (the LLM runs there). Clients never need an API key.</td></tr>
+    <tr><td>Who runs commands?</td><td><strong>⌁ local</strong>: the client that sent the message (desktop app / <code>dae</code>). <strong>☁ server</strong>: an isolated container on the core.</td></tr>
+    <tr><td>How do I choose?</td><td>A toggle in the composer (and <code>/local on|off</code> in the terminal), per conversation. Local is the default when a client executor is connected.</td></tr>
+    <tr><td>Is it safe?</td><td>Every command asks for approval (or “free rein”, where only dangerous ones ask). File operations are confined to the workspace you set.</td></tr>
+    <tr><td>Several machines?</td><td>Connect as many clients as you like. Each turn runs on the machine that started it; messages from your phone fall back to your most-recently-connected machine.</td></tr>
+  </table>
+
+  <div class="note">
+    <p><strong>Why it matters:</strong> the agent can work directly in your real projects — build, test, edit, commit — on the machine where those projects live, while the model and your history stay on one central core.</p>
+  </div>
+</section>
+
+<!-- ============ REFERENCE ============ -->
+<section id="reference">
+  <p class="eyebrow">Technical reference</p>
+  <h2>Go deeper</h2>
+  <p class="lead">The friendly tour ends here; the full technical documentation lives in the repository.</p>
+
+  <div class="reflist">
+    <a href="https://github.com/inline-studio/daedalus/blob/main/docs/install.md"><b>Installation</b><span>Prerequisites, provider setup, the full <code>dae install</code> walkthrough.</span></a>
+    <a href="https://github.com/inline-studio/daedalus/blob/main/docs/agents.md"><b>Agents</b><span>Set up a new agent: manifests, models, tools, sub-agents.</span></a>
+    <a href="https://github.com/inline-studio/daedalus/blob/main/docs/skills.md"><b>Skills</b><span>How skills work, self-learning, and the approval flow.</span></a>
+    <a href="https://github.com/inline-studio/daedalus/blob/main/docs/channels.md"><b>Channels</b><span>Web, Telegram, WhatsApp, and the CLI — plus remote execution.</span></a>
+    <a href="https://github.com/inline-studio/daedalus/blob/main/docs/docker-mode.md"><b>Docker mode</b><span>How per-turn containers are dispatched and isolated.</span></a>
+    <a href="https://github.com/inline-studio/daedalus/blob/main/docs/mcp.md"><b>MCP servers</b><span>Connect external tools via the Model Context Protocol.</span></a>
+  </div>
+
+  <div class="cta" style="justify-content:flex-start; margin-top:8px;">
+    <a class="btn primary" href="https://github.com/inline-studio/daedalus">View on GitHub</a>
+    <a class="btn ghost" href="#quick-start">Back to quick start</a>
+  </div>
+</section>
+
+<footer>
+  <p>Daedalus — self-hosted agent runner · <a href="https://github.com/inline-studio/daedalus">github.com/inline-studio/daedalus</a></p>
+</footer>
+
+</body>
+</html>
