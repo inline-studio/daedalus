@@ -3,13 +3,14 @@
 // abort forward to the worker.
 
 import http from "node:http";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Kernel } from "../dist/kernel/agent.js";
 import { WebChannel } from "../dist/channels/web.js";
 import { SessionStore } from "../dist/sessions/store.js";
 import { PersistentContainerDispatcher } from "../dist/dispatch/persistent.js";
+import { buildSpawnSubagentTool } from "../dist/kernel/orchestrator.js";
 
 let pass = true;
 const expect = (label, ok, detail = "") => {
@@ -69,6 +70,115 @@ const expect = (label, ok, detail = "") => {
   }
   expect("kernel throws AbortError on stop", threw?.name === "AbortError", String(threw));
   expect("second tool never executed", executed.length === 1, JSON.stringify(executed));
+}
+
+// --- 1b. Kernel: abort lands AFTER a SINGLE tool too (the post-tool-loop check) ---
+{
+  // A lone tool call (the common spawn_subagent shape) that gets stopped while it runs.
+  // The between-tools check never fires (there's no second tool), so without the post-loop
+  // check the turn would push the tool_result and make ANOTHER model call — carrying on past
+  // the Stop. The kernel must instead throw AbortError once the tool returns.
+  const controller = new AbortController();
+  let completions = 0;
+  const provider = {
+    id: "fake",
+    capabilities: { tools: true, streaming: false, vision: false, systemPromptAsField: true },
+    async complete() {
+      completions++;
+      return {
+        message: { role: "assistant", content: [{ type: "tool_use", id: "s1", name: "delegate", input: {} }] },
+        stopReason: "tool_use",
+      };
+    },
+  };
+  const delegate = {
+    definition: { name: "delegate", description: "delegate work", inputSchema: { type: "object", properties: {} } },
+    async invoke() {
+      controller.abort(); // the user hits Stop while the (only) tool runs
+      return { content: "sub-agent result that must never reach the model" };
+    },
+  };
+  const kernel = new Kernel({
+    provider,
+    model: "fake",
+    system: "test",
+    builtinTools: [delegate],
+    mcpServers: new Map(),
+    toolContext: { runtime: { id: "host", exec: async () => ({ stdout: "", stderr: "", exitCode: 0, timedOut: false }) }, brainPath: "/tmp", brainWritable: false, workspacePath: "/tmp", agentName: "t" },
+    maxTurns: 5,
+    maxTokens: 128,
+  });
+  let threw = null;
+  try {
+    await kernel.runWithMessages([{ role: "user", content: [{ type: "text", text: "go" }] }], controller.signal);
+  } catch (err) {
+    threw = err;
+  }
+  expect("kernel throws AbortError after a lone tool is stopped", threw?.name === "AbortError", String(threw));
+  expect("no second completion after the stop", completions === 1, `completions=${completions}`);
+}
+
+// --- 1c. spawn_subagent forwards the parent-turn stop into the running sub-agent ---
+{
+  // A tmp brain with one subagent so loadAgent resolves it.
+  const brain = mkdtempSync(join(tmpdir(), "dae-smoke-abort-brain-"));
+  mkdirSync(join(brain, "agents"), { recursive: true });
+  writeFileSync(join(brain, "agents", "helper.md"), "---\nprovider: openai\nmodel: gpt-test\n---\nHelper body\n");
+  const stubSessions = {
+    getOrCreateSession: () => ({ id: "sub-sess-1" }),
+    tail: () => [],
+    appendMessage: () => {},
+  };
+  const parent = { name: "orchestrator", subagents: ["helper"] };
+  const config = { brain: { path: brain, writable: false } };
+
+  const controller = new AbortController();
+  const aborted = [];
+  // A dispatcher whose turn hangs until its own session is aborted — the stand-in for a
+  // sub-agent stuck retrying a failing call. abort(sessionId) resolves the hang.
+  let releaseDispatch;
+  const dispatcher = {
+    id: "stub",
+    streaming: true,
+    dispatch: async (args) =>
+      new Promise((resolve) => {
+        releaseDispatch = () => resolve({ status: "complete", finalText: "stopped mid-work", turns: 1 });
+      }),
+    abort: async (sessionId) => {
+      aborted.push(sessionId);
+      // The real dispatchers make the in-flight dispatch throw/return; emulate by resolving.
+      releaseDispatch?.();
+      return true;
+    },
+  };
+  const tool = await buildSpawnSubagentTool({
+    config,
+    parent,
+    sessions: stubSessions,
+    userId: "u1",
+    dispatcher,
+    signal: controller.signal,
+  });
+
+  const invocation = tool.invoke({ agent: "helper", prompt: "do a long thing" }, {});
+  // Let the dispatch get in flight, then the user hits Stop on the PARENT turn.
+  await new Promise((r) => setTimeout(r, 20));
+  controller.abort();
+  await invocation.catch(() => {});
+  expect(
+    "parent stop forwards abort to the sub-agent's OWN session id",
+    aborted.length === 1 && aborted[0] === "sub-sess-1",
+    JSON.stringify(aborted),
+  );
+
+  // And once the parent is already stopped, a further spawn refuses to start a new sub-agent.
+  let refusedAbort = false;
+  try {
+    await tool.invoke({ agent: "helper", prompt: "another" }, {});
+  } catch (err) {
+    refusedAbort = err?.name === "AbortError";
+  }
+  expect("spawn on an already-stopped turn throws AbortError (no orphan sub-agent)", refusedAbort);
 }
 
 // --- 2. Web channel: POST /abort (ownership + wiring) ---

@@ -217,6 +217,15 @@ export class Kernel {
           throw err;
         }
       }
+      // A stop that landed WHILE a tool ran (not just between tools) unwinds here — most
+      // importantly when the user cancelled a long-running spawned sub-agent, whose abort we
+      // forwarded so its dispatch threw. The in-flight tool's result is discarded rather than
+      // being fed into another model call that would let the turn carry on past the Stop.
+      if (signal?.aborted) {
+        const err = new Error("turn aborted");
+        err.name = "AbortError";
+        throw err;
+      }
       messages.push({ role: "user", content: toolResults });
     }
 

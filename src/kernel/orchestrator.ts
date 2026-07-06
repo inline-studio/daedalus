@@ -24,6 +24,13 @@ export interface OrchestratorContext {
   // one. Only threaded into sub-agents that DECLARE `execution: executor` — everything
   // else stays server-side regardless of the parent's placement.
   remoteExec?: { userId: string; url: string; token: string; env?: Record<string, string> };
+  // The parent turn's abort signal (the user's Stop button). When it fires while a
+  // spawned sub-agent is still running, we forward the cancel to that sub-agent's
+  // dispatch (`dispatcher.abort(subSessionId)`) — the sub-agent is tracked under its
+  // OWN session id, so aborting the parent's session alone never reaches it. Without
+  // this the parent kernel stays blocked awaiting the sub-agent and the delegated work
+  // runs to completion despite the Stop.
+  signal?: AbortSignal;
 }
 
 // `spawn_subagent` — the orchestrator's only handle to specialists. The subagent's
@@ -84,6 +91,14 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
       if (!allowed.includes(name)) {
         return { content: `subagent '${name}' is not in this agent's allowlist`, isError: true };
       }
+      // The user already stopped the parent turn before we could delegate — don't spawn a
+      // sub-agent that would be orphaned the moment it starts. The kernel's post-tool abort
+      // check turns this into a clean turn stop.
+      if (ctx.signal?.aborted) {
+        const err = new Error("turn aborted");
+        err.name = "AbortError";
+        throw err;
+      }
       const sub = await loadAgent(ctx.config.brain.path, name);
 
       // Executor placement (WS7): a sub-agent declaring `execution: executor` must run
@@ -137,6 +152,18 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
       const spawnId = randomUUID().slice(0, 8);
       const origin = { path: [name], spawnId };
       sink?.({ type: "subagent_start", prompt, origin });
+      // Forward a parent-turn stop into the running sub-agent. The sub-agent is tracked in
+      // the dispatcher under its OWN session id, so aborting the parent's session doesn't
+      // reach it; when the parent signal fires we explicitly cancel the sub-dispatch (fires
+      // its AbortSignal in-process / force-removes its container). Best-effort and fire-and-
+      // forget — the parent kernel's post-tool abort check then unwinds the turn.
+      const signal = ctx.signal;
+      const onParentAbort = signal
+        ? () => {
+            void ctx.dispatcher.abort?.(subSession.id);
+          }
+        : undefined;
+      if (signal && onParentAbort) signal.addEventListener("abort", onParentAbort, { once: true });
       let result;
       try {
         result = await ctx.dispatcher.dispatch({
@@ -161,6 +188,8 @@ export async function buildSpawnSubagentTool(ctx: OrchestratorContext): Promise<
       } catch (err) {
         sink?.({ type: "subagent_end", status: "error", origin });
         throw err;
+      } finally {
+        if (signal && onParentAbort) signal.removeEventListener("abort", onParentAbort);
       }
       sink?.({ type: "subagent_end", status: result.status, origin });
 
