@@ -51,6 +51,22 @@ RUN set -eux; \
     rm -rf /tmp/docker /tmp/docker.tgz; \
     docker --version
 
+# GitHub CLI (gh) — coding agents (Cypher) reach for it to create repos / open PRs. Without
+# it, `which gh` exits non-zero and the agent misreads a missing binary as a broken shell
+# ("tool failed: bash"). Static binary, arch-aware — same rationale as the docker client.
+ARG GH_VERSION=2.63.2
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64|arm64) garch="$arch" ;; \
+      *) echo "unsupported arch for gh: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${garch}.tar.gz" -o /tmp/gh.tgz; \
+    tar -xzf /tmp/gh.tgz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${garch}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_${garch}"; \
+    gh --version
+
 # Chromium runtime libraries, so browser-automation skills (agent-browser via
 # Playwright/Puppeteer) can LAUNCH the Chromium they install at runtime. Stateful
 # browser CLIs must run in a PERSISTENT shell — i.e. the agent's bash via HostRuntime,
