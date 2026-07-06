@@ -5,7 +5,7 @@ import type { ArtemisConfig } from "../config/schema.js";
 import type { Message, ToolUsePart, ToolResultPart, TurnEventSink } from "../types.js";
 import { Kernel, summarizeConversation } from "./agent.js";
 import { budgetTail, estimateTokens } from "./context-budget.js";
-import { compactCompletedLoops } from "./history-compaction.js";
+import { compactCompletedLoops, capToolResults } from "./history-compaction.js";
 import { buildProvider } from "../providers/index.js";
 import type { LLMProvider } from "../providers/base.js";
 import { inferContextWindow } from "../providers/model-info.js";
@@ -254,8 +254,12 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     // at full fidelity. Persisted history is untouched — this is a replay-time view.
     const keep = config.sessions.keepFullFidelityLoops;
     const compacted = keep > 0 ? compactCompletedLoops(full, { keepFullFidelityLoops: keep }) : full;
+    // Per-result guardrail: cap any single oversized tool_result in the replayed history,
+    // even in the kept loops — one giant `find`/read dump can otherwise dominate a small
+    // context window on its own.
+    const capped = capToolResults(compacted, config.sessions.maxToolResultChars);
     const budget = config.sessions.contextTokenBudget;
-    const messages = budget ? budgetTail(compacted, budget) : compacted;
+    const messages = budget ? budgetTail(capped, budget) : capped;
     if (budget && messages.length < full.length) {
       log.info(
         { from: full.length, to: messages.length, budget },
