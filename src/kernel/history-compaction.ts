@@ -50,6 +50,33 @@ function stubToolResults(m: Message): Message {
 // turn-loops have their tool_result bodies replaced with short stubs. tool_use parts are
 // preserved (small, useful for "what did I try"). The persisted history is untouched —
 // this is purely a view transformation applied at replay time.
+// Per-result size cap, applied to the REPLAYED history AFTER loop-compaction. Even the
+// loops kept at full fidelity can carry a single huge tool_result (a `find` dump, a big
+// file read) that dominates the prompt — on a small-context model that alone can push a
+// trivial turn over the window. This truncates any over-cap result to head + tail with a
+// marker, so the shape and the useful ends survive while the middle (rarely re-referenced)
+// is dropped. 0 disables. Live tool_results from the CURRENT in-flight turn are never
+// touched — only what's replayed from prior turns.
+export function capToolResults(messages: Message[], maxChars: number): Message[] {
+  if (maxChars <= 0) return messages;
+  return messages.map((m) => {
+    let touched = false;
+    const next: ContentPart[] = m.content.map((p) => {
+      if (p.type !== "tool_result" || p.content.length <= maxChars) return p;
+      touched = true;
+      const head = Math.floor(maxChars * 0.7);
+      const tail = maxChars - head;
+      const omitted = p.content.length - head - tail;
+      const capped =
+        p.content.slice(0, head) +
+        `\n\n[… ${omitted} chars truncated to fit context — re-run the tool if you need the full output …]\n\n` +
+        p.content.slice(p.content.length - tail);
+      return { ...p, content: capped };
+    });
+    return touched ? { ...m, content: next } : m;
+  });
+}
+
 export function compactCompletedLoops(messages: Message[], opts: CompactOpts): Message[] {
   if (opts.keepFullFidelityLoops <= 0 || messages.length === 0) return messages;
 

@@ -2,7 +2,7 @@
 // bulky tool_result bodies from older completed turn-loops, keeping the N most recent at
 // full fidelity. The persisted history is never touched; this is a pure transform.
 
-import { compactCompletedLoops } from "../dist/kernel/history-compaction.js";
+import { compactCompletedLoops, capToolResults } from "../dist/kernel/history-compaction.js";
 
 let pass = true;
 const ok = (label, cond) => {
@@ -78,6 +78,20 @@ ok(
   "input messages are NOT mutated (persisted history stays full)",
   all[2].content[0].content === BIG && all[2].content[0].content.length === BIG.length,
 );
+
+// --- capToolResults: per-result size guardrail (even in kept loops) ---
+{
+  const kept = compactCompletedLoops(all, { keepFullFidelityLoops: 2 }); // last 2 loops still hold BIG
+  const capped = capToolResults(kept, 8000);
+  const bigResults = capped.flatMap((m) => m.content.filter((p) => p.type === "tool_result"));
+  const stillHuge = bigResults.filter((p) => p.content.length > 8100); // 8000 + marker slack
+  ok("capToolResults truncates over-cap results even in kept loops", stillHuge.length === 0, `${stillHuge.length} still huge`);
+  const truncated = bigResults.find((p) => p.content.includes("truncated to fit context"));
+  ok("truncated results keep a head + tail + marker", !!truncated && truncated.content.startsWith("x") && truncated.content.endsWith("x"));
+  ok("under-cap results pass through untouched", capToolResults([{ role: "user", content: [{ type: "tool_result", toolUseId: "z", content: "small" }] }], 8000)[0].content[0].content === "small");
+  ok("maxChars 0 disables the cap", capToolResults(kept, 0) === kept);
+  ok("capToolResults does not mutate the input (BIG intact)", all[2].content[0].content.length === BIG.length);
+}
 
 console.log(`\nresult: ${pass ? "PASS" : "FAIL"}`);
 process.exit(pass ? 0 : 1);

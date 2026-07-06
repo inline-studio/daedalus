@@ -269,6 +269,13 @@ export const SessionsConfigSchema = z.object({
   // detail still work). 0 disables the compaction; the persisted history is never mutated —
   // this is purely a view applied before each turn. Default: 2 (current + previous loop).
   keepFullFidelityLoops: z.number().int().min(0).default(2),
+  // Per-result size cap (chars) applied to REPLAYED tool_results — even in the loops kept
+  // at full fidelity. A single huge tool output (a `find` dump, a big file read) can
+  // otherwise dominate the prompt on its own; on a small-context model that alone can push
+  // a trivial turn over the window. Over-cap results are truncated to head + tail with a
+  // marker (~4 chars/token, so 8000 ≈ 2k tokens). The current in-flight turn's live results
+  // are never touched. 0 disables. Default: 8000.
+  maxToolResultChars: z.number().int().min(0).default(8000),
   // Web conversations only: after the first exchange in a NEW (non-default) conversation, ask
   // the model for a short title for it (shown in the web UI's conversation list), replacing the
   // provisional first-message snippet. Best-effort and non-fatal. Set false to keep the snippet.

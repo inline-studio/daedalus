@@ -17,6 +17,15 @@ Each entry references the PR that introduced the change.
   animated spinner + what it's doing + how long it's been going
   (`⠙ streaming 2m 36s`) — so a slow model reads as clearly working, not a frozen
   prompt.
+- **Per-result context guardrail (`sessions.maxToolResultChars`, default 8000).** A
+  single huge `tool_result` in the replayed history — a `find` dump, a big file read —
+  could dominate the prompt even inside the loops kept at full fidelity, pushing a
+  trivial turn over a small context window on its own. Over-cap results are now
+  truncated to head + tail with a marker at replay time (the current in-flight turn's
+  live results are never touched; persisted history is untouched). Set to 0 to disable.
+  Pairs with `contextTokenBudget` (proactive oldest-first trim) and
+  `keepFullFidelityLoops` (how many recent loops keep full tool output) — the three
+  knobs that bound prefill on slow / small-context models.
 
 ### Changed
 
