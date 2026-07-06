@@ -20,6 +20,7 @@ export function buildProvider(agent: AgentManifest, config: ArtemisConfig): LLMP
       const cfg = config.providers.openai ?? {};
       return new OpenAICompatibleProvider({
         flavor: "openai",
+        idleTimeoutMs: config.sessions.streamIdleTimeoutMs,
         ...(cfg.apiKey ? { apiKey: cfg.apiKey } : {}),
         ...(cfg.baseUrl ? { baseUrl: cfg.baseUrl } : {}),
       });
@@ -29,6 +30,7 @@ export function buildProvider(agent: AgentManifest, config: ArtemisConfig): LLMP
       // Ollama exposes an OpenAI-compatible endpoint at /v1
       return new OpenAICompatibleProvider({
         flavor: "ollama",
+        idleTimeoutMs: config.sessions.streamIdleTimeoutMs,
         baseUrl: `${ollama.baseUrl.replace(/\/$/, "")}/v1`,
         apiKey: "ollama",
       });

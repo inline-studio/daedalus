@@ -276,6 +276,14 @@ export const SessionsConfigSchema = z.object({
   // marker (~4 chars/token, so 8000 ≈ 2k tokens). The current in-flight turn's live results
   // are never touched. 0 disables. Default: 8000.
   maxToolResultChars: z.number().int().min(0).default(8000),
+  // Stream INACTIVITY timeout (ms). daedalus streams model output; this fires ONLY when the
+  // upstream sends no tokens for this long — i.e. it has genuinely stalled, not merely gone
+  // slow. Every chunk (including reasoning-token deltas) resets the timer, so a slow-but-
+  // progressing generation is waited out indefinitely and never cut off mid-turn. The window
+  // must exceed worst-case time-to-first-token (prefill of a large prompt on a slow model),
+  // hence the generous default. 0 disables it (falling back to the SDK's blunt wall-clock
+  // timeout). Default: 300000 (5 min of silence).
+  streamIdleTimeoutMs: z.number().int().min(0).default(300000),
   // Web conversations only: after the first exchange in a NEW (non-default) conversation, ask
   // the model for a short title for it (shown in the web UI's conversation list), replacing the
   // provisional first-message snippet. Best-effort and non-fatal. Set false to keep the snippet.

@@ -26,6 +26,14 @@ Each entry references the PR that introduced the change.
   Pairs with `contextTokenBudget` (proactive oldest-first trim) and
   `keepFullFidelityLoops` (how many recent loops keep full tool output) — the three
   knobs that bound prefill on slow / small-context models.
+- **Stream-inactivity timeout (`sessions.streamIdleTimeoutMs`, default 300000).** A model
+  call now fails only when the stream goes *silent* for this long — a genuinely stalled
+  upstream — rather than on a blunt wall-clock deadline. Every token (reasoning deltas
+  included) resets the timer, so a slow-but-progressing generation is waited out
+  indefinitely and never cut off mid-turn: a slow model reads as *working*, not *timed
+  out*. The window must exceed worst-case time-to-first-token (large-prompt prefill on a
+  slow model), hence the generous default; set 0 to fall back to the SDK's wall-clock
+  timeout.
 
 ### Changed
 
