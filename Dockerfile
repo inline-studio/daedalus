@@ -76,12 +76,24 @@ WORKDIR /app
 # release.
 ARG DAEDALUS_VERSION=latest
 COPY docker-compose.yml daedalus-*.tg[z] /tmp/dae/
+# Install the daedalus CLI. Priority: the locally-packed tarball from the build
+# context (dev, or `dae install` on a checkout), else the published GitHub RELEASE
+# tarball — matched to DAEDALUS_VERSION, or the rolling "latest" asset.
+#
+# NEVER the public npm registry: `daedalus` there is an UNRELATED package (0.6.0, no
+# `dae` bin). The old `npm install -g daedalus@$VERSION` fallback installed it silently
+# — the || GitHub fallback never fired because the wrong install "succeeded" — and the
+# resulting image's worker died with `exec: dae: not found` (casa, 2026-07). The final
+# `command -v dae` guard turns any future mismatch into a clear BUILD failure instead of
+# a cryptic unhealthy container at runtime.
 RUN if ls /tmp/dae/daedalus-*.tgz >/dev/null 2>&1; then \
       npm install -g /tmp/dae/daedalus-*.tgz; \
+    elif [ "$DAEDALUS_VERSION" = "latest" ]; then \
+      npm install -g "https://github.com/inline-studio/daedalus/releases/latest/download/daedalus-latest.tgz"; \
     else \
-      npm install -g "daedalus@$DAEDALUS_VERSION" \
-        || npm install -g "https://github.com/inline-studio/daedalus/releases/latest/download/daedalus-latest.tgz"; \
+      npm install -g "https://github.com/inline-studio/daedalus/releases/download/v${DAEDALUS_VERSION}/daedalus-${DAEDALUS_VERSION}.tgz"; \
     fi \
+    && { command -v dae >/dev/null || { echo "FATAL: daedalus install produced no 'dae' binary" >&2; exit 1; }; } \
     && rm -rf /tmp/dae \
     && npm cache clean --force
 
