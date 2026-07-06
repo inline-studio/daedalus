@@ -489,6 +489,10 @@
   var streamBubble = null;
   var lastStreamDiv = null; // survives finalize so late chrome (e.g. debug) can attach to it
   var lastStreamed = null;
+  // In-flight turns preserved across a session switch, keyed by conversation id. A streaming
+  // turn's activity isn't persisted to /history until turn_done, so we keep its bubble here when
+  // the user navigates away and re-attach it on return (see stashLiveTurn / restoreLiveTurn).
+  var pendingTurns = {};
   function ensureStreamBubble() {
     if (streamBubble) return streamBubble;
     hideThinking();
@@ -667,6 +671,16 @@
     tickTurnTimer();
   }
   function stopTurnTimer() { if (turnTimer) { clearInterval(turnTimer); turnTimer = null; } }
+  // Resume a turn timer that was paused across a session switch: keep the ORIGINAL start so the
+  // elapsed reading stays continuous (a plain startTurnTimer would reset it to 0).
+  function resumeTurnTimer(startMs) {
+    // Keep the original start when we have one (send set it); fall back to now for a turn we only
+    // ever joined mid-stream over SSE (no local start) so the readout can't show a garbage elapsed.
+    turnStart = startMs || Date.now();
+    if (turnTimer) clearInterval(turnTimer);
+    turnTimer = setInterval(tickTurnTimer, 250);
+    tickTurnTimer();
+  }
 
   // Tool-call display helpers: a one-line summary of the primary argument (collapsed), and the
   // full pretty-printed input (expanded).
@@ -744,7 +758,12 @@
       // Defensive: the stream is already per-conversation, but if a reply for a different
       // conversation ever reaches us (e.g. via the legacy bare-key broadcast during a deploy),
       // don't render it into the conversation the user is currently looking at.
-      if (d.conversationId && convId && d.conversationId !== convId) return;
+      if (d.conversationId && convId && d.conversationId !== convId) {
+        // If that conversation had an in-flight turn we stashed, it has now completed and been
+        // persisted — /history will show it, so drop the stash to avoid a duplicate on return.
+        delete pendingTurns[d.conversationId];
+        return;
+      }
       // A streamed turn finalizes via its own turn_done. If a buffered/replayed message for the
       // SAME text arrives (e.g. reconnect replay of the now-persisted reply), don't render it
       // twice. Any still-open stream bubble (e.g. a pending question interrupted streaming) is
@@ -865,7 +884,12 @@
     es.addEventListener("turn_done", function (ev) {
       markActivity();
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
-      if (d.conversationId && convId && d.conversationId !== convId) return;
+      if (d.conversationId && convId && d.conversationId !== convId) {
+        // Turn finished for a session we've navigated away from — it's persisted now, so a
+        // preserved in-flight bubble for it would duplicate on return. Drop the stash.
+        delete pendingTurns[d.conversationId];
+        return;
+      }
       if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
       stopTurnTimer();
       setTurnActive(false);
@@ -945,7 +969,10 @@
     return div;
   }
 
-  function loadHistory() {
+  // `done` (optional) fires once the fetch settles — success OR failure — so a caller can
+  // sequence work that must run after the persisted turns are on screen (e.g. re-attaching a
+  // preserved in-flight turn, then connecting the live stream). Always called exactly once.
+  function loadHistory(done) {
     var u = "/history?externalUserId=" + encodeURIComponent(uid) +
             (convId ? "&conversationId=" + encodeURIComponent(convId) : "");
     fetch(u, { headers: authHeaders() })
@@ -966,8 +993,9 @@
         // Nothing in this conversation (and nothing streamed in while loading) → splash.
         if (!(j.messages || []).length && !log.children.length) log.innerHTML = splashHtml();
         jumpToBottom();
+        if (done) done();
       })
-      .catch(function (err) { console.error("loadHistory failed", err); });
+      .catch(function (err) { console.error("loadHistory failed", err); if (done) done(); });
   }
 
   function fileToAttachment(file) {
@@ -1501,14 +1529,64 @@
       .catch(function () { renderConversations(); if (cb) cb(); });
   }
 
+  // Preserve/restore a still-streaming turn across a session switch. A streaming turn's flowing
+  // activity (tool rows, reasoning, partial text) isn't persisted to /history until turn_done, and
+  // the SSE isn't replayed on reconnect — so without this, switching away drops those pills for
+  // good. We stash the in-flight bubble (see pendingTurns) on the way out and re-attach it on the
+  // way back, keyed by conversation id, so the activity persists across session switches.
+  function stashLiveTurn(id) {
+    // Only preserve a genuinely in-flight turn; a finished one is already in /history.
+    if (!id || !turnActive) return;
+    pendingTurns[id] = {
+      streamBubble: streamBubble,      // live DOM refs survive clearLog's innerHTML reset
+      turnStart: turnStart,
+      suppressedText: suppressedText,  // whole-reply mode buffers here with no bubble
+    };
+  }
+  // Re-attach a preserved in-flight turn AFTER loadHistory has rebuilt the persisted turns, so it
+  // lands in chronological order at the end of the log and the live stream resumes into it.
+  function restoreLiveTurn(id) {
+    var t = pendingTurns[id];
+    if (!t) return;
+    delete pendingTurns[id];
+    if (t.streamBubble) {
+      // If the turn completed and persisted while we were away, /history already shows it —
+      // don't duplicate it. The streamed text is a prefix of the final persisted reply.
+      var full = (t.streamBubble.fullText || "").trim();
+      if (full) {
+        for (var i = convo.length - 1; i >= 0; i--) {
+          if (convo[i].role === "assistant") {
+            if ((convo[i].text || "").indexOf(full) === 0) return;
+            break;
+          }
+        }
+      }
+      var empty = log.querySelector(".empty"); if (empty) empty.remove();
+      log.appendChild(t.streamBubble.div);
+      convo.push({ role: "assistant", text: t.streamBubble.fullText, at: new Date().toISOString() });
+      t.streamBubble.idx = convo.length - 1;
+      t.streamBubble.div.setAttribute("data-idx", String(t.streamBubble.idx));
+      streamBubble = t.streamBubble;
+      lastStreamDiv = t.streamBubble.div;
+    }
+    suppressedText = t.suppressedText || "";
+    // The turn is still live on the server; keep the stop button + timer running so the resumed
+    // stream (and its turn_done) render into the restored bubble.
+    setTurnActive(true);
+    resumeTurnTimer(t.turnStart);
+    jumpToBottom();
+  }
+
   function selectConversation(id) {
     if (!id) return;
     if (id === convId) { closeSidebar(); return; }
+    stashLiveTurn(convId);
     convId = id; LS.setItem("dae_conv", convId);
     renderConversations();
     clearLog();
-    loadHistory();
-    connect();
+    // Re-attach any preserved in-flight turn, then connect — both AFTER history is on screen so
+    // ordering is correct and the resumed stream targets the restored bubble (not a fresh one).
+    loadHistory(function () { restoreLiveTurn(id); connect(); });
     closeSidebar();
   }
 
