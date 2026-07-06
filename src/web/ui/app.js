@@ -188,20 +188,26 @@
   // it'll be undefined — so fall back to a hidden textarea + execCommand("copy"). Shared by
   // the per-code-block Copy buttons and the "copy chat" transcript export.
   function copyToClipboard(text) {
+    // execCommand fallback is also the RECOVERY path: some shells deny the async
+    // clipboard API by permission (the desktop app before it granted
+    // clipboard-sanitized-write) — a writeText rejection must not mean "failed".
+    function legacyCopy() {
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        return ok;
+      } catch (_err) { return false; }
+    }
     return new Promise(function (resolve) {
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(function () { resolve(true); }, function () { resolve(false); });
+        navigator.clipboard.writeText(text).then(function () { resolve(true); }, function () { resolve(legacyCopy()); });
       } else {
-        try {
-          var ta = document.createElement("textarea");
-          ta.value = text;
-          ta.style.position = "fixed"; ta.style.opacity = "0";
-          document.body.appendChild(ta);
-          ta.select();
-          var ok = document.execCommand("copy");
-          document.body.removeChild(ta);
-          resolve(ok);
-        } catch (_err) { resolve(false); }
+        resolve(legacyCopy());
       }
     });
   }
@@ -517,10 +523,16 @@
   }
   // A tool call — or a switch between text and thinking — closes the open block so the next delta
   // starts a fresh block below it, preserving chronological order in the flow.
-  function closeCur() { if (streamBubble) streamBubble.cur = null; }
+  function closeCur() {
+    if (!streamBubble) return;
+    // A finished thinking segment stops its dots animation (the header goes static).
+    if (streamBubble.cur && streamBubble.cur.type === "thinking") streamBubble.cur.el.classList.remove("streaming");
+    streamBubble.cur = null;
+  }
   function textBlock() {
     var s = ensureStreamBubble();
     if (s.cur && s.cur.type === "text") return s.cur;
+    closeCur(); // a thinking segment ending here must drop its dots animation
     var el = document.createElement("div"); el.className = "reply-block";
     s.flow.appendChild(el);
     s.cur = { type: "text", el: el, text: "" };
@@ -530,11 +542,13 @@
   // Shared DOM builders for the activity chrome — used both by live streaming and by history
   // reconstruction (so a reloaded conversation rebuilds the same tool rows + reasoning).
   function makeReasoning(text, collapsed) {
-    // A collapsible "💭 Thinking" disclosure — distinct from the reply (muted, italic).
+    // A collapsible "Thinking" disclosure — muted, no icon, collapsed by default.
+    // While streaming, the .streaming class animates trailing dots on the label
+    // ("Thinking." → ".." → "…", CSS keyframes) as the working indicator.
     var el = document.createElement("div"); el.className = "reasoning" + (collapsed ? " collapsed" : "");
     var head = document.createElement("div"); head.className = "rhead";
     var chev = document.createElement("span"); chev.className = "chev"; chev.textContent = collapsed ? "▸" : "▾";
-    var lbl = document.createElement("span"); lbl.textContent = "💭 Thinking";
+    var lbl = document.createElement("span"); lbl.className = "rlabel"; lbl.textContent = "Thinking";
     head.appendChild(chev); head.appendChild(lbl);
     var body = document.createElement("div"); body.className = "rbody"; body.textContent = text || "";
     head.addEventListener("click", function () {
@@ -568,42 +582,17 @@
   function thinkBlock() {
     var s = ensureStreamBubble();
     if (s.cur && s.cur.type === "thinking") return s.cur;
-    var r = makeReasoning("", false); // expanded while streaming; auto-collapsed at turn_done
+    // Collapsed even while streaming — the animated "Thinking…" header is the signal;
+    // the content stays one click away (and expands live if opened mid-stream).
+    var r = makeReasoning("", true);
+    r.el.classList.add("streaming");
     s.flow.appendChild(r.el);
     s.cur = { type: "thinking", el: r.el, body: r.body, chev: r.chev, text: "" };
     return s.cur;
   }
-  function makeSubagentPanel(path, prompt) {
-    // One spawn_subagent call's live activity: a collapsible panel (expanded while running)
-    // holding the delegated prompt and the subagent's tool rows as they happen.
-    var el = document.createElement("div"); el.className = "subagent running";
-    var head = document.createElement("div"); head.className = "shead";
-    var chev = document.createElement("span"); chev.className = "chev"; chev.textContent = "▾";
-    var lbl = document.createElement("span"); lbl.className = "slabel";
-    lbl.textContent = "⚙ " + (path && path.length ? path[0] : "subagent");
-    var state = document.createElement("span"); state.className = "state"; state.textContent = "working…";
-    head.appendChild(chev); head.appendChild(lbl); head.appendChild(state);
-    var body = document.createElement("div"); body.className = "sbody";
-    if (prompt) {
-      var p = document.createElement("div"); p.className = "sprompt"; p.title = prompt; p.textContent = prompt;
-      body.appendChild(p);
-    }
-    head.addEventListener("click", function () {
-      el.classList.toggle("collapsed");
-      chev.textContent = el.classList.contains("collapsed") ? "▸" : "▾";
-    });
-    el.appendChild(head); el.appendChild(body);
-    return {
-      el: el, body: body, tools: {},
-      finish: function (status) {
-        el.classList.remove("running");
-        el.classList.add(status === "error" ? "err" : "done");
-        el.classList.add("collapsed");
-        chev.textContent = "▸";
-        state.textContent = status === "complete" ? "done" : status === "pending_question" ? "needs input" : "failed";
-      },
-    };
-  }
+  // (Sub-agent activity renders in the Agents · Activity modal, not inline — the chat
+  // gets a single dim delegation note per spawn; see the "subagent" SSE listener.)
+
   // While a reply streams we show the RAW text as it types and render full markdown only once, at
   // turn_done. This avoids re-parsing partial markdown every token (the "wobble") and the
   // mid-stream table flicker. Prose stays proportional; only code fences and table rows are shown
@@ -652,7 +641,16 @@
   // reply's footer alongside the token count (when the provider reported usage). Purely
   // client-side timing; tokens come from the turn_done event.
   var turnStart = 0, turnTimer = null;
-  function fmtElapsed(ms) { var s = ms / 1000; return (s < 10 ? s.toFixed(1) : Math.round(s)) + "s"; }
+  // Elapsed turn time: sub-10s with a decimal ("3.4s"), seconds to a minute ("42s"),
+  // then minutes ("5m 57s", "1h 2m 3s") — never a raw "357s".
+  function fmtElapsed(ms) {
+    var s = ms / 1000;
+    if (s < 10) return s.toFixed(1) + "s";
+    if (s < 60) return Math.round(s) + "s";
+    var whole = Math.round(s);
+    var h = Math.floor(whole / 3600), m = Math.floor((whole % 3600) / 60), ss = whole % 60;
+    return (h ? h + "h " : "") + m + "m " + ss + "s";
+  }
   function fmtTokens(u) {
     function k(n) { n = n || 0; return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n); }
     return "↑" + k(u.inputTokens) + " ↓" + k(u.outputTokens);
@@ -822,49 +820,28 @@
       t.row.classList.add(d.isError ? "err" : "ok");
       t.state.textContent = d.isError ? "✗" : "✓";
     });
-    // Subagent activity: every event of one spawn_subagent call shares a spawnId and renders
-    // into one collapsible panel inline in the flow. Nested spawns arrive with the same spawnId
-    // and a longer path — their tool rows land in the same panel, name-prefixed by the chain.
+    // Subagent activity stays OUT of the chat: delegated work has its own home (the
+    // status-bar Agents · Activity modal / the CLI dashboard) with far better detail.
+    // The events still mark the turn active — one dim line notes the hand-off so the
+    // transcript records that delegation happened, without the inline panels.
     es.addEventListener("subagent", function (ev) {
       markActivity();
       var d; try { d = JSON.parse(ev.data); } catch (e) { return; }
       if (d.conversationId && convId && d.conversationId !== convId) return;
       if (!turnActive) setTurnActive(true);
       if (!viewOpts().stream) return; // whole-reply mode: no live chrome
-      var s = ensureStreamBubble();
-      var panel = s.subPanels[d.spawnId];
-      if (d.kind === "start") {
-        if (!panel) {
-          closeCur(); // the panel sits inline in the flow, like a tool row
-          panel = makeSubagentPanel(d.path, d.prompt);
-          s.flow.appendChild(panel.el);
-          s.subPanels[d.spawnId] = panel;
-        } else if (d.path && d.path.length > 1) {
-          // A nested spawn inside this panel — note it as a line rather than a sub-panel.
-          var n = document.createElement("div"); n.className = "sprompt";
-          n.textContent = "⚙ " + d.path.join(" › ") + (d.prompt ? " — " + d.prompt : "");
+      if (d.kind === "start" && d.path && d.path.length === 1) {
+        var s = ensureStreamBubble();
+        if (!s.subPanels[d.spawnId]) {
+          s.subPanels[d.spawnId] = true; // one note per spawn
+          closeCur();
+          var n = document.createElement("div");
+          n.className = "spawn-note";
+          n.textContent = "→ delegated to " + d.path[0] + " (watch it in the agents view)";
           n.title = d.prompt || "";
-          panel.body.appendChild(n);
+          s.flow.appendChild(n);
+          if (isAtBottom()) jumpToBottom();
         }
-        if (isAtBottom()) jumpToBottom();
-        return;
-      }
-      if (!panel) return;
-      if (d.kind === "tool") {
-        var prefix = d.path && d.path.length > 1 ? d.path.slice(1).join(" › ") + " › " : "";
-        var t = makeToolRow(prefix + (d.name || "tool"), d.input, "running");
-        panel.body.appendChild(t.row);
-        panel.tools[d.id] = t;
-        if (isAtBottom()) jumpToBottom();
-      } else if (d.kind === "tool_done") {
-        var tr = panel.tools[d.id];
-        if (tr) {
-          tr.row.classList.remove("running");
-          tr.row.classList.add(d.isError ? "err" : "ok");
-          tr.state.textContent = d.isError ? "✗" : "✓";
-        }
-      } else if (d.kind === "end") {
-        panel.finish(d.status);
       }
     });
     es.addEventListener("debug", function (ev) {
@@ -912,10 +889,12 @@
         tb.el.className = "";
         tb.el.innerHTML = md(tb.text);
       }
-      // Collapse reasoning blocks now the turn is done — they stay one click away.
+      // Collapse reasoning blocks now the turn is done (and stop any dots animation) —
+      // they stay one click away.
       var rs = streamBubble.flow.querySelectorAll(".reasoning");
       for (var r = 0; r < rs.length; r++) {
         rs[r].classList.add("collapsed");
+        rs[r].classList.remove("streaming");
         var cv = rs[r].querySelector(".chev"); if (cv) cv.textContent = "▸";
       }
       // Freeze the timer on the reply footer, with the token count when usage was reported.

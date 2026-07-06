@@ -321,9 +321,11 @@ app.whenReady().then(() => {
   // Belt-and-braces: the web UI asks for Notification permission via the standard API;
   // grant it for the configured server so the opt-in flow works exactly like a browser.
   // "media" covers the composer's dictation mic (macOS still shows its own system
-  // microphone prompt on first use).
+  // microphone prompt on first use). "clipboard-sanitized-write" is what
+  // navigator.clipboard.writeText needs — without it the select-messages Copy button
+  // fails in the shell while working fine in a browser.
   session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => {
-    cb(permission === "notifications" || permission === "media");
+    cb(permission === "notifications" || permission === "media" || permission === "clipboard-sanitized-write");
   });
   // Identify as the desktop app on every request. Servers running the UI in
   // desktop-only mode (channels.web.ui) serve the chat shell only to requests carrying

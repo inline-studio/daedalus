@@ -198,6 +198,12 @@ export class Screen {
   // Command-palette rows rendered BELOW the input (pre-styled; one terminal row each).
   private menu: string[] = [];
   private started = false;
+  // Suspended while a full-screen dashboard owns the terminal (alternate buffer):
+  // every paint is suppressed — a stray status tick or streamed line would corrupt
+  // the dashboard frame — and scrollback lines are HELD, then flushed on resume so
+  // nothing that arrived mid-dashboard is lost.
+  private suspended = false;
+  private heldLines: string[] = [];
 
   constructor(private opts: ScreenOptions) {}
 
@@ -209,9 +215,25 @@ export class Screen {
     this.redraw();
   }
 
+  suspend(): void {
+    this.suspended = true;
+  }
+
+  resume(): void {
+    this.suspended = false;
+    const held = this.heldLines;
+    this.heldLines = [];
+    for (const line of held) this.appendLine(line);
+    this.redraw();
+  }
+
   // A finished scrollback line (may wrap freely). Clears the reserved rows, prints the
   // line where the partial row was, then repaints the bottom.
   appendLine(text: string): void {
+    if (this.suspended) {
+      this.heldLines.push(text);
+      return;
+    }
     this.opts.write(`${ESC}${2 + this.paintedMenuLen}A\r${ESC}0J` + text + "\n");
     this.paintBottomTail();
   }
@@ -267,7 +289,7 @@ export class Screen {
   private paintedMenuLen = 0;
 
   redraw(): void {
-    if (!this.started) return;
+    if (!this.started || this.suspended) return;
     this.opts.write(`${ESC}${2 + this.paintedMenuLen}A\r${ESC}0J`);
     this.paintBottomTail();
   }
