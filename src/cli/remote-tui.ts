@@ -14,6 +14,7 @@ import {
   abortTurn,
 } from "./remote-shared.js";
 import { LineEditor, Screen, boxify, visibleLength, DIM, RESET, type Key } from "./tui.js";
+import { runDashboard, agentsView, skillsView, cronsView, type DashboardView } from "./dashboard.js";
 
 // The `dae remote` terminal interface — a persistent, full-duplex terminal app in the
 // Claude-Code/Hermes-CLI shape: streaming scrollback, a live status line, slash
@@ -74,10 +75,10 @@ export const CLIENT_COMMANDS: PaletteEntry[] = [
   { name: "/help", desc: "Show commands and keys" },
   { name: "/new", desc: "Start a new session (fresh conversation)" },
   { name: "/sessions", desc: "List sessions, or switch (usage: /sessions [n])", takesArgs: true },
-  { name: "/agents", desc: "List the brain's agents" },
+  { name: "/agents", desc: "Live agents dashboard (full screen — q returns)" },
   { name: "/activity", desc: "What every agent is doing right now" },
-  { name: "/skills", desc: "List skills (library + pending)" },
-  { name: "/crons", desc: "List schedules (brain + agent-armed)" },
+  { name: "/skills", desc: "Skills dashboard (library + pending — full screen)" },
+  { name: "/crons", desc: "Schedules dashboard (brain + agent-armed — full screen)" },
   { name: "/status", desc: "Backend version, dispatcher, executor state" },
   { name: "/local", desc: "Execute commands on THIS machine (usage: /local on|off)", takesArgs: true },
   { name: "/yolo", desc: "Skip per-command approval — dangerous ones still ask (usage: /yolo on|off)", takesArgs: true },
@@ -134,6 +135,8 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
   let pendingConfirm:
     | { resolve: (a: "yes" | "no" | "always") => void; allowAlways: boolean }
     | null = null;
+  // While a full-screen dashboard (e.g. /agents) is open, it owns the keyboard.
+  let dashboardKeys: ((key: Key) => void) | null = null;
 
   const host = session.base.replace(/^https?:\/\//, "");
 
@@ -366,6 +369,32 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
     screen.setStatus(status());
   }
 
+  // Full-screen dashboard on the alternate buffer — the transcript is restored
+  // untouched when the user returns (q / Esc). Nothing is dumped into the chat.
+  async function openDashboard(view: DashboardView): Promise<void> {
+    process.stdout.write("\x1b[?1049h\x1b[?25l");
+    try {
+      await runDashboard(
+        session,
+        {
+          write: (s) => process.stdout.write(s),
+          columns: () => process.stdout.columns || 100,
+          rows: () => process.stdout.rows || 30,
+          onKey: (h) => {
+            dashboardKeys = h;
+          },
+          pendingConfirm: () => pendingConfirm !== null,
+        },
+        view,
+      );
+    } finally {
+      dashboardKeys = null;
+      process.stdout.write("\x1b[?25h\x1b[?1049l");
+      screen.redraw();
+      refreshInput();
+    }
+  }
+
   // --- Slash commands ---
   async function runCommand(text: string): Promise<boolean> {
     const [cmd, ...rest] = text.split(/\s+/);
@@ -406,24 +435,12 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
         if (rest[0] !== undefined) await switchSession(parseInt(rest[0], 10) || 0);
         else await listSessionsCmd();
         return true;
-      case "/agents": {
-        const j = await fetchers.agents(session);
-        for (const a of j?.agents ?? []) {
-          const bits = [a.model, a.image ? "docker" : null, Array.isArray(a.subagents) && a.subagents.length ? `→ ${(a.subagents as string[]).join(", ")}` : null]
-            .filter(Boolean)
-            .join(" · ");
-          dim(`${String(a.name).padEnd(16)} ${bits}`);
-        }
-        if (!j?.agents?.length) dim("(no agents)");
+      case "/agents":
+        await openDashboard(agentsView);
         return true;
-      }
-      case "/crons": {
-        const j = await fetchers.schedules(session);
-        for (const s of j?.static ?? []) dim(`${String(s.name).padEnd(24)} ${s.schedule} · ${s.agent}${s.enabled ? "" : " · disabled"}`);
-        for (const d of j?.dynamic ?? []) dim(`${String(d.prompt ?? d.id).slice(0, 40).padEnd(42)} ${d.recurring ?? `next ${d.nextFire}`} · ${d.agent}`);
-        if (!j?.static?.length && !j?.dynamic?.length) dim("(nothing scheduled)");
+      case "/crons":
+        await openDashboard(cronsView);
         return true;
-      }
       case "/activity": {
         const j = await fetchers.activity(session);
         for (const t of j?.turns ?? []) {
@@ -433,16 +450,9 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
         if (!j?.turns?.length) dim("(idle)");
         return true;
       }
-      case "/skills": {
-        const j = await fetchers.skills(session);
-        for (const p of j?.pending ?? []) dim(`${String(p.name).padEnd(24)} PENDING (${p.patchesExisting ? "patch" : "new"})`);
-        for (const s of j?.skills ?? []) {
-          const marks = [s.origin === "agent" ? "agent" : null, s.status === "stale" ? "stale" : null, s.pinned ? "pinned" : null].filter(Boolean).join(", ");
-          dim(`${String(s.name).padEnd(24)} ${marks ? "[" + marks + "] " : ""}${s.description ?? ""}`);
-        }
-        if (!j?.skills?.length && !j?.pending?.length) dim("(no skills)");
+      case "/skills":
+        await openDashboard(skillsView);
         return true;
-      }
       case "/status": {
         const j = await fetchers.status(session);
         if (j) {
@@ -513,6 +523,14 @@ export async function runRemoteTui(profile: RemoteProfile & { password?: string 
   process.stdin.resume();
   process.stdin.on("keypress", (_str: string, key: Key) => {
     if (!key) return;
+    // A full-screen dashboard owns the keyboard while open — INCLUDING when an executor
+    // confirm fires underneath it: the prompt is invisible behind the alternate screen,
+    // so answering it blind would be worse than useless. The dashboard shows an
+    // "approval waiting — press q" notice; the prompt renders the moment you're back.
+    if (dashboardKeys) {
+      dashboardKeys(key);
+      return;
+    }
     // Confirm prompts capture the keyboard until answered.
     if (pendingConfirm) {
       const name = (key.name ?? key.sequence ?? "").toLowerCase();

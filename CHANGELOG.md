@@ -13,6 +13,23 @@ Each entry references the PR that introduced the change.
 
 ### Added
 
+- **Full-screen dashboards in the terminal: `/agents`, `/skills`, `/crons`.**
+  Instead of dumping lists into the transcript, these open windowed views on the
+  alternate screen — the terminal equivalent of the desktop's modal panels, all
+  sharing one shell (list left, detail right, ↑/↓ select with scroll-windowing,
+  live refresh every 2.5s, `q`/Esc back to the chat with the transcript restored
+  untouched):
+  - **`/agents`** — sub-agents only, busy on top with live labels; the selected
+    agent's flowing timestamped step feed on the right.
+  - **`/skills`** — pending approvals first (badged), then the library with
+    origin/stale/pinned badges; descriptions in the detail pane.
+  - **`/crons`** — brain schedules and agent-armed ones, with schedule, agent,
+    next fire, and who armed it.
+  If a command-approval prompt fires while a dashboard is open, a notice appears
+  in the header and the prompt renders the moment you return.
+
+### Added
+
 - **`/clear` in the terminal.** Wipes the screen and repaints the welcome card +
   composer frame. Visual only — the conversation and the agent's context are
   untouched (`/new` remains the fresh-session command).

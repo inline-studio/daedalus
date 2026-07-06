@@ -146,6 +146,71 @@ const type = (ed, text) => { for (const ch of text) ed.handle({ sequence: ch, na
   expect("unknown prefix matches nothing", filterPalette(CLIENT_COMMANDS, "/zzz").length === 0);
 }
 
+// --- 3c. The /agents dashboard: attribution + windowed rendering ---
+{
+  const { shapeAgents, agentRows, renderFrame } = await import("../dist/cli/dashboard.js");
+  const roster = [
+    { name: "artemis", orchestrator: true },
+    { name: "cypher", model: "qwen-coder", description: "Coding agent" },
+    { name: "vector", model: "gpt-4o" },
+    { name: "scribe", model: "gpt-4o-mini" },
+  ];
+  const turns = [
+    {
+      agent: "artemis", channel: "web", startedAt: "2026-07-04T10:00:00Z", activity: "cypher · tool: bash — npm test",
+      log: [
+        { at: "2026-07-04T10:00:00Z", label: "thinking — needs the coder" },
+        { at: "2026-07-04T10:00:05Z", label: "spawning cypher" },
+        { at: "2026-07-04T10:00:10Z", label: "cypher · tool: bash — npm test" },
+      ],
+    },
+    { agent: "scribe", channel: "cron", startedAt: "2026-07-04T09:59:00Z", activity: "tool: write — brief.md", log: [] },
+  ];
+  const shaped = shapeAgents(roster, turns);
+  expect("dashboard filters the orchestrator", shaped.every((a) => a.name !== "artemis"));
+  expect(
+    "busy agents order first (by start), idle after",
+    shaped.map((a) => a.name).join(",") === "scribe,cypher,vector",
+    shaped.map((a) => a.name).join(","),
+  );
+  const cy = shaped.find((a) => a.name === "cypher");
+  expect(
+    "sub-agent steps are attributed with prefixes stripped",
+    cy.busy && cy.busy.steps.map((s) => s.label).join("|") === "spawned|tool: bash — npm test",
+    JSON.stringify(cy.busy?.steps),
+  );
+  const frame = renderFrame(agentRows(shaped), 1, 80, 16, "AGENTS · ACTIVITY");
+  expect("dashboard renders a full frame (header + rule + body rows)", frame.length === 16 - 3 + 2, String(frame.length));
+  const flat = frame.join("\n");
+  expect("selected agent is highlighted and detailed on the right", flat.includes("▸") && flat.includes("ACTIVE") && flat.includes("npm test"));
+  const { visibleLength } = await import("../dist/cli/tui.js");
+  expect("every dashboard line is padded to the exact width", frame.every((l) => visibleLength(l) === 80), JSON.stringify(frame.map(visibleLength)));
+}
+
+// --- 3d. Skills + crons dashboard rows ---
+{
+  const { skillRows, cronRows, renderFrame } = await import("../dist/cli/dashboard.js");
+  const sk = skillRows({
+    pending: [{ name: "new-trick", description: "Learned yesterday", patchesExisting: false }],
+    skills: [
+      { name: "deploy-notes", description: "How we ship", origin: "agent", status: "stale", pinned: true },
+      { name: "hello", description: "plain" },
+    ],
+  });
+  expect("pending skills list first with a PENDING badge", sk[0].name === "new-trick" && sk[0].sub.includes("PENDING"), JSON.stringify(sk.map((r) => r.name)));
+  expect("skill badges surface in the list", sk[1].sub === "agent-created, stale, pinned", sk[1].sub);
+  const skFlat = renderFrame(sk, 0, 80, 14, "SKILLS").join("\n");
+  expect("pending detail pane points at the approval flow", skFlat.includes("approve/reject"));
+
+  const cr = cronRows({
+    static: [{ name: "morning-brief", schedule: "0 7 * * *", agent: "artemis", enabled: true }],
+    dynamic: [{ id: "s1", prompt: "check the build", nextFire: "2026-07-05T10:00:00Z", recurring: null, agent: "artemis", createdBy: "artemis" }],
+  });
+  expect("cron rows: static then agent-armed", cr.length === 2 && cr[0].name === "morning-brief" && cr[1].name === "check the build");
+  const crFlat = renderFrame(cr, 1, 80, 14, "SCHEDULES").join("\n");
+  expect("agent-armed detail shows when/agent/armed-by", crFlat.includes("armed by") && crFlat.includes("next 2026-07-05T10:00:00Z"));
+}
+
 // --- 4. Profile roundtrip (HOME-scoped) ---
 {
   shared.saveProfile({
