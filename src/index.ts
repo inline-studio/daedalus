@@ -165,6 +165,30 @@ program
   });
 
 program
+  .command("warm")
+  .description(
+    "send one prompt-prefix warm-up per agent so the inference backend caches the prefix " +
+      "(default: every enabled channel's defaultAgent; see config `warming:` for the periodic version)",
+  )
+  .argument("[agents...]", "agent names to warm (default: enabled channels' defaultAgent)")
+  .action(async (agents: string[]) => {
+    const config = loadConfig(program.opts().config);
+    const { warmAgentPrefix, resolveWarmAgents } = await import("./kernel/prefix-warmer.js");
+    const targets = agents.length ? agents : resolveWarmAgents(config);
+    if (!targets.length) {
+      console.error("no agents to warm (none given, no enabled channels)");
+      process.exit(1);
+    }
+    let failed = false;
+    for (const name of targets) {
+      const r = await warmAgentPrefix(config, name);
+      console.log(r.ok ? `${r.agent}: warmed in ${r.ms} ms` : `${r.agent}: FAILED after ${r.ms} ms — ${r.error}`);
+      failed ||= !r.ok;
+    }
+    process.exit(failed ? 1 : 0);
+  });
+
+program
   .command("agents")
   .description("list agents in the brain repo")
   .action(async () => {

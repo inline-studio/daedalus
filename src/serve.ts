@@ -24,6 +24,7 @@ import { runSkillCurator } from "./brain/skill-curator.js";
 import { getRpcToken } from "./channels/remote-exec.js";
 import { WebChannel } from "./channels/web.js";
 import { ActivityRegistry, withActivityTracking } from "./kernel/activity.js";
+import { startPrefixWarmer } from "./kernel/prefix-warmer.js";
 import { log } from "./log.js";
 
 const PKG_VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
@@ -435,6 +436,11 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     log.info({ schedule: learning.curator.schedule }, "skill curator armed");
   }
 
+  // Prompt-prefix warmer: keeps a restorable cache state at each front-door agent's
+  // prefix boundary on the inference backend, so the first message of a NEW conversation
+  // doesn't pay a full cold prefill. See src/kernel/prefix-warmer.ts.
+  const warmer = config.warming.enabled ? startPrefixWarmer(config) : undefined;
+
   log.info(
     { schedules: running.length, channels: channels.length, dispatcher: dispatcher.id },
     "daedalus serving",
@@ -444,6 +450,7 @@ export async function serve(config: ArtemisConfig): Promise<void> {
     log.info("shutting down");
     poller.stop();
     curatorJob?.stop();
+    warmer?.stop();
     for (const r of running) r.job.stop();
     await bus.stopAll();
     sessions.close();
