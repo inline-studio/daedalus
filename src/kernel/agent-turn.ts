@@ -86,15 +86,162 @@ export interface RunAgentTurnInput {
   signal?: AbortSignal;
 }
 
-export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchResult> {
-  const { config, agentName, sessionId, userId, isSubagent } = input;
+// The model-visible turn PREFIX for an agent: manifest, loaded skills, composed system
+// prompt, and provider client. Shared by runAgentTurn and the prefix warmer
+// (src/kernel/prefix-warmer.ts) — the warmer only works if its request prefix is
+// byte-identical to a real turn's, so both paths MUST assemble it here.
+export interface AgentCore {
+  agent: Awaited<ReturnType<typeof loadAgent>>["manifest"];
+  agentBody: string;
+  skills: NonNullable<Awaited<ReturnType<typeof loadSkill>>>[];
+  commands: Awaited<ReturnType<typeof loadAgentCommands>>;
+  system: string;
+  provider: LLMProvider;
+}
 
-  // 1. Load the agent manifest + body from the brain.
+export async function assembleAgentCore(
+  config: ArtemisConfig,
+  agentName: string,
+  isSubagent: boolean,
+): Promise<AgentCore> {
+  // Load the agent manifest + body from the brain.
   const loaded = await loadAgent(config.brain.path, agentName);
   const agent = loaded.manifest;
   const agentBody = loaded.body;
 
-  // 2. Open the session store. In docker mode the sqlite file is on a mounted
+  // Skills + system prompt
+  // `skills: ['*']` expands to every skill in the brain — convenient for an
+  // orchestrator. `[]` (omitted / explicit empty) means no skills; subagent
+  // default.
+  const skillNames = agent.skills.includes("*")
+    ? await listSkills(config.brain.path)
+    : agent.skills;
+  const skills = (
+    await Promise.all(
+      skillNames.map((s) => loadSkill(config.brain.path, s)),
+    )
+  ).filter((s): s is NonNullable<typeof s> => s !== null);
+  await hydrateSkillSecrets(config, skills);
+  // Each skill with a bootstrap.sh gets one chance to install its binaries
+  // into the shared skill-bin dir on PATH. Idempotent + content-hashed —
+  // only re-runs if the script changes.
+  const dataDir = path.dirname(config.sessions.dbPath);
+  await runSkillBootstraps(skills, dataDir);
+
+  // Slash-commands available to this agent (per manifest's commands:).
+  // Subagents typically don't have any, so this is usually empty on the
+  // subagent-dispatch path.
+  const commands = await loadAgentCommands(config.brain.path, agent.commands);
+
+  const system = await composeSystemPrompt({
+    brainPath: config.brain.path,
+    agent,
+    agentBody,
+    skills,
+    commands,
+    identity: config.identity.nickname
+      ? { name: config.identity.name, nickname: config.identity.nickname }
+      : { name: config.identity.name },
+    isSubagent,
+  });
+
+  // Resolve provider API key and build the provider client.
+  const secretsBackend = await buildSecretsBackend(config, { envFileBaseDir: process.cwd() });
+  await resolveProviderKey(agent, config, secretsBackend);
+  const provider = buildProvider(agent, config);
+
+  return { agent, agentBody, skills, commands, system, provider };
+}
+
+// MCP connections + the exact built-in tool list a turn for this agent carries, in the
+// exact order the Kernel serializes them. Shared by runAgentTurn and the prefix warmer —
+// tool DEFINITIONS are part of the model-visible prompt prefix, so the warmer must
+// assemble precisely this set or the backend caches a prefix no real turn ever sends.
+export interface TurnToolsInput {
+  config: ArtemisConfig;
+  agent: AgentCore["agent"];
+  skills: AgentCore["skills"];
+  isSubagent: boolean;
+  userId: string;
+  sessions: SessionStore;
+  scheduleStore: ScheduleStore;
+  attachments: AttachmentStore;
+  attachmentIndex?: AttachmentIndexStore;
+  skillLearning?: SkillLearningStore;
+  mcpPool?: McpPool;
+  onEvent?: TurnEventSink;
+  remoteExec?: RunAgentTurnInput["remoteExec"];
+}
+
+export async function assembleTurnTools(input: TurnToolsInput) {
+  const { config, agent, skills, isSubagent, userId } = input;
+
+  // MCP — connect everything this agent declares + auto-injected memory MCP.
+  // In docker mode these are typically HTTP endpoints reachable on the shared
+  // docker network (e.g. http://mempalace:11364/mcp). The warm worker reuses a
+  // persistent pool; the one-shot container connects fresh and owns teardown.
+  const ownsMcp = !input.mcpPool;
+  const mcpServers = input.mcpPool
+    ? await input.mcpPool.getForAgent(config, agent.mcpServers)
+    : await connectAgentMcp(config, agent.mcpServers);
+
+  // Build built-in tools strictly per the manifest. Empty list = no tools
+  // (was previously "all" — that was a security footgun for subagents).
+  // Scheduling tools (schedule_message / cancel / list) need the schedule
+  // store; pass it through deps.
+  const builtinTools = selectBuiltins(agent.tools, config, { scheduleStore: input.scheduleStore });
+  builtinTools.push(readAttachmentTool(input.attachments));
+  // Outbound reply attachments. Only the top-level turn's reply reaches the user, so
+  // only it gets `attach_to_reply`; the tool records refs into this sink which the
+  // caller returns in the DispatchResult.
+  const outboundAttachments: OutboundAttachment[] = [];
+  if (!isSubagent) {
+    builtinTools.push(buildAttachReplyTool(input.attachments, outboundAttachments));
+    // Cross-session attachment recall. Top-level only: a subagent's findings flow up
+    // through the orchestrator, which owns the conversation with the user.
+    if (input.attachmentIndex) {
+      builtinTools.push(findAttachmentTool(input.attachmentIndex, userId));
+      builtinTools.push(describeAttachmentTool(input.attachmentIndex, userId));
+    }
+  }
+  // Progressive skill disclosure: the system prompt carries only a skill MENU
+  // (name + summary). Give the agent the means to pull a full body on demand.
+  // When skill learning is on, every load bumps the usage tracker the curator reads.
+  if (skills.length) {
+    const skillLearning = input.skillLearning;
+    builtinTools.push(
+      buildLoadSkillTool(skills, skillLearning ? (s) => skillLearning.recordUse(s) : undefined),
+    );
+  }
+  if (isSubagent) {
+    // Subagents get ask_user so they can bubble questions up to the orchestrator.
+    builtinTools.push(askUserTool);
+  }
+
+  // Subagent spawning. Subagents themselves can spawn further subagents IF
+  // their manifest declares any.
+  const dispatcher: AgentDispatcher = buildDispatcher(config);
+  const orchestratorTool = await buildSpawnSubagentTool({
+    config,
+    parent: agent,
+    sessions: input.sessions,
+    userId,
+    dispatcher,
+    // Forward this turn's live sink so delegated work streams to the user. The
+    // wrapper in spawn_subagent re-tags subagent events with their origin.
+    ...(input.onEvent ? { onEvent: input.onEvent } : {}),
+    // The executor grant, for sub-agents that declare `execution: executor`.
+    ...(input.remoteExec ? { remoteExec: input.remoteExec } : {}),
+  });
+  if (orchestratorTool) builtinTools.push(orchestratorTool);
+
+  return { mcpServers, ownsMcp, builtinTools, outboundAttachments };
+}
+
+export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchResult> {
+  const { config, agentName, sessionId, userId, isSubagent } = input;
+
+  // 1. Open the session store. In docker mode the sqlite file is on a mounted
   // volume shared with the supervisor; reading + writing here is the same DB.
   const sessions = new SessionStore(config.sessions.dbPath);
   const scheduleStore = new ScheduleStore(config.sessions.dbPath);
@@ -113,46 +260,13 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
     const attachments = new AttachmentStore(config.sessions.attachmentsPath);
     await attachments.ensureDir();
 
-    // 3. Skills + system prompt
-    // `skills: ['*']` expands to every skill in the brain — convenient for an
-    // orchestrator. `[]` (omitted / explicit empty) means no skills; subagent
-    // default.
-    const skillNames = agent.skills.includes("*")
-      ? await listSkills(config.brain.path)
-      : agent.skills;
-    const skills = (
-      await Promise.all(
-        skillNames.map((s) => loadSkill(config.brain.path, s)),
-      )
-    ).filter((s): s is NonNullable<typeof s> => s !== null);
-    await hydrateSkillSecrets(config, skills);
-    // Each skill with a bootstrap.sh gets one chance to install its binaries
-    // into the shared skill-bin dir on PATH. Idempotent + content-hashed —
-    // only re-runs if the script changes.
-    const dataDir = path.dirname(config.sessions.dbPath);
-    await runSkillBootstraps(skills, dataDir);
-
-    // Slash-commands available to this agent (per manifest's commands:).
-    // Subagents typically don't have any, so this is usually empty on the
-    // subagent-dispatch path.
-    const commands = await loadAgentCommands(config.brain.path, agent.commands);
-
-    const system = await composeSystemPrompt({
-      brainPath: config.brain.path,
-      agent,
-      agentBody,
-      skills,
-      commands,
-      identity: config.identity.nickname
-        ? { name: config.identity.name, nickname: config.identity.nickname }
-        : { name: config.identity.name },
+    // 2-4. Agent manifest, skills, system prompt, provider — the turn prefix.
+    const { agent, skills, system, provider } = await assembleAgentCore(
+      config,
+      agentName,
       isSubagent,
-    });
-
-    // 4. Resolve provider API key and build the provider client.
-    const secretsBackend = await buildSecretsBackend(config, { envFileBaseDir: process.cwd() });
-    await resolveProviderKey(agent, config, secretsBackend);
-    const provider = buildProvider(agent, config);
+    );
+    const dataDir = path.dirname(config.sessions.dbPath);
 
     // 4b. Built-in /compact — user-triggered persistent compaction, any channel. Handled
     // here, before the runtime/MCP/tool setup none of which a summarise needs, and
@@ -185,66 +299,25 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<DispatchRe
       ? new RemoteRuntime(input.remoteExec)
       : buildRuntime(agent, config);
 
-    // 6. MCP — connect everything this agent declares + auto-injected memory MCP.
-    // In docker mode these are typically HTTP endpoints reachable on the shared
-    // docker network (e.g. http://mempalace:11364/mcp). The warm worker reuses a
-    // persistent pool; the one-shot container connects fresh and owns teardown.
-    const ownsMcp = !input.mcpPool;
-    const mcpServers = input.mcpPool
-      ? await input.mcpPool.getForAgent(config, agent.mcpServers)
-      : await connectAgentMcp(config, agent.mcpServers);
-
-    // 7. Build built-in tools strictly per the manifest. Empty list = no tools
-    // (was previously "all" — that was a security footgun for subagents).
-    // Scheduling tools (schedule_message / cancel / list) need the schedule
-    // store; pass it through deps.
-    const builtinTools = selectBuiltins(agent.tools, config, { scheduleStore });
-    builtinTools.push(readAttachmentTool(attachments));
-    // Outbound reply attachments. Only the top-level turn's reply reaches the user, so
-    // only it gets `attach_to_reply`; the tool records refs into this sink which we
-    // return in the DispatchResult below.
-    const outboundAttachments: OutboundAttachment[] = [];
-    if (!isSubagent) {
-      builtinTools.push(buildAttachReplyTool(attachments, outboundAttachments));
-      // Cross-session attachment recall. Top-level only: a subagent's findings flow up
-      // through the orchestrator, which owns the conversation with the user.
-      if (attachmentIndex) {
-        builtinTools.push(findAttachmentTool(attachmentIndex, userId));
-        builtinTools.push(describeAttachmentTool(attachmentIndex, userId));
-      }
-    }
-    // Progressive skill disclosure: the system prompt carries only a skill MENU
-    // (name + summary). Give the agent the means to pull a full body on demand.
-    // When skill learning is on, every load bumps the usage tracker the curator reads.
-    if (skills.length) {
-      builtinTools.push(
-        buildLoadSkillTool(skills, skillLearning ? (s) => skillLearning.recordUse(s) : undefined),
-      );
-    }
-    if (isSubagent) {
-      // Subagents get ask_user so they can bubble questions up to the orchestrator.
-      builtinTools.push(askUserTool);
-    }
-
-    // Subagent spawning. Subagents themselves can spawn further subagents IF
-    // their manifest declares any.
-    const dispatcher: AgentDispatcher = buildDispatcher(config);
-    const orchestratorTool = await buildSpawnSubagentTool({
+    // 6-7. MCP connections + built-in tool set (shared with the prefix warmer).
+    const { mcpServers, ownsMcp, builtinTools, outboundAttachments } = await assembleTurnTools({
       config,
-      parent: agent,
-      sessions,
+      agent,
+      skills,
+      isSubagent,
       userId,
-      dispatcher,
-      // Forward this turn's live sink so delegated work streams to the user. The
-      // wrapper in spawn_subagent re-tags subagent events with their origin.
+      sessions,
+      scheduleStore,
+      attachments,
+      ...(attachmentIndex ? { attachmentIndex } : {}),
+      ...(skillLearning ? { skillLearning } : {}),
+      ...(input.mcpPool ? { mcpPool: input.mcpPool } : {}),
       ...(input.onEvent ? { onEvent: input.onEvent } : {}),
-      // The executor grant, for sub-agents that declare `execution: executor`.
       ...(input.remoteExec ? { remoteExec: input.remoteExec } : {}),
       // The turn's abort signal, so a Stop that lands while a sub-agent is running is
       // forwarded into that sub-agent's dispatch (see OrchestratorContext.signal).
       ...(input.signal ? { signal: input.signal } : {}),
     });
-    if (orchestratorTool) builtinTools.push(orchestratorTool);
 
     // 8. Read history tail and run kernel. If an explicit token budget is configured we
     // trim the loaded tail to it up front; otherwise we send the full count-limited tail

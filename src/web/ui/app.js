@@ -669,8 +669,19 @@
     if (turnTimer) clearInterval(turnTimer);
     turnTimer = setInterval(tickTurnTimer, 250);
     tickTurnTimer();
+    bumpConvoActivity();
   }
-  function stopTurnTimer() { if (turnTimer) { clearInterval(turnTimer); turnTimer = null; } }
+  function stopTurnTimer() {
+    if (turnTimer) {
+      clearInterval(turnTimer);
+      turnTimer = null;
+      // A finished turn counts as interaction: the working timer keeps ticking through the
+      // read-the-reply window rather than pausing the instant the stream ends. Only when a
+      // timer was genuinely live — this is also called from view-reset paths (conversation
+      // switch), which must NOT restart the fresh chat's paused timer.
+      bumpConvoActivity();
+    }
+  }
   // Resume a turn timer that was paused across a session switch: keep the ORIGINAL start so the
   // elapsed reading stays continuous (a plain startTurnTimer would reset it to 0).
   function resumeTurnTimer(startMs) {
@@ -1361,6 +1372,22 @@
   // "New chat" until the first message names it.
   function convLabel(c) { return c.title || "New chat"; }
 
+  // Compact last-message timestamp for a sidebar row: time-of-day for today ("14:32"),
+  // day+month within the year ("9 Jul"), day+month+year beyond ("9 Jul 25"). The full
+  // date/time goes on the row tooltip.
+  var MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function convWhen(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    var now = new Date();
+    var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+    if (d.toDateString() === now.toDateString()) return d.getHours() + ":" + pad(d.getMinutes());
+    var s = d.getDate() + " " + MONTHS_SHORT[d.getMonth()];
+    if (d.getFullYear() !== now.getFullYear()) s += " " + String(d.getFullYear()).slice(-2);
+    return s;
+  }
+
   // Sidebar search: a client-side title filter (the full list is already loaded). Grouped
   // rendering: PINNED first, then SESSIONS with a count — the Hermes-style layout.
   var convoQuery = "";
@@ -1369,10 +1396,15 @@
     var row = document.createElement("div");
     row.className = "convo" + (c.id === convId ? " active" : "") + (c.pinned ? " pinned" : "");
     row.setAttribute("data-id", c.id);
+    if (c.lastActiveAt) row.title = "Last message " + new Date(c.lastActiveAt).toLocaleString();
     var t = document.createElement("span");
     t.className = "title";
     t.textContent = convLabel(c);
     row.appendChild(t);
+    var when = document.createElement("span");
+    when.className = "when";
+    when.textContent = convWhen(c.lastActiveAt);
+    row.appendChild(when);
     var pin = document.createElement("button");
     pin.className = "pin"; pin.type = "button"; pin.title = c.pinned ? "Unpin" : "Pin";
     pin.textContent = c.pinned ? "✦" : "✧";
@@ -1384,6 +1416,48 @@
     del.setAttribute("data-del", c.id);
     row.appendChild(del);
     return row;
+  }
+
+  // Inline rename: swap the row's title span for an input; Enter/blur commits, Esc cancels.
+  // Optimistic like togglePin — the sidebar updates immediately and reverts if the server
+  // rejects it.
+  function startRenameConvo(id) {
+    var c = conversations.filter(function (x) { return x.id === id; })[0];
+    if (!c) return;
+    var row = $("convo-list").querySelector('.convo[data-id="' + id + '"]');
+    var t = row && row.querySelector(".title");
+    if (!row || !t) return;
+    var input = document.createElement("input");
+    input.className = "ren-input";
+    input.type = "text";
+    input.maxLength = 80;
+    input.value = convLabel(c);
+    row.replaceChild(input, t);
+    input.focus();
+    input.select();
+    var done = false;
+    function finish(commit) {
+      if (done) return;
+      done = true;
+      var next = input.value.trim().slice(0, 80);
+      if (!commit || !next || next === convLabel(c)) { renderConversations(); return; }
+      var prev = c.title;
+      c.title = next;
+      renderConversations();
+      fetch("/conversations?externalUserId=" + encodeURIComponent(uid), {
+        method: "PATCH", headers: authHeaders(), body: JSON.stringify({ id: id, title: next }),
+      })
+        .then(function (r) { if (on401(r)) return; if (!r.ok) { c.title = prev; renderConversations(); } })
+        .catch(function () { c.title = prev; renderConversations(); });
+    }
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); finish(true); }
+      else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+    });
+    input.addEventListener("blur", function () { finish(true); });
+    // Clicking inside the input mustn't bubble up as a row click (which would switch chats
+    // and blow the edit away mid-typing).
+    input.addEventListener("click", function (e) { e.stopPropagation(); });
   }
 
   function renderConversations() {
@@ -1582,6 +1656,7 @@
     if (id === convId) { closeSidebar(); return; }
     stashLiveTurn(convId);
     convId = id; LS.setItem("dae_conv", convId);
+    resetConvoTimer();
     renderConversations();
     clearLog();
     // Re-attach any preserved in-flight turn, then connect — both AFTER history is on screen so
@@ -1743,9 +1818,55 @@
     if (del) { e.stopPropagation(); deleteConversation(del.getAttribute("data-del")); return; }
     var pin = e.target && e.target.closest && e.target.closest(".pin");
     if (pin) { e.stopPropagation(); togglePin(pin.getAttribute("data-pin")); return; }
+    // A click that lands in a live rename input stays there.
+    if (e.target && e.target.classList && e.target.classList.contains("ren-input")) return;
     var row = e.target && e.target.closest && e.target.closest(".convo");
     if (row) selectConversation(row.getAttribute("data-id"));
   });
+
+  // Right-click a conversation row → context menu (Rename, Pin/Unpin; delete keeps its
+  // hover button). One shared menu element, repositioned per open; dismissed by any
+  // click elsewhere, Esc, or re-render.
+  var convoMenu = null;
+  function closeConvoMenu() {
+    if (convoMenu && convoMenu.parentNode) convoMenu.parentNode.removeChild(convoMenu);
+    convoMenu = null;
+  }
+  function openConvoMenu(x, y, id) {
+    closeConvoMenu();
+    var c = conversations.filter(function (x2) { return x2.id === id; })[0];
+    if (!c) return;
+    convoMenu = document.createElement("div");
+    convoMenu.className = "ctx-menu";
+    function item(label, act) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      b.addEventListener("click", function (e) {
+        e.stopPropagation();
+        closeConvoMenu();
+        act();
+      });
+      convoMenu.appendChild(b);
+    }
+    item("Rename", function () { startRenameConvo(id); });
+    item(c.pinned ? "Unpin" : "Pin", function () { togglePin(id); });
+    document.body.appendChild(convoMenu);
+    // Clamp to the viewport so a right-click near an edge doesn't spill the menu off-screen.
+    var r = convoMenu.getBoundingClientRect();
+    convoMenu.style.left = Math.min(x, window.innerWidth - r.width - 6) + "px";
+    convoMenu.style.top = Math.min(y, window.innerHeight - r.height - 6) + "px";
+  }
+  $("convo-list").addEventListener("contextmenu", function (e) {
+    var row = e.target && e.target.closest && e.target.closest(".convo");
+    if (!row) return;
+    e.preventDefault();
+    openConvoMenu(e.clientX, e.clientY, row.getAttribute("data-id"));
+  });
+  document.addEventListener("click", function (e) {
+    if (convoMenu && !convoMenu.contains(e.target)) closeConvoMenu();
+  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeConvoMenu(); });
 
   // --- Status bar -------------------------------------------------------------------------
   // Left: gateway (SSE) state + supervisor snapshot (agents / cron, polled from /status).
@@ -2303,16 +2424,38 @@
   pollActivity();
   setInterval(pollActivity, 8000);
 
-  // Session timer: time since this page opened (mm:ss, then h:mm:ss).
-  var sessionStart = Date.now();
-  setInterval(function () {
+  // Per-conversation working timer (replaces the old time-since-page-open counter, which
+  // read the same in every chat and just counted up forever). Counts time actively spent
+  // in the CURRENT conversation: it ticks while a turn is running or within 5 minutes of
+  // the last interaction (send / typing / turn activity), pauses when the chat goes idle,
+  // and resets on conversation switch.
+  var CONVO_IDLE_MS = 5 * 60 * 1000;
+  var convoActiveMs = 0, convoTickPrev = null, convoLastInteraction = 0;
+  function bumpConvoActivity() { convoLastInteraction = Date.now(); }
+  function resetConvoTimer() {
+    convoActiveMs = 0; convoTickPrev = null; convoLastInteraction = 0;
+    renderConvoTimer(false);
+  }
+  function renderConvoTimer(active) {
     var el = $("st-session");
     if (!el) return;
-    var s = Math.floor((Date.now() - sessionStart) / 1000);
+    var s = Math.floor(convoActiveMs / 1000);
     var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
     var pad = function (n) { return (n < 10 ? "0" : "") + n; };
-    el.textContent = h ? h + ":" + pad(m) + ":" + pad(ss) : m + ":" + pad(ss);
+    el.textContent = (h ? h + ":" + pad(m) + ":" + pad(ss) : m + ":" + pad(ss)) + (active ? "" : " ⏸");
+  }
+  setInterval(function () {
+    var now = Date.now();
+    var active = turnTimer !== null || (convoLastInteraction && now - convoLastInteraction < CONVO_IDLE_MS);
+    if (active) {
+      if (convoTickPrev) convoActiveMs += now - convoTickPrev;
+      convoTickPrev = now;
+    } else {
+      convoTickPrev = null;
+    }
+    renderConvoTimer(active);
   }, 1000);
+  $("text").addEventListener("input", bumpConvoActivity);
 
   // Load the conversation list first, then open the active one's history + live stream.
   loadConversations(function () { loadHistory(); connect(); });

@@ -17,6 +17,20 @@ import type {
 } from "../types.js";
 import { log } from "../log.js";
 
+// The full tool-definition list a completion carries, in canonical order: built-ins in
+// registration order, then MCP tools in connection order. This ORDER is part of the
+// model-visible prompt prefix (backends render tool defs into the prompt), so anything
+// that must reproduce a turn's prefix byte-for-byte (the prefix warmer) shares this
+// merge instead of reimplementing it.
+export function mergeToolDefs(
+  builtinTools: ToolImpl[],
+  mcpServers: Map<string, ConnectedServer>,
+): ToolDefinition[] {
+  const mcpDefs: ToolDefinition[] = [];
+  for (const server of mcpServers.values()) mcpDefs.push(...server.tools);
+  return [...builtinTools.map((t) => t.definition), ...mcpDefs];
+}
+
 export interface KernelOptions {
   provider: LLMProvider;
   model: string;
@@ -85,11 +99,7 @@ export class Kernel {
 
   constructor(private opts: KernelOptions) {
     for (const t of opts.builtinTools) this.builtinByName.set(t.definition.name, t);
-
-    const mcpDefs: ToolDefinition[] = [];
-    for (const server of opts.mcpServers.values()) mcpDefs.push(...server.tools);
-
-    this.allToolDefs = [...opts.builtinTools.map((t) => t.definition), ...mcpDefs];
+    this.allToolDefs = mergeToolDefs(opts.builtinTools, opts.mcpServers);
   }
 
   async run(

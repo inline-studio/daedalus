@@ -416,6 +416,27 @@ export const ChannelsConfigSchema = z.object({
 });
 export type ChannelsConfig = z.infer<typeof ChannelsConfigSchema>;
 
+// Prompt-prefix warming. Self-hosted backends (llama.cpp) cache prompt state, but a NEW
+// conversation only reuses that cache if the backend still holds a state whose usable
+// restore point sits at (or below) the shared prefix boundary — long conversations age
+// that out, so the first message after a quiet stretch pays a full cold prefill of the
+// system prompt + tool definitions (tens of seconds on large models). The warmer
+// periodically replays each front-door agent's EXACT turn prefix with a one-token
+// completion, planting a fresh single-turn cache entry every new conversation can
+// restore from. Re-warming an already-cached prefix costs the backend ~nothing.
+// Off by default: against metered APIs this spends real tokens for no benefit
+// (e.g. Anthropic's prompt cache has a fixed TTL that idle re-warming can't help).
+export const WarmingConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  // Which agents' prefixes to keep warm. Empty = every enabled channel's defaultAgent —
+  // i.e. whatever a user's first message of the day would actually hit.
+  agents: z.array(z.string()).default([]),
+  intervalMinutes: z.number().int().positive().default(30),
+  // Also warm once immediately when `dae serve` starts.
+  onStart: z.boolean().default(true),
+});
+export type WarmingConfig = z.infer<typeof WarmingConfigSchema>;
+
 export const TranscribeConfigSchema = z.object({
   backend: z.enum(["none", "openai-whisper", "whisper-local"]).default("none"),
   apiKey: z.string().optional(),
@@ -507,6 +528,7 @@ export const ArtemisConfigSchema = z.object({
     historyLimit: 40,
   }),
   channels: ChannelsConfigSchema.default({}),
+  warming: WarmingConfigSchema.default({}),
   transcribe: TranscribeConfigSchema.default({ backend: "none" }),
   web: WebConfigSchema.default({
     search: { provider: "none" },

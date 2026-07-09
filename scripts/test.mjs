@@ -52,6 +52,7 @@ const CI_SAFE = [
   "smoke-onecli-proxy-env",
   "smoke-outbound-attachment",
   "smoke-persistent-dispatcher",
+  "smoke-prefix-warmer",
   "smoke-remote-exec",
   "smoke-runtime-scheduling",
   "smoke-safe-path",

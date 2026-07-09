@@ -55,6 +55,21 @@ const AGENT = "orchestrator";
 
   const c1 = await getJson("/conversations?externalUserId=" + U1);
   ok("GET /conversations now lists both conversations", c1.conversations.length === 2);
+  ok("conversation entries carry lastActiveAt", c1.conversations.every((c) => Boolean(c.lastActiveAt)));
+
+  // Rename via PATCH.
+  const patch = (url, body) =>
+    fetch(base + url, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const renamed = await (await patch("/conversations?externalUserId=" + U1, { id: convB, title: "  Spark tuning  " })).json();
+  ok("PATCH rename trims and applies the title", renamed.title === "Spark tuning", JSON.stringify(renamed));
+  const afterRename = await getJson("/conversations?externalUserId=" + U1);
+  ok("rename persists", afterRename.conversations.some((c) => c.id === convB && c.title === "Spark tuning"));
+  const emptyRename = await patch("/conversations?externalUserId=" + U1, { id: convB, title: "   " });
+  ok("PATCH with a blank title is rejected (400)", emptyRename.status === 400);
+  const crossRename = await patch("/conversations?externalUserId=" + U2, { id: convB, title: "hijack" });
+  ok("PATCH can't rename another user's conversation (404)", crossRename.status === 404);
+  const stillOurs = await getJson("/conversations?externalUserId=" + U1);
+  ok("cross-user rename left the title untouched", stillOurs.conversations.some((c) => c.id === convB && c.title === "Spark tuning"));
 
   // Send a message to each conversation; capture the conversationId the channel forwards.
   const pMain = await post("/messages", { externalUserId: U1, text: "hello main" });

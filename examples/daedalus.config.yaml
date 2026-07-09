@@ -107,6 +107,19 @@ channels:
   #   accessToken: ${WHATSAPP_ACCESS_TOKEN}
   #   phoneNumberId: ${WHATSAPP_PHONE_NUMBER_ID}
 
+# Prompt-prefix warming — for SELF-HOSTED backends (llama.cpp behind LiteLLM etc.).
+# Periodically replays each front-door agent's exact prompt prefix (system prompt + tool
+# definitions) as a one-token completion, so the backend keeps a cache state a NEW
+# conversation can restore from. Without it, the first message after a quiet stretch
+# pays a full cold prefill (tens of seconds on large models). Re-warming an
+# already-cached prefix is near-free. Leave off for metered APIs — it just spends tokens.
+# One-shot equivalent for testing: `dae warm [agent...]`.
+# warming:
+#   enabled: true
+#   # agents: [orchestrator]   # default: every enabled channel's defaultAgent
+#   intervalMinutes: 30
+#   onStart: true
+
 transcribe:
   backend: none             # 'none' | 'openai-whisper' | 'whisper-local'
   # apiKey: ${OPENAI_API_KEY}
