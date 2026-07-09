@@ -1208,7 +1208,7 @@ export class WebChannel implements Channel {
       return;
     }
     if (req.method === "PATCH") {
-      // Pin / unpin (and future per-conversation mutations). Ownership enforced like DELETE.
+      // Per-conversation mutations: pin/unpin, rename. Ownership enforced like DELETE.
       const body = await readJson(req).catch(() => ({}) as Record<string, unknown>);
       const id = typeof body.id === "string" ? body.id : url.searchParams.get("id");
       if (!id) {
@@ -1221,6 +1221,17 @@ export class WebChannel implements Channel {
         return;
       }
       if (typeof body.pinned === "boolean") sessions.setSessionPinned(id, body.pinned);
+      // Rename — same 80-char cap as POST. Empty/whitespace titles are rejected rather than
+      // clearing back to auto-titling: an explicit rename is a deliberate label, and "" from
+      // a fumbled inline edit shouldn't silently discard it.
+      if (typeof body.title === "string") {
+        const title = body.title.trim().slice(0, 80);
+        if (!title) {
+          json(400, { error: "title must be non-empty" });
+          return;
+        }
+        sessions.setSessionTitle(id, title);
+      }
       const updated = sessions.getSessionById(id);
       json(200, updated ? toEntry(updated) : { ok: true });
       return;

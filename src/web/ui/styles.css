@@ -65,12 +65,29 @@ body.desktop-mac header button { -webkit-app-region: no-drag; }
 .convo:hover { background: var(--bg-raised); }
 .convo.active { background: var(--accent-soft); color: var(--text); }
 .convo .title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13.5px; }
+/* Last-message timestamp: visible at rest, swapped for the action buttons on hover so the
+   title keeps its room in narrow rows. */
+.convo .when { flex: none; font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.convo:hover .when { display: none; }
 .convo .pin, .convo .del { color: var(--text-muted); border: none; background: none; cursor: pointer;
-                           font-size: 13px; padding: 0 3px; visibility: hidden; line-height: 1; }
-.convo:hover .pin, .convo:hover .del { visibility: visible; }
-.convo.pinned .pin { visibility: visible; color: var(--accent); }
+                           font-size: 13px; padding: 0 3px; display: none; line-height: 1; }
+.convo:hover .pin, .convo:hover .del { display: inline; }
+.convo.pinned .pin { display: inline; color: var(--accent); }
 .convo .pin:hover { color: var(--accent); }
 .convo .del:hover { color: var(--err); }
+/* Inline rename editor (swapped in for .title while editing; opened from the row's
+   right-click menu). */
+.convo .ren-input { flex: 1; min-width: 0; font-size: 13.5px; color: var(--text);
+                    background: var(--bg-raised); border: 1px solid var(--accent);
+                    border-radius: 5px; padding: 1px 5px; outline: none; }
+/* Right-click context menu for conversation rows. */
+.ctx-menu { position: fixed; z-index: 60; min-width: 140px; padding: 4px;
+            background: var(--bg-panel); border: 1px solid var(--border-strong);
+            border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.55); }
+.ctx-menu button { display: block; width: 100%; text-align: left; border: none; background: none;
+                   color: var(--text-soft); font-size: 13px; padding: 6px 10px;
+                   border-radius: 5px; cursor: pointer; }
+.ctx-menu button:hover { background: var(--bg-raised); color: var(--text); }
 /* Rows shared by the status-bar popovers (agents / cron / activity). */
 .sb-item-row { padding: 5px 10px; border-radius: 6px; font-size: 12.5px; color: var(--text-soft);
                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
