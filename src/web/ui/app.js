@@ -1824,9 +1824,9 @@
     if (row) selectConversation(row.getAttribute("data-id"));
   });
 
-  // Right-click a conversation row → context menu (Rename, Pin/Unpin; delete keeps its
-  // hover button). One shared menu element, repositioned per open; dismissed by any
-  // click elsewhere, Esc, or re-render.
+  // Right-click a conversation row → context menu (Rename, Pin/Unpin, Delete). One shared
+  // menu element, repositioned per open; dismissed by any click elsewhere, Esc, or
+  // re-render. Delete goes through the same confirm dialog as the hover ✕.
   var convoMenu = null;
   function closeConvoMenu() {
     if (convoMenu && convoMenu.parentNode) convoMenu.parentNode.removeChild(convoMenu);
@@ -1838,10 +1838,11 @@
     if (!c) return;
     convoMenu = document.createElement("div");
     convoMenu.className = "ctx-menu";
-    function item(label, act) {
+    function item(label, act, cls) {
       var b = document.createElement("button");
       b.type = "button";
       b.textContent = label;
+      if (cls) b.className = cls;
       b.addEventListener("click", function (e) {
         e.stopPropagation();
         closeConvoMenu();
@@ -1851,6 +1852,7 @@
     }
     item("Rename", function () { startRenameConvo(id); });
     item(c.pinned ? "Unpin" : "Pin", function () { togglePin(id); });
+    item("Delete", function () { deleteConversation(id); }, "danger");
     document.body.appendChild(convoMenu);
     // Clamp to the viewport so a right-click near an edge doesn't spill the menu off-screen.
     var r = convoMenu.getBoundingClientRect();
